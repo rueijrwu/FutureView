@@ -1,0 +1,17 @@
+# Node
+node_modules/
+.env
+.DS_Store
+*.log
+dist/
+build/
+# Python
+__pycache__/
+*.pyc
+# OS
+Thumbs.db
+# VSCode
+.vscode/
+# Misc
+*.swp
+*.swo
