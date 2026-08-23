@@ -1,5 +1,6 @@
 const MASSIVE_BASE_URL = "https://api.massive.com";
 const CLOUDFLARE_INGEST_METADATA_KEY = "metadata/latest-cloudflare-ingest.json";
+const ONE_TIME_MANUAL_DATE = "2026-08-21";
 
 function newYorkDateFromTimestamp(timestampMs) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -70,6 +71,66 @@ function normalizeGroupedDaily(payload, tradingDate) {
     }));
 }
 
+async function writeDailySession(env, tradingDate, mode, scheduledTime = null) {
+  const dataKey = `prices/daily-json/date=${tradingDate}/bars.json`;
+  const existing = await env.RESEARCH.head(dataKey);
+  if (existing !== null) {
+    const metadata = {
+      date: tradingDate,
+      source: "massive",
+      producer: "cloudflare-worker",
+      storage_format: "json",
+      data_key: dataKey,
+      status: "already_exists",
+      mode,
+      updated_at: new Date().toISOString(),
+    };
+    await env.RESEARCH.put(CLOUDFLARE_INGEST_METADATA_KEY, JSON.stringify(metadata), {
+      httpMetadata: { contentType: "application/json; charset=utf-8" },
+    });
+    return metadata;
+  }
+
+  const payload = await fetchGroupedDaily(env, tradingDate);
+  const bars = normalizeGroupedDaily(payload, tradingDate);
+  if (!bars.length) {
+    throw new Error(`Massive returned no grouped-daily bars for ${tradingDate}`);
+  }
+
+  const document = {
+    date: tradingDate,
+    adjusted: true,
+    source: "massive",
+    producer: "cloudflare-worker",
+    count: bars.length,
+    bars,
+  };
+
+  await env.RESEARCH.put(dataKey, JSON.stringify(document), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" },
+  });
+
+  const metadata = {
+    date: tradingDate,
+    source: "massive",
+    producer: "cloudflare-worker",
+    storage_format: "json",
+    data_key: dataKey,
+    count: bars.length,
+    status: "written",
+    scheduled_time: scheduledTime ? new Date(scheduledTime).toISOString() : null,
+    updated_at: new Date().toISOString(),
+    mode,
+  };
+
+  await env.RESEARCH.put(CLOUDFLARE_INGEST_METADATA_KEY, JSON.stringify(metadata), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" },
+  });
+
+  console.log(`Cloudflare ingest complete for ${tradingDate}: ${bars.length} bars`);
+  return metadata;
+}
+
 async function ingestLatestAvailableSession(env, scheduledTime) {
   const targetDate = newYorkDateFromTimestamp(scheduledTime);
 
@@ -77,42 +138,12 @@ async function ingestLatestAvailableSession(env, scheduledTime) {
     const tradingDate = shiftIsoDate(targetDate, -offset);
     if (isWeekend(tradingDate)) continue;
 
-    const payload = await fetchGroupedDaily(env, tradingDate);
-    const bars = normalizeGroupedDaily(payload, tradingDate);
-    if (!bars.length) continue;
-
-    const dataKey = `prices/daily-json/date=${tradingDate}/bars.json`;
-    const document = {
-      date: tradingDate,
-      adjusted: true,
-      source: "massive",
-      producer: "cloudflare-worker",
-      count: bars.length,
-      bars,
-    };
-
-    await env.RESEARCH.put(dataKey, JSON.stringify(document), {
-      httpMetadata: { contentType: "application/json; charset=utf-8" },
-    });
-
-    const metadata = {
-      date: tradingDate,
-      source: "massive",
-      producer: "cloudflare-worker",
-      storage_format: "json",
-      data_key: dataKey,
-      count: bars.length,
-      scheduled_time: new Date(scheduledTime).toISOString(),
-      updated_at: new Date().toISOString(),
-      mode: "shadow",
-    };
-
-    await env.RESEARCH.put(CLOUDFLARE_INGEST_METADATA_KEY, JSON.stringify(metadata), {
-      httpMetadata: { contentType: "application/json; charset=utf-8" },
-    });
-
-    console.log(`Cloudflare ingest complete for ${tradingDate}: ${bars.length} bars`);
-    return metadata;
+    try {
+      return await writeDailySession(env, tradingDate, "shadow", scheduledTime);
+    } catch (error) {
+      if (String(error).includes("no grouped-daily bars")) continue;
+      throw error;
+    }
   }
 
   throw new Error(`No Massive grouped-daily session found on or before ${targetDate}`);
@@ -157,6 +188,27 @@ export default {
         CLOUDFLARE_INGEST_METADATA_KEY,
         "Cloudflare ingestion has not completed yet",
       );
+    }
+
+    if (url.pathname === "/api/ingest/manual-once") {
+      if (request.method !== "POST") {
+        return Response.json({ error: "method not allowed" }, { status: 405 });
+      }
+
+      const requestedDate = url.searchParams.get("date");
+      if (requestedDate !== ONE_TIME_MANUAL_DATE) {
+        return Response.json(
+          { error: `only ${ONE_TIME_MANUAL_DATE} is allowed by this one-time endpoint` },
+          { status: 400 },
+        );
+      }
+
+      try {
+        const metadata = await writeDailySession(env, requestedDate, "manual-once");
+        return Response.json(metadata);
+      } catch (error) {
+        return Response.json({ error: String(error) }, { status: 500 });
+      }
     }
 
     return env.ASSETS.fetch(request);
