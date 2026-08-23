@@ -15,7 +15,7 @@ permissions:
 jobs:
   replay:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,16 +39,25 @@ jobs:
           REPLAY_DATE: ${{ inputs.date }}
         run: python -m futureview.features.replay prepare --date "$REPLAY_DATE"
 
-      - name: Deploy latest Worker and Workflow
+      - name: Prepare isolated ranking replay inputs
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          REPLAY_DATE: ${{ inputs.date }}
+        run: python -m futureview.screener.ranking_replay --date "$REPLAY_DATE"
+
+      - name: Deploy latest Worker and Workflows
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: npx --yes wrangler@latest deploy --config wrangler.jsonc
 
-      - name: Verify Workflow deployed version exists
+      - name: Verify feature Workflow deployed version exists
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           WORKFLOW="futureview-incremental-features"
@@ -59,20 +68,18 @@ jobs:
               -H "Content-Type: application/json" \
               "$API")
             COUNT=$(printf '%s' "$BODY" | python -c 'import json,sys; p=json.load(sys.stdin); r=p.get("result") or []; print(len(r) if isinstance(r,list) else 0)')
-            echo "Workflow deployed version count: $COUNT"
+            echo "Feature Workflow deployed version count: $COUNT"
             if [ "$COUNT" -gt 0 ]; then
               exit 0
             fi
-            npx --yes wrangler@latest workflows describe "$WORKFLOW" || true
             sleep 5
           done
-          echo "No deployed Workflow version exists after wrangler deploy."
           exit 1
 
-      - name: Trigger Cloudflare replay workflow
+      - name: Trigger Cloudflare feature replay workflow
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           REPLAY_DATE: ${{ inputs.date }}
         run: |
           ROOT="validation/replay/date=${REPLAY_DATE}"
@@ -88,3 +95,14 @@ jobs:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           REPLAY_DATE: ${{ inputs.date }}
         run: python -m futureview.features.replay compare --date "$REPLAY_DATE" --timeout 300
+
+      - name: Trigger isolated Cloudflare ranking replay
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          REPLAY_DATE: ${{ inputs.date }}
+        run: |
+          ROOT="validation/replay/date=${REPLAY_DATE}"
+          PARAMS=$(printf '{"target_date":"%s","root":"%s","ranking_state_metadata_key":"%s/source-ranking-state/metadata.json","universe_key":"%s/input/common-stocks.json"}' \
+            "$REPLAY_DATE" "$ROOT" "$ROOT" "$ROOT")
+          npx --yes wrangler@latest workflows trigger futureview-ranking-replay "$PARAMS"
