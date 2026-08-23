@@ -2,58 +2,124 @@
 
 ## Formal system architecture
 
-FutureView adopts a database-first dynamic-web architecture. The daily research pipeline and the web application are deliberately decoupled.
+FutureView adopts a Cloudflare-native, database-first dynamic-web architecture. GitHub is deliberately limited to source control, code review, documentation, CI, and deployment triggers. Production scheduling, market-data ingestion, research-state updates, API delivery, and the interactive web application belong on Cloudflare.
 
-The operating principle is:
+The long-term operating principle is:
 
 ```text
-Daily scheduled research pipeline
-Massive
-  ↓
-Python feature / ranking engine
-  ↓
-R2 database and derived research outputs
-
-Interactive application
-Browser
-  ↓
-Cloudflare Worker API
-  ↓
-R2
-  ↓
-render current research state dynamically
+GitHub
+  ├─ source code
+  ├─ strategy/configuration
+  ├─ tests and CI
+  └─ deployment history
+        │
+        │ code changes only
+        ↓
+Cloudflare production platform
+  ├─ Scheduled Worker / Workflow
+  │      ↓
+  │    Massive
+  │      ↓
+  │    daily market-data update
+  │      ↓
+  │    research-state update
+  │      ↓
+  ├─ R2
+  │    ├─ raw prices
+  │    ├─ reference metadata
+  │    ├─ feature state
+  │    ├─ rankings
+  │    ├─ regime
+  │    └─ presentation JSON
+  │
+  ├─ Worker API
+  │      ↓
+  └─ Dynamic frontend
 ```
 
-R2 is the persistent source of truth for market data and published research outputs. Git is the source of truth for code, configuration, documentation, and frontend assets only. Daily market-data or ranking changes must not create Git commits and must not require a frontend redeployment.
+GitHub must not act as the production scheduler or as a transport layer for daily market data. Routine market-data, ranking, regime, or portfolio-state changes must not create Git commits and must not trigger a frontend deployment.
+
+### Responsibility boundary
+
+GitHub owns:
+
+- Python, JavaScript, Worker, and frontend source code;
+- `strategy.yaml` and other strategy configuration;
+- tests, Ruff, and CI checks;
+- documentation and architecture history;
+- controlled deployment of production code when code changes.
+
+Cloudflare owns:
+
+- scheduled production execution;
+- Massive API ingestion;
+- persistent R2 storage;
+- published research state;
+- Worker API endpoints;
+- dynamic frontend delivery;
+- retries, monitoring, and later multi-step production workflows.
+
+R2 is the persistent source of truth for market data and published research outputs. Git is the source of truth for code and configuration only.
 
 ### Deployment boundary
 
-A Cloudflare deployment is required only when application code changes, for example:
+A Cloudflare deployment is required only when application or research-engine code changes, for example:
 
 - HTML, CSS, or JavaScript UI changes;
 - Worker API code or routing changes;
+- scanner / feature-engine implementation changes;
+- strategy configuration changes that are intentionally promoted to production;
 - application-level static assets.
 
-A deployment is **not** required when research data changes, including:
+A deployment is not required for routine production data changes, including:
 
 - a new trading session;
-- a new Top-50 ranking;
-- strategy weight changes followed by a scanner rerun;
-- extension, persistence, or ranking-formula changes followed by recomputation;
-- future ETF regime values;
+- a newly calculated Top-50 ranking;
+- daily incremental feature-state updates;
+- future ETF market-regime values;
 - future portfolio or backtest outputs.
 
-Those changes flow only through the research pipeline into R2 and become visible through the API.
+Those changes remain entirely inside Cloudflare and become visible through the Worker API.
 
-### Data responsibilities
+## Production research engine
 
-The Python research engine remains the only layer that computes trading research logic. The Worker must not recompute SMA, ATR, relative strength, ranking scores, persistence, market regime, or portfolio signals.
+The research engine remains the single source of truth for trading logic. The web layer must never independently recompute SMA, ATR, relative strength, persistence, ranking scores, market regime, or portfolio signals.
 
-Suggested R2 layout:
+The current batch implementation uses Python, Polars, PyArrow, and historical Parquet files. This remains the reference implementation for research and backtesting.
+
+The production path should gradually evolve toward an incremental state model so the daily Cloudflare job does not need to reload and recalculate the full 300+ session history for every symbol.
+
+Target daily update model:
+
+```text
+previous feature state
+        +
+new daily OHLCV
+        ↓
+incremental rolling update
+        ↓
+latest feature state
+        ↓
+stock ranking / regime
+        ↓
+R2 published outputs
+```
+
+Examples of incrementally maintainable state include rolling SMA windows, ATR state, 20/60-day reference closes, high/low windows, dollar-volume windows, ranking persistence, and market-regime inputs.
+
+The historical batch engine remains necessary for reproducible backtesting, validation, strategy changes, and full recomputation when methodology changes.
+
+## R2 data responsibilities
+
+Suggested long-term R2 layout:
 
 ```text
 prices/
   daily/date=YYYY-MM-DD/bars.parquet
+
+state/
+  latest/features.parquet
+  latest/rolling-state.parquet
 
 rankings/
   date=YYYY-MM-DD/ranking.parquet
@@ -73,7 +139,7 @@ regime/
   date=YYYY-MM-DD/regime.json
 ```
 
-Large Parquet datasets support Python research and backtests. Compact JSON objects support low-latency web/API delivery.
+Large Parquet datasets support research and backtests. Compact JSON objects support low-latency API and web delivery.
 
 ## ETF market-regime analysis
 
@@ -117,14 +183,37 @@ Planned capabilities include:
 - ETF market-regime and capital-level views;
 - later portfolio and backtest research interfaces.
 
-### Dynamic-web migration sequence
+## Migration sequence
 
 1. Add a minimal Worker API skeleton with `/api/health`. **Completed.**
 2. Add the R2 binding and `/api/rankings/latest`. **Completed in code.**
 3. Make the frontend prefer the API over committed static ranking data. **Completed in code.**
 4. Stop committing daily dashboard snapshots to `master`. **Completed in the current migration.**
 5. Validate Worker production delivery, then remove the legacy static JSON fallback so the dashboard is fully database-driven.
-6. Expand the API to historical rankings, symbol views, ETF regime data, portfolio research, and backtest results.
-7. Optionally consolidate static frontend delivery into Workers Static Assets after the API path is stable.
+6. Move lightweight daily Massive ingestion from GitHub Actions to a Cloudflare Cron-triggered Worker or Workflow.
+7. Store normalized daily bars and update market-data metadata directly in R2 from Cloudflare.
+8. Introduce an incremental production feature/ranking state so daily calculation processes only the new session plus required rolling state.
+9. Move the production scanner into a Cloudflare Workflow once its resource profile is appropriate for the Worker runtime.
+10. Remove the GitHub Actions production ingest/scanner workflow entirely. GitHub Actions remains for CI, tests, linting, and optional deployment automation only.
+11. Expand the Worker API to historical rankings, symbol views, ETF regime data, portfolio research, and backtest results.
+12. Optionally consolidate static frontend delivery into Workers Static Assets so a single Cloudflare application serves both `/api/*` and the frontend.
 
-The target steady state is simple: the scheduled daily workflow writes research outputs to R2; the browser dynamically reads them through the Worker API. Routine daily data updates never touch Git and never redeploy the frontend.
+## Target steady state
+
+The final steady state is:
+
+```text
+GitHub
+  = version control + CI
+
+Cloudflare
+  = production scheduler + runtime + R2 + API + dynamic web
+
+Daily market update
+  = Cloudflare scheduled execution → Massive → R2 → ranking/state update
+
+User request
+  = Browser → Worker API → R2
+```
+
+Routine daily operation must require no Git commit and no site redeployment. Only promoted code or configuration changes should create a new application deployment.
