@@ -19,6 +19,11 @@
       "name": "futureview-incremental-features",
       "binding": "INCREMENTAL_FEATURES",
       "class_name": "IncrementalFeatureWorkflow"
+    },
+    {
+      "name": "futureview-ranking-replay",
+      "binding": "RANKING_REPLAY",
+      "class_name": "RankingReplayWorkflow"
     }
   ],
   "triggers": {
