@@ -15,33 +15,68 @@ from futureview.screener.pipeline import build_ranking_history, top_n_for_date
 from futureview.storage.r2 import R2Store
 
 NEW_YORK = ZoneInfo("America/New_York")
-PRICE_PREFIX = "prices/daily/date="
-PRICE_SUFFIX = "/bars.parquet"
+PARQUET_PRICE_PREFIX = "prices/daily/date="
+PARQUET_PRICE_SUFFIX = "/bars.parquet"
+JSON_PRICE_PREFIX = "prices/daily-json/date="
+JSON_PRICE_SUFFIX = "/bars.json"
 DASHBOARD_KEY = "dashboard/latest.json"
 
 
-def _price_keys(store: R2Store) -> list[str]:
+def _price_keys(store: R2Store, prefix: str, suffix: str) -> list[str]:
     return [
         key
-        for key in store.list_keys("prices/daily/")
-        if key.startswith(PRICE_PREFIX) and key.endswith(PRICE_SUFFIX)
+        for key in store.list_keys(prefix.rsplit("date=", 1)[0])
+        if key.startswith(prefix) and key.endswith(suffix)
     ]
 
 
+def _load_cloudflare_json_frame(store: R2Store, key: str) -> pl.DataFrame:
+    payload = json.loads(store.get_bytes(key))
+    bars = payload.get("bars", [])
+    if not bars:
+        return pl.DataFrame()
+
+    return (
+        pl.DataFrame(bars)
+        .select("symbol", "date", "open", "high", "low", "close", "volume")
+        .with_columns(
+            pl.col("symbol").cast(pl.Utf8),
+            pl.col("date").str.strptime(pl.Date, "%Y-%m-%d", strict=True),
+            pl.col("open").cast(pl.Float64),
+            pl.col("high").cast(pl.Float64),
+            pl.col("low").cast(pl.Float64),
+            pl.col("close").cast(pl.Float64),
+            pl.col("volume").cast(pl.Float64),
+        )
+    )
+
+
 def _load_price_history(store: R2Store, *, max_sessions: int = 320) -> pl.DataFrame:
-    keys = _price_keys(store)
-    if not keys:
-        raise RuntimeError("No daily market data found in R2. Run Market Data Ingest first.")
+    parquet_keys = _price_keys(store, PARQUET_PRICE_PREFIX, PARQUET_PRICE_SUFFIX)
+    json_keys = _price_keys(store, JSON_PRICE_PREFIX, JSON_PRICE_SUFFIX)
+    if not parquet_keys and not json_keys:
+        raise RuntimeError("No daily market data found in R2.")
 
-    selected = keys[-max_sessions:]
-    frames = [pl.read_parquet(io.BytesIO(store.get_bytes(key))) for key in selected]
-    history = pl.concat(frames, how="vertical_relaxed").sort(["symbol", "date"])
+    frames: list[pl.DataFrame] = []
+    for key in parquet_keys[-max_sessions:]:
+        frames.append(pl.read_parquet(io.BytesIO(store.get_bytes(key))))
+    for key in json_keys[-max_sessions:]:
+        frame = _load_cloudflare_json_frame(store, key)
+        if not frame.is_empty():
+            frames.append(frame)
 
-    session_count = history.select(pl.col("date").n_unique()).item()
+    history = pl.concat(frames, how="vertical_relaxed")
+    history = history.unique(subset=["symbol", "date"], keep="last")
+
+    dates = history.select("date").unique().sort("date").get_column("date").to_list()
+    selected_dates = dates[-max_sessions:]
+    history = history.filter(pl.col("date").is_in(selected_dates)).sort(["symbol", "date"])
+
+    session_count = len(selected_dates)
     if session_count < 210:
         raise RuntimeError(
             f"Only {session_count} trading sessions are available; at least 210 are required "
-            "for SMA200-based screening. Run Market Data Ingest in bootstrap mode first."
+            "for SMA200-based screening."
         )
     return history
 
@@ -145,6 +180,7 @@ def run_daily_scanner(
         "ranking_key": ranking_key,
         "top_key": top_key,
         "dashboard_key": DASHBOARD_KEY,
+        "market_data_sources": ["r2_parquet_history", "cloudflare_daily_json"],
         "updated_at": datetime.now(tz=NEW_YORK).isoformat(),
     }
     store.put_bytes(
