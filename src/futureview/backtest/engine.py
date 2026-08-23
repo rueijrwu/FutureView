@@ -6,7 +6,7 @@ from typing import Protocol
 
 
 class Strategy(Protocol):
-    def on_day(self, trading_date: date, state: "PortfolioState") -> None: ...
+    def on_day(self, trading_date: date, state: PortfolioState) -> None: ...
 
 
 @dataclass

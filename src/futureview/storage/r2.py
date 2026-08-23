@@ -16,7 +16,7 @@ class R2Settings:
     bucket: str
 
     @classmethod
-    def from_env(cls) -> "R2Settings":
+    def from_env(cls) -> R2Settings:
         names = {
             "account_id": "R2_ACCOUNT_ID",
             "access_key_id": "R2_ACCESS_KEY_ID",
@@ -52,7 +52,7 @@ class R2Store:
         )
 
     @classmethod
-    def from_env(cls) -> "R2Store":
+    def from_env(cls) -> R2Store:
         return cls(R2Settings.from_env())
 
     def healthcheck(self) -> None:
