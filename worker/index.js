@@ -202,6 +202,19 @@ export default {
   },
 
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(ingestLatestAvailableSession(env, controller.scheduledTime));
+    ctx.waitUntil(
+      (async () => {
+        const ingest = await ingestLatestAvailableSession(env, controller.scheduledTime);
+        const instance = await env.INCREMENTAL_FEATURES.create({
+          params: {
+            mode: "production",
+            ingest_date: ingest.date,
+          },
+        });
+        console.log(
+          `Incremental feature workflow started for ${ingest.date}: ${instance.id}`,
+        );
+      })(),
+    );
   },
 };
