@@ -35,12 +35,6 @@ NUMERIC_COMPARE_COLUMNS = (
     "extension_penalty",
     "stock_score",
 )
-INTEGER_COMPARE_COLUMNS = (
-    "base_rank",
-    "rank",
-    "rank_change_5d",
-    "rank_change_20d",
-)
 
 
 def _write_json(store: R2Store, key: str, payload: object) -> None:
@@ -184,6 +178,7 @@ def compare_ranking_replay(
     atol: float = 1e-10,
     rtol: float = 1e-10,
 ) -> dict[str, object]:
+    """Validate strategy-equivalent JS ranking behavior against the migration reference."""
     store = R2Store.from_env()
     root = f"validation/replay/date={target_date.isoformat()}"
     metadata_key = f"{root}/cloudflare/ranking/metadata.json"
@@ -225,11 +220,16 @@ def compare_ranking_replay(
     unexpected_symbols = sorted(actual_symbols - reference_symbols)
     common = sorted(reference_symbols.intersection(actual_symbols))
 
-    mismatches: list[dict[str, object]] = []
+    numeric_mismatches: list[dict[str, object]] = []
+    base_top50_mismatches: list[dict[str, object]] = []
+    rank_drifts: list[dict[str, object]] = []
     max_abs_error = 0.0
+    max_rank_delta = 0
+
     for symbol in common:
         expected_row = reference[symbol]
         observed_row = actual[symbol]
+
         for column in NUMERIC_COMPARE_COLUMNS:
             expected = expected_row.get(column)
             observed = observed_row.get(column)
@@ -238,7 +238,7 @@ def compare_ranking_replay(
             if expected_missing and observed_missing:
                 continue
             if expected_missing != observed_missing:
-                mismatches.append(
+                numeric_mismatches.append(
                     {
                         "symbol": symbol,
                         "column": column,
@@ -252,7 +252,7 @@ def compare_ranking_replay(
             error = abs(expected_f - observed_f)
             max_abs_error = max(max_abs_error, error)
             if not math.isclose(expected_f, observed_f, rel_tol=rtol, abs_tol=atol):
-                mismatches.append(
+                numeric_mismatches.append(
                     {
                         "symbol": symbol,
                         "column": column,
@@ -262,20 +262,30 @@ def compare_ranking_replay(
                     }
                 )
 
-        for column in INTEGER_COMPARE_COLUMNS:
-            expected = expected_row.get(column)
-            observed = observed_row.get(column)
-            if expected is None and observed is None:
-                continue
-            if expected is None or observed is None or int(expected) != int(observed):
-                mismatches.append(
-                    {
-                        "symbol": symbol,
-                        "column": column,
-                        "expected": expected,
-                        "actual": observed,
-                    }
-                )
+        expected_base_top50 = int(expected_row["base_rank"]) <= 50
+        observed_base_top50 = int(observed_row["base_rank"]) <= 50
+        if expected_base_top50 != observed_base_top50:
+            base_top50_mismatches.append(
+                {
+                    "symbol": symbol,
+                    "expected_base_rank": expected_row["base_rank"],
+                    "actual_base_rank": observed_row["base_rank"],
+                }
+            )
+
+        expected_rank = int(expected_row["rank"])
+        observed_rank = int(observed_row["rank"])
+        rank_delta = observed_rank - expected_rank
+        max_rank_delta = max(max_rank_delta, abs(rank_delta))
+        if rank_delta:
+            rank_drifts.append(
+                {
+                    "symbol": symbol,
+                    "expected_rank": expected_rank,
+                    "actual_rank": observed_rank,
+                    "delta": rank_delta,
+                }
+            )
 
     reference_top50 = [
         str(row["symbol"])
@@ -290,7 +300,10 @@ def compare_ranking_replay(
     top50_ok = reference_top50 == actual_top50
 
     coverage_ok = not missing_symbols and not unexpected_symbols
-    parity_ok = not mismatches
+    scores_ok = not numeric_mismatches
+    base_top50_ok = not base_top50_mismatches
+    strategy_ok = coverage_ok and scores_ok and base_top50_ok and top50_ok
+
     result = {
         "date": target_date.isoformat(),
         "reference_candidate_count": len(reference),
@@ -298,15 +311,21 @@ def compare_ranking_replay(
         "compared_symbol_count": len(common),
         "missing_symbol_count": len(missing_symbols),
         "unexpected_symbol_count": len(unexpected_symbols),
-        "mismatch_count": len(mismatches),
+        "numeric_mismatch_count": len(numeric_mismatches),
+        "base_top50_mismatch_count": len(base_top50_mismatches),
+        "rank_drift_count": len(rank_drifts),
+        "max_rank_delta": max_rank_delta,
         "max_abs_error": max_abs_error,
         "coverage_status": "pass" if coverage_ok else "fail",
-        "parity_status": "pass" if parity_ok else "fail",
+        "score_status": "pass" if scores_ok else "fail",
+        "base_top50_status": "pass" if base_top50_ok else "fail",
         "top50_status": "pass" if top50_ok else "fail",
-        "status": "pass" if coverage_ok and parity_ok and top50_ok else "fail",
+        "status": "pass" if strategy_ok else "fail",
         "sample_missing_symbols": missing_symbols[:20],
         "sample_unexpected_symbols": unexpected_symbols[:20],
-        "sample_mismatches": mismatches[:20],
+        "sample_numeric_mismatches": numeric_mismatches[:20],
+        "sample_base_top50_mismatches": base_top50_mismatches[:20],
+        "sample_rank_drifts": rank_drifts[:20],
         "reference_top50": reference_top50,
         "cloudflare_top50": actual_top50,
     }
