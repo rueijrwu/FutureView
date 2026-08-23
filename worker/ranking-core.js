@@ -39,7 +39,11 @@ function ordinalDescending(rows, field) {
     .sort((a, b) => {
       const delta = Number(b[field]) - Number(a[field]);
       if (delta !== 0) return delta;
-      return Number(a.__inputOrder) - Number(b.__inputOrder);
+      const aSymbol = String(a.symbol);
+      const bSymbol = String(b.symbol);
+      if (aSymbol < bSymbol) return -1;
+      if (aSymbol > bSymbol) return 1;
+      return 0;
     })
     .map((row, index) => ({ ...row, __ordinalRank: index + 1 }));
 }
