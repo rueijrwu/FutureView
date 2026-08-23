@@ -4,7 +4,13 @@ import polars as pl
 import pytest
 
 from futureview.features.core import add_core_features, add_relative_strength
-from futureview.features.incremental import bootstrap_symbol_state, update_symbol_state
+from futureview.features.incremental import (
+    STATE_SHARDS,
+    bootstrap_states,
+    bootstrap_symbol_state,
+    state_shard,
+    update_symbol_state,
+)
 
 
 def _prices() -> pl.DataFrame:
@@ -105,3 +111,11 @@ def test_incremental_state_round_trip() -> None:
     state = bootstrap_symbol_state(prices.head(229), "AAA")
     restored = type(state).from_dict(state.to_dict())
     assert restored == state
+
+
+def test_bootstrap_states_and_shards_are_deterministic() -> None:
+    states = bootstrap_states(_prices())
+    assert set(states) == {"AAA", "SPY"}
+    assert 0 <= state_shard("AAA") < STATE_SHARDS
+    assert state_shard("AAA") == state_shard("AAA")
+    assert states["AAA"].as_of == _prices().get_column("date").max()
