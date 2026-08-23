@@ -114,7 +114,13 @@ class MassiveMarketDataProvider:
         query_params = dict(params or {})
         query_params["apiKey"] = self.settings.api_key
         url = f"{url}?{urlencode(query_params)}"
-        request = Request(url, headers={"Accept": "application/json", "User-Agent": "FutureView/0.1"})
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "FutureView/0.1",
+            },
+        )
 
         for attempt in range(self.max_retries):
             try:
