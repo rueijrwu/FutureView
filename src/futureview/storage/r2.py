@@ -58,6 +58,29 @@ class R2Store:
     def healthcheck(self) -> None:
         self.client.head_bucket(Bucket=self.settings.bucket)
 
+    def list_keys(self, prefix: str = "") -> list[str]:
+        keys: list[str] = []
+        continuation_token: str | None = None
+        while True:
+            kwargs: dict[str, object] = {
+                "Bucket": self.settings.bucket,
+                "Prefix": prefix,
+            }
+            if continuation_token:
+                kwargs["ContinuationToken"] = continuation_token
+            response = self.client.list_objects_v2(**kwargs)
+            keys.extend(obj["Key"] for obj in response.get("Contents", []))
+            if not response.get("IsTruncated"):
+                break
+            continuation_token = response.get("NextContinuationToken")
+            if not continuation_token:
+                break
+        return sorted(keys)
+
+    def get_bytes(self, key: str) -> bytes:
+        response = self.client.get_object(Bucket=self.settings.bucket, Key=key)
+        return response["Body"].read()
+
     def upload_file(self, source: str | Path, key: str) -> None:
         self.client.upload_file(str(source), self.settings.bucket, key)
 
