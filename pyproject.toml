@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "futureview"
+version = "0.1.0"
+description = "Point-in-time market screening, ranking, portfolio research, and backtesting platform"
+requires-python = ">=3.12"
+dependencies = [
+  "duckdb>=1.1",
+  "polars>=1.0",
+  "pyarrow>=17",
+  "pydantic>=2.8",
+  "pyyaml>=6.0",
+  "numpy>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/futureview"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

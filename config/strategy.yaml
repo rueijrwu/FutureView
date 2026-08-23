@@ -1,0 +1,25 @@
+benchmark: SPY
+screener:
+  top_n: 50
+  min_price: 10.0
+  min_avg_dollar_volume_20d: 50000000
+  max_extension_atr: 3.0
+  require_close_above_sma50: true
+  require_sma50_above_sma200: true
+  require_positive_sma50_slope: true
+  require_positive_rs20: true
+  require_positive_rs60: true
+ranking:
+  rs20_weight: 0.30
+  rs60_weight: 0.25
+  trend_weight: 0.20
+  breakout_weight: 0.15
+  volume_weight: 0.10
+portfolio:
+  tactical_max_fraction: 0.6667
+  emergency_reserve_min_fraction: 0.10
+  emergency_reserve_max_fraction: 0.30
+  top_leader_option_count: 3
+exits:
+  moving_average_levels: [5, 10]
+  new_high_partial_profit: true
