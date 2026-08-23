@@ -1,6 +1,5 @@
 const MASSIVE_BASE_URL = "https://api.massive.com";
 const CLOUDFLARE_INGEST_METADATA_KEY = "metadata/latest-cloudflare-ingest.json";
-const ONE_TIME_MANUAL_DATE = "2026-08-21";
 
 function newYorkDateFromTimestamp(timestampMs) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -71,7 +70,7 @@ function normalizeGroupedDaily(payload, tradingDate) {
     }));
 }
 
-async function writeDailySession(env, tradingDate, mode, scheduledTime = null) {
+async function writeDailySession(env, tradingDate, scheduledTime = null) {
   const dataKey = `prices/daily-json/date=${tradingDate}/bars.json`;
   const existing = await env.RESEARCH.head(dataKey);
   if (existing !== null) {
@@ -82,7 +81,7 @@ async function writeDailySession(env, tradingDate, mode, scheduledTime = null) {
       storage_format: "json",
       data_key: dataKey,
       status: "already_exists",
-      mode,
+      mode: "production",
       updated_at: new Date().toISOString(),
     };
     await env.RESEARCH.put(CLOUDFLARE_INGEST_METADATA_KEY, JSON.stringify(metadata), {
@@ -120,7 +119,7 @@ async function writeDailySession(env, tradingDate, mode, scheduledTime = null) {
     status: "written",
     scheduled_time: scheduledTime ? new Date(scheduledTime).toISOString() : null,
     updated_at: new Date().toISOString(),
-    mode,
+    mode: "production",
   };
 
   await env.RESEARCH.put(CLOUDFLARE_INGEST_METADATA_KEY, JSON.stringify(metadata), {
@@ -139,7 +138,7 @@ async function ingestLatestAvailableSession(env, scheduledTime) {
     if (isWeekend(tradingDate)) continue;
 
     try {
-      return await writeDailySession(env, tradingDate, "shadow", scheduledTime);
+      return await writeDailySession(env, tradingDate, scheduledTime);
     } catch (error) {
       if (String(error).includes("no grouped-daily bars")) continue;
       throw error;
@@ -188,27 +187,6 @@ export default {
         CLOUDFLARE_INGEST_METADATA_KEY,
         "Cloudflare ingestion has not completed yet",
       );
-    }
-
-    if (url.pathname === "/api/ingest/manual-once") {
-      if (request.method !== "POST") {
-        return Response.json({ error: "method not allowed" }, { status: 405 });
-      }
-
-      const requestedDate = url.searchParams.get("date");
-      if (requestedDate !== ONE_TIME_MANUAL_DATE) {
-        return Response.json(
-          { error: `only ${ONE_TIME_MANUAL_DATE} is allowed by this one-time endpoint` },
-          { status: 400 },
-        );
-      }
-
-      try {
-        const metadata = await writeDailySession(env, requestedDate, "manual-once");
-        return Response.json(metadata);
-      } catch (error) {
-        return Response.json({ error: String(error) }, { status: 500 });
-      }
     }
 
     return env.ASSETS.fetch(request);
