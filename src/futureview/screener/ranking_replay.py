@@ -194,7 +194,9 @@ def compare_ranking_replay(
             break
         except Exception:
             if time.monotonic() >= deadline:
-                raise RuntimeError("timed out waiting for Cloudflare ranking replay output") from None
+                raise RuntimeError(
+                    "timed out waiting for Cloudflare ranking replay output"
+                ) from None
             time.sleep(5)
 
     ranking_metadata = _read_json(store, f"{root}/ranking-metadata.json")
