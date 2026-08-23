@@ -13,5 +13,8 @@
       "binding": "RESEARCH",
       "bucket_name": "futureview-data"
     }
-  ]
+  ],
+  "triggers": {
+    "crons": ["30 23 * * 1-5"]
+  }
 }
