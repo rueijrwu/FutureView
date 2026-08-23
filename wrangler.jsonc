@@ -18,8 +18,7 @@
     {
       "name": "futureview-incremental-features",
       "binding": "INCREMENTAL_FEATURES",
-      "class_name": "IncrementalFeatureWorkflow",
-      "schedules": ["40 23 * * 1-5"]
+      "class_name": "IncrementalFeatureWorkflow"
     }
   ],
   "triggers": {
