@@ -40,12 +40,24 @@ function renderRanking(rows) {
   }
 }
 
+async function fetchDashboardPayload() {
+  const sources = ["/api/rankings/latest", "./data/latest.json"];
+
+  for (const source of sources) {
+    try {
+      const response = await fetch(source, { cache: "no-store" });
+      if (response.ok) return response.json();
+    } catch (error) {
+      console.warn(`Dashboard source unavailable: ${source}`, error);
+    }
+  }
+
+  throw new Error("No dashboard data source is available");
+}
+
 async function loadDashboard() {
   try {
-    const response = await fetch("./data/latest.json", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const payload = await response.json();
-
+    const payload = await fetchDashboardPayload();
     const rankings = payload.rankings ?? [];
     document.querySelector("#universe-count").textContent = payload.universe_count ?? "—";
     document.querySelector("#top-count").textContent = rankings.length;
