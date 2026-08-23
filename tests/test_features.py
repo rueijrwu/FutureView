@@ -1,8 +1,10 @@
 from datetime import date, timedelta
 
 import polars as pl
+import pytest
 
 from futureview.features.core import add_core_features, add_relative_strength
+from futureview.features.incremental import bootstrap_symbol_state, update_symbol_state
 
 
 def _prices() -> pl.DataFrame:
@@ -20,7 +22,7 @@ def _prices() -> pl.DataFrame:
                     "high": close + 1.0,
                     "low": close - 1.0,
                     "close": close,
-                    "volume": 1_000_000,
+                    "volume": 1_000_000 + i * 1_000,
                 }
             )
     return pl.DataFrame(rows)
@@ -53,3 +55,53 @@ def test_breakout_level_excludes_current_bar() -> None:
     ).row(0, named=True)
     assert aaa["breakout20"] is True
     assert aaa["high20_prior"] < aaa["close"]
+
+
+def test_incremental_core_features_match_batch_engine() -> None:
+    prices = _prices().filter(pl.col("symbol") == "AAA").sort("date")
+    history = prices.head(229)
+    next_bar = prices.tail(1).row(0, named=True)
+
+    state = bootstrap_symbol_state(history, "AAA")
+    _, incremental = update_symbol_state(
+        state,
+        trading_date=next_bar["date"],
+        open_=next_bar["open"],
+        high=next_bar["high"],
+        low=next_bar["low"],
+        close=next_bar["close"],
+        volume=next_bar["volume"],
+    )
+
+    batch = add_core_features(prices).tail(1).row(0, named=True)
+    numeric_columns = (
+        "sma5",
+        "sma10",
+        "sma20",
+        "sma50",
+        "sma200",
+        "avg_volume20",
+        "return20",
+        "return60",
+        "high20_prior",
+        "high50_prior",
+        "true_range",
+        "atr14",
+        "avg_dollar_volume20",
+        "volume_ratio20",
+        "sma50_slope10",
+        "extension_atr",
+        "distance_from_high20",
+    )
+    for column in numeric_columns:
+        assert incremental[column] == pytest.approx(batch[column], rel=1e-12, abs=1e-12)
+
+    assert incremental["breakout20"] is batch["breakout20"]
+    assert incremental["breakout50"] is batch["breakout50"]
+
+
+def test_incremental_state_round_trip() -> None:
+    prices = _prices().filter(pl.col("symbol") == "AAA").sort("date")
+    state = bootstrap_symbol_state(prices.head(229), "AAA")
+    restored = type(state).from_dict(state.to_dict())
+    assert restored == state
