@@ -18,6 +18,7 @@ from futureview.features.incremental import (
     state_shard,
 )
 from futureview.screener.pipeline import build_ranking_history, top_n_for_date
+from futureview.screener.ranking_state import publish_ranking_state
 from futureview.storage.r2 import R2Store
 
 NEW_YORK = ZoneInfo("America/New_York")
@@ -210,6 +211,11 @@ def run_daily_scanner(
     _write_parquet(store, top50, top_key)
 
     state_metadata = _write_incremental_state(store, prices, latest_date)
+    ranking_state_metadata = publish_ranking_state(
+        store,
+        ranking_history,
+        as_of=latest_date,
+    )
 
     latest_prices = prices.filter(pl.col("date") == latest_date)
     universe_count = latest_prices.filter(
@@ -245,6 +251,12 @@ def run_daily_scanner(
             "prefix": state_metadata["prefix"],
             "shard_count": state_metadata["shard_count"],
             "symbol_count": state_metadata["symbol_count"],
+        },
+        "ranking_state": {
+            "version": ranking_state_metadata["version"],
+            "prefix": ranking_state_metadata["prefix"],
+            "shard_count": ranking_state_metadata["shard_count"],
+            "symbol_count": ranking_state_metadata["symbol_count"],
         },
         "updated_at": datetime.now(tz=NEW_YORK).isoformat(),
     }
