@@ -1,0 +1,61 @@
+name: Market Data Ingest
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Ingestion mode"
+        required: true
+        default: "daily"
+        type: choice
+        options:
+          - daily
+          - bootstrap
+      date:
+        description: "Optional YYYY-MM-DD end/target date"
+        required: false
+        type: string
+      calendar_days:
+        description: "Bootstrap calendar-day lookback"
+        required: false
+        default: "420"
+        type: string
+  schedule:
+    - cron: "15 22 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FutureView
+        run: python -m pip install .
+
+      - name: Ingest market data
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          INPUT_MODE: ${{ github.event.inputs.mode }}
+          INPUT_DATE: ${{ github.event.inputs.date }}
+          INPUT_CALENDAR_DAYS: ${{ github.event.inputs.calendar_days }}
+        run: |
+          MODE="${INPUT_MODE:-daily}"
+          DAYS="${INPUT_CALENDAR_DAYS:-420}"
+          ARGS=(--mode "$MODE" --calendar-days "$DAYS")
+          if [ -n "${INPUT_DATE:-}" ]; then
+            ARGS+=(--date "$INPUT_DATE")
+          fi
+          python -m futureview.data.ingest "${ARGS[@]}"
