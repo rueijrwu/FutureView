@@ -4,6 +4,8 @@ import polars as pl
 
 from futureview.config import RankingConfig
 
+RANKING_KEY_DECIMALS = 12
+
 
 def _percentile_rank(column: str) -> pl.Expr:
     """Cross-sectional percentile where 1.0 is strongest for each date."""
@@ -42,16 +44,25 @@ def _add_base_rank(frame: pl.DataFrame, config: RankingConfig) -> pl.DataFrame:
         + config.breakout_weight * pl.col("breakout_score")
         + config.volume_weight * pl.col("volume_rank")
     )
-    scored = frame.with_columns(base_score.alias("base_score")).sort(
-        ["date", "base_score", "symbol"],
-        descending=[False, True, False],
-    )
-    return scored.with_columns(
-        pl.col("base_score")
-        .rank(method="ordinal", descending=True)
-        .over("date")
-        .cast(pl.Int32)
-        .alias("base_rank")
+    return (
+        frame.with_columns(base_score.alias("base_score"))
+        .with_columns(
+            pl.col("base_score")
+            .round(RANKING_KEY_DECIMALS)
+            .alias("_base_rank_key")
+        )
+        .sort(
+            ["date", "_base_rank_key", "symbol"],
+            descending=[False, True, False],
+        )
+        .with_columns(
+            pl.col("symbol")
+            .cum_count()
+            .over("date")
+            .cast(pl.Int32)
+            .alias("base_rank")
+        )
+        .drop("_base_rank_key")
     )
 
 
@@ -103,18 +114,24 @@ def rank_cross_sections(frame: pl.DataFrame, config: RankingConfig) -> pl.DataFr
             - pl.col("extension_penalty")
         ).alias("stock_score")
     )
-    ranked = ranked.sort(
-        ["date", "stock_score", "symbol"],
-        descending=[False, True, False],
-    )
 
     return (
         ranked.with_columns(
             pl.col("stock_score")
-            .rank(method="ordinal", descending=True)
+            .round(RANKING_KEY_DECIMALS)
+            .alias("_stock_rank_key")
+        )
+        .sort(
+            ["date", "_stock_rank_key", "symbol"],
+            descending=[False, True, False],
+        )
+        .with_columns(
+            pl.col("symbol")
+            .cum_count()
             .over("date")
             .cast(pl.Int32)
             .alias("rank")
         )
+        .drop("_stock_rank_key")
         .sort(["date", "rank"])
     )
