@@ -8,12 +8,15 @@ import polars as pl
 
 from futureview.features.core import REQUIRED_PRICE_COLUMNS
 
+STATE_VERSION = 1
+STATE_SHARDS = 32
+
 
 @dataclass(frozen=True)
 class RollingSymbolState:
     """Compact rolling state required to produce the next daily feature row.
 
-    Arrays are ordered oldest -> newest.  The state deliberately stores only the
+    Arrays are ordered oldest -> newest. The state deliberately stores only the
     finite windows required by the canonical batch feature engine; it does not
     retain the full price history.
     """
@@ -50,14 +53,15 @@ class RollingSymbolState:
         )
 
 
+def state_shard(symbol: str, shard_count: int = STATE_SHARDS) -> int:
+    """Deterministic shard id that is trivial to reproduce in JavaScript."""
+    if shard_count <= 0:
+        raise ValueError("shard_count must be positive")
+    return sum(ord(character) for character in symbol) % shard_count
+
+
 def _trim(values: tuple[float, ...], value: float, size: int) -> tuple[float, ...]:
     return (*values, float(value))[-size:]
-
-
-def _mean(values: tuple[float, ...]) -> float | None:
-    if not values:
-        return None
-    return sum(values) / len(values)
 
 
 def _require_full(values: tuple[float, ...], size: int) -> float | None:
@@ -111,6 +115,20 @@ def bootstrap_symbol_state(history: pl.DataFrame, symbol: str) -> RollingSymbolS
         true_ranges=tuple(tr_values[-14:]),
         sma50_history=tuple(sma50_values[-11:]),
     )
+
+
+def bootstrap_states(history: pl.DataFrame) -> dict[str, RollingSymbolState]:
+    """Bootstrap all symbols with enough history for the SMA200 strategy."""
+    missing = REQUIRED_PRICE_COLUMNS.difference(history.columns)
+    if missing:
+        raise ValueError(f"price frame is missing required columns: {sorted(missing)}")
+
+    states: dict[str, RollingSymbolState] = {}
+    for key, rows in history.sort(["symbol", "date"]).partition_by("symbol", as_dict=True).items():
+        symbol = key[0] if isinstance(key, tuple) else key
+        if rows.height >= 200:
+            states[str(symbol)] = bootstrap_symbol_state(rows, str(symbol))
+    return states
 
 
 def update_symbol_state(
