@@ -208,7 +208,9 @@ def compare_historical_replay(
     actual_symbols = set(actual)
     missing_symbols = sorted(expected_incremental_symbols - actual_symbols)
     unexpected_symbols = sorted(actual_symbols - expected_incremental_symbols)
-    common = sorted(expected_incremental_symbols.intersection(actual_symbols).intersection(reference))
+    common = sorted(
+        expected_incremental_symbols.intersection(actual_symbols).intersection(reference)
+    )
 
     mismatches: list[dict[str, object]] = []
     max_abs_error = 0.0
