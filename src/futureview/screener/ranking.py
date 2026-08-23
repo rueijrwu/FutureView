@@ -42,7 +42,11 @@ def _add_base_rank(frame: pl.DataFrame, config: RankingConfig) -> pl.DataFrame:
         + config.breakout_weight * pl.col("breakout_score")
         + config.volume_weight * pl.col("volume_rank")
     )
-    return frame.with_columns(base_score.alias("base_score")).with_columns(
+    scored = frame.with_columns(base_score.alias("base_score")).sort(
+        ["date", "base_score", "symbol"],
+        descending=[False, True, False],
+    )
+    return scored.with_columns(
         pl.col("base_score")
         .rank(method="ordinal", descending=True)
         .over("date")
@@ -98,6 +102,10 @@ def rank_cross_sections(frame: pl.DataFrame, config: RankingConfig) -> pl.DataFr
             + config.persistence_weight * pl.col("persistence_score")
             - pl.col("extension_penalty")
         ).alias("stock_score")
+    )
+    ranked = ranked.sort(
+        ["date", "stock_score", "symbol"],
+        descending=[False, True, False],
     )
 
     return (
