@@ -20,12 +20,12 @@ Cloudflare production platform
   │      ↓
   │    daily market-data update
   │      ↓
-  │    research-state update
+  │    incremental research-state update
   │      ↓
   ├─ R2
   │    ├─ raw prices
-  │    ├─ reference metadata
-  │    ├─ feature state
+  │    ├─ rolling feature state
+  │    ├─ daily feature shards
   │    ├─ rankings
   │    ├─ regime
   │    └─ presentation JSON
@@ -39,52 +39,65 @@ Routine market-data, ranking, regime, or portfolio-state changes must not create
 
 ### Current production split
 
-Cloudflare now owns daily Massive ingestion. The scheduled Worker writes normalized daily JSON to R2 under:
+Cloudflare owns daily Massive ingestion. The scheduled Worker writes normalized daily JSON to R2 under:
 
 ```text
 prices/daily-json/date=YYYY-MM-DD/bars.json
 metadata/latest-cloudflare-ingest.json
 ```
 
-The existing historical Parquet archive remains in R2 and continues to support the batch research engine. The scanner merges historical Parquet with newer Cloudflare JSON sessions, preferring Cloudflare data when the same symbol/date exists in both sources.
+A Cloudflare Workflow is now the next production stage. It runs after ingestion, reads the versioned rolling state plus the new daily bar set, updates 32 state shards, and writes the corresponding feature cross-section:
 
-GitHub Actions is temporarily scanner-only. It no longer performs daily Massive ingestion. This is an intermediate step before moving the scanner itself to Cloudflare.
+```text
+state/rolling/v1/date=YYYY-MM-DD/shard=00..31.json
+features/daily/date=YYYY-MM-DD/shard=00..31.json
+metadata/latest-feature-state.json
+metadata/latest-incremental-features.json
+```
+
+The Workflow uses staged writes and updates `metadata/latest-feature-state.json` only after every shard succeeds. A partial Workflow failure therefore cannot publish a half-updated production state.
+
+The existing historical Parquet archive remains in R2 and continues to support the batch research engine. GitHub Actions temporarily retains the Daily Scanner as a reference/fallback path while Cloudflare incremental output is validated against the canonical Python implementation.
+
+Current production timing:
+
+```text
+23:30 UTC  Cloudflare Worker: Massive daily ingestion
+23:40 UTC  Cloudflare Workflow: incremental feature/state update
+23:45 UTC  GitHub Daily Scanner: temporary batch reference/fallback
+```
 
 ### Deployment boundary
 
-A Cloudflare deployment is required only when application or research-engine code changes, for example:
-
-- HTML, CSS, or JavaScript UI changes;
-- Worker API code or routing changes;
-- scanner / feature-engine implementation changes;
-- strategy configuration changes intentionally promoted to production;
-- application-level static assets.
-
-A deployment is not required for routine production data changes such as a new trading session, a new Top-50 ranking, daily feature-state updates, future ETF regime values, or portfolio outputs.
+A Cloudflare deployment is required only when application or research-engine code changes. Routine new sessions and derived research-state updates stay entirely inside Cloudflare/R2.
 
 ## Production research engine
 
-The research engine remains the single source of truth for trading logic. The web layer must never independently recompute SMA, ATR, relative strength, persistence, ranking scores, market regime, or portfolio signals.
+The Python/Polars batch engine remains the canonical research and backtest implementation. The incremental engine must preserve feature parity with it before it is allowed to replace the batch production scanner.
 
-The current batch implementation uses Python, Polars, PyArrow, historical Parquet files, and Cloudflare-produced daily JSON. This remains the reference implementation for reproducible research and backtesting.
+Incremental state contract v1 maintains only finite rolling windows needed for the current strategy:
 
-The production path should evolve toward an incremental state model:
+- close history for SMA5/10/20/50/200 and return20/60;
+- high history for prior 20/50-session breakout levels;
+- volume history for average volume and volume ratio;
+- true-range history for ATR14;
+- SMA50 history for the 10-session slope.
+
+The daily update model is:
 
 ```text
-previous feature state
+previous 32 state shards
         +
-new daily OHLCV
+new Cloudflare OHLCV
         ↓
-incremental rolling update
+partition bars by deterministic symbol shard
         ↓
-latest feature state
+32 durable Workflow update steps
         ↓
-stock ranking / regime
+new state shards + daily feature shards
         ↓
-R2 published outputs
+atomic metadata-pointer promotion
 ```
-
-Examples of incrementally maintainable state include rolling SMA windows, ATR state, 20/60-day reference closes, high/low windows, dollar-volume windows, ranking persistence, and market-regime inputs.
 
 The historical batch engine remains necessary for reproducible backtesting, validation, strategy changes, and full recomputation when methodology changes.
 
@@ -96,8 +109,10 @@ prices/
   daily-json/date=YYYY-MM-DD/bars.json    # Cloudflare production ingestion
 
 state/
-  latest/features.parquet
-  latest/rolling-state.parquet
+  rolling/v1/...                          # versioned incremental rolling state
+
+features/
+  daily/date=YYYY-MM-DD/shard=00..31.json
 
 rankings/
   date=YYYY-MM-DD/ranking.parquet
@@ -108,7 +123,8 @@ dashboard/
 
 metadata/
   latest-cloudflare-ingest.json
-  latest-market-data.json
+  latest-feature-state.json
+  latest-incremental-features.json
   latest-ranking.json
 
 reference/
@@ -118,13 +134,9 @@ regime/
   date=YYYY-MM-DD/regime.json
 ```
 
-Large Parquet datasets support research and backtests. Compact JSON objects support production ingestion and low-latency API/web delivery.
-
 ## ETF market-regime analysis
 
-ETF market data remains part of retained raw OHLCV history, but ETFs are excluded from the stock screener and Top-50 ranking.
-
-A later market-regime module will use SPY, QQQ, IWM, DIA, sector ETFs, HYG/LQD, TLT, GLD, and related ratios to estimate an allowed tactical-capital ceiling rather than generate stock candidates.
+ETF market data remains part of retained raw OHLCV history, but ETFs are excluded from the stock screener and Top-50 ranking. A later market-regime module will estimate an allowed tactical-capital ceiling rather than generate stock candidates.
 
 Actual tactical allocation remains the minimum of market risk capacity, available high-quality setups, and portfolio risk limits.
 
@@ -141,13 +153,14 @@ The web application is a read-oriented interactive research interface over preco
 5. Validate Worker production delivery, then remove the legacy static JSON fallback. **Pending.**
 6. Move daily Massive ingestion to Cloudflare Cron. **Completed.**
 7. Store normalized daily bars and ingestion metadata directly in R2. **Completed.**
-8. Make the scanner consume Cloudflare-produced daily data while retaining historical Parquet. **Completed in current cutover.**
-9. Remove daily Massive ingestion from GitHub Actions; keep scanner-only temporarily. **Completed in current cutover.**
-10. Introduce incremental production feature/ranking state. **Next major step.**
-11. Move production scanner into Cloudflare Workflow.
-12. Remove GitHub Actions production scanner entirely; GitHub Actions remains for CI/tests/lint/deployment only.
-13. Expand Worker API to historical rankings, symbol views, ETF regime data, portfolio research, and backtest results.
-14. Optionally consolidate static frontend delivery into Workers Static Assets.
+8. Make the scanner consume Cloudflare-produced daily data while retaining historical Parquet. **Completed.**
+9. Remove daily Massive ingestion from GitHub Actions; keep scanner-only temporarily. **Completed.**
+10. Define and persist incremental rolling-state contract with batch parity tests. **Completed.**
+11. Run incremental feature/state updates in a scheduled Cloudflare Workflow. **Implemented; production validation pending.**
+12. Add incremental cross-sectional ranking/persistence and compare against batch ranking.
+13. Remove GitHub Actions production scanner once parity is established; retain CI/tests/lint/deployment only.
+14. Expand Worker API to historical rankings, symbol views, ETF regime data, portfolio research, and backtest results.
+15. Optionally consolidate static frontend delivery into Workers Static Assets.
 
 ## Target steady state
 
