@@ -26,7 +26,7 @@ class RankingConfig(BaseModel):
     volume_weight: float = 0.10
 
     @model_validator(mode="after")
-    def weights_sum_to_one(self) -> "RankingConfig":
+    def weights_sum_to_one(self) -> RankingConfig:
         total = (
             self.rs20_weight
             + self.rs60_weight
@@ -46,7 +46,7 @@ class PortfolioConfig(BaseModel):
     top_leader_option_count: int = Field(default=3, ge=0)
 
     @model_validator(mode="after")
-    def reserve_bounds_are_valid(self) -> "PortfolioConfig":
+    def reserve_bounds_are_valid(self) -> PortfolioConfig:
         if self.emergency_reserve_min_fraction > self.emergency_reserve_max_fraction:
             raise ValueError("emergency reserve minimum cannot exceed maximum")
         return self
