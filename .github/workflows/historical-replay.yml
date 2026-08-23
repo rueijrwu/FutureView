@@ -1,0 +1,60 @@
+name: Historical Replay Validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Historical trading date to replay"
+        required: true
+        default: "2026-08-20"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install FutureView
+        run: python -m pip install .
+
+      - name: Prepare isolated replay state, Massive bars, and batch reference
+        env:
+          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          REPLAY_DATE: ${{ inputs.date }}
+        run: python -m futureview.features.replay prepare --date "$REPLAY_DATE"
+
+      - name: Trigger Cloudflare replay workflow
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          REPLAY_DATE: ${{ inputs.date }}
+        run: |
+          ROOT="validation/replay/date=${REPLAY_DATE}"
+          PARAMS=$(printf '{"mode":"replay","target_date":"%s","state_metadata_key":"%s/source-state/metadata.json","bars_key":"%s/input/bars.json","root":"%s"}' \
+            "$REPLAY_DATE" "$ROOT" "$ROOT" "$ROOT")
+          npx --yes wrangler@latest workflows trigger futureview-incremental-features "$PARAMS"
+
+      - name: Compare Cloudflare incremental output with Python batch reference
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          REPLAY_DATE: ${{ inputs.date }}
+        run: python -m futureview.features.replay compare --date "$REPLAY_DATE" --timeout 300
