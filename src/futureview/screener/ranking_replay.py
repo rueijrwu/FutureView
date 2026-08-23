@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import time
 from datetime import date
 
 import polars as pl
@@ -20,6 +22,26 @@ from futureview.storage.r2 import R2Store
 
 LATEST_COMMON_STOCK_UNIVERSE_KEY = "metadata/latest-common-stock-universe.json"
 
+NUMERIC_COMPARE_COLUMNS = (
+    "rs20",
+    "rs60",
+    "rs20_rank",
+    "rs60_rank",
+    "volume_rank",
+    "trend_score",
+    "breakout_score",
+    "base_score",
+    "persistence_score",
+    "extension_penalty",
+    "stock_score",
+)
+INTEGER_COMPARE_COLUMNS = (
+    "base_rank",
+    "rank",
+    "rank_change_5d",
+    "rank_change_20d",
+)
+
 
 def _write_json(store: R2Store, key: str, payload: object) -> None:
     store.put_bytes(
@@ -31,6 +53,15 @@ def _write_json(store: R2Store, key: str, payload: object) -> None:
 
 def _read_json(store: R2Store, key: str) -> dict[str, object]:
     return json.loads(store.get_bytes(key))
+
+
+def _is_missing(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def prepare_ranking_replay(target_date: date) -> dict[str, object]:
@@ -146,11 +177,154 @@ def prepare_ranking_replay(target_date: date) -> dict[str, object]:
     return metadata
 
 
+def compare_ranking_replay(
+    target_date: date,
+    *,
+    timeout_seconds: int = 300,
+    atol: float = 1e-10,
+    rtol: float = 1e-10,
+) -> dict[str, object]:
+    store = R2Store.from_env()
+    root = f"validation/replay/date={target_date.isoformat()}"
+    metadata_key = f"{root}/cloudflare/ranking/metadata.json"
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        try:
+            cloudflare_metadata = _read_json(store, metadata_key)
+            break
+        except Exception:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("timed out waiting for Cloudflare ranking replay output") from None
+            time.sleep(5)
+
+    ranking_metadata = _read_json(store, f"{root}/ranking-metadata.json")
+    reference_payload = _read_json(store, str(ranking_metadata["ranking_reference_key"]))
+    actual_payload = _read_json(store, str(cloudflare_metadata["ranking_key"]))
+
+    reference_rows = reference_payload.get("rankings", [])
+    actual_rows = actual_payload.get("rankings", [])
+    if not isinstance(reference_rows, list) or not isinstance(actual_rows, list):
+        raise RuntimeError("invalid ranking replay payload")
+
+    reference = {
+        str(row["symbol"]): row
+        for row in reference_rows
+        if isinstance(row, dict) and row.get("symbol")
+    }
+    actual = {
+        str(row["symbol"]): row
+        for row in actual_rows
+        if isinstance(row, dict) and row.get("symbol")
+    }
+
+    reference_symbols = set(reference)
+    actual_symbols = set(actual)
+    missing_symbols = sorted(reference_symbols - actual_symbols)
+    unexpected_symbols = sorted(actual_symbols - reference_symbols)
+    common = sorted(reference_symbols.intersection(actual_symbols))
+
+    mismatches: list[dict[str, object]] = []
+    max_abs_error = 0.0
+    for symbol in common:
+        expected_row = reference[symbol]
+        observed_row = actual[symbol]
+        for column in NUMERIC_COMPARE_COLUMNS:
+            expected = expected_row.get(column)
+            observed = observed_row.get(column)
+            expected_missing = _is_missing(expected)
+            observed_missing = _is_missing(observed)
+            if expected_missing and observed_missing:
+                continue
+            if expected_missing != observed_missing:
+                mismatches.append(
+                    {
+                        "symbol": symbol,
+                        "column": column,
+                        "expected": expected,
+                        "actual": observed,
+                    }
+                )
+                continue
+            expected_f = float(expected)
+            observed_f = float(observed)
+            error = abs(expected_f - observed_f)
+            max_abs_error = max(max_abs_error, error)
+            if not math.isclose(expected_f, observed_f, rel_tol=rtol, abs_tol=atol):
+                mismatches.append(
+                    {
+                        "symbol": symbol,
+                        "column": column,
+                        "expected": expected_f,
+                        "actual": observed_f,
+                        "abs_error": error,
+                    }
+                )
+
+        for column in INTEGER_COMPARE_COLUMNS:
+            expected = expected_row.get(column)
+            observed = observed_row.get(column)
+            if expected is None and observed is None:
+                continue
+            if expected is None or observed is None or int(expected) != int(observed):
+                mismatches.append(
+                    {
+                        "symbol": symbol,
+                        "column": column,
+                        "expected": expected,
+                        "actual": observed,
+                    }
+                )
+
+    reference_top50 = [
+        str(row["symbol"])
+        for row in sorted(reference_rows, key=lambda row: int(row["rank"]))
+        if int(row["rank"]) <= 50
+    ]
+    actual_top50 = [
+        str(row["symbol"])
+        for row in sorted(actual_rows, key=lambda row: int(row["rank"]))
+        if int(row["rank"]) <= 50
+    ]
+    top50_ok = reference_top50 == actual_top50
+
+    coverage_ok = not missing_symbols and not unexpected_symbols
+    parity_ok = not mismatches
+    result = {
+        "date": target_date.isoformat(),
+        "reference_candidate_count": len(reference),
+        "cloudflare_candidate_count": len(actual),
+        "compared_symbol_count": len(common),
+        "missing_symbol_count": len(missing_symbols),
+        "unexpected_symbol_count": len(unexpected_symbols),
+        "mismatch_count": len(mismatches),
+        "max_abs_error": max_abs_error,
+        "coverage_status": "pass" if coverage_ok else "fail",
+        "parity_status": "pass" if parity_ok else "fail",
+        "top50_status": "pass" if top50_ok else "fail",
+        "status": "pass" if coverage_ok and parity_ok and top50_ok else "fail",
+        "sample_missing_symbols": missing_symbols[:20],
+        "sample_unexpected_symbols": unexpected_symbols[:20],
+        "sample_mismatches": mismatches[:20],
+        "reference_top50": reference_top50,
+        "cloudflare_top50": actual_top50,
+    }
+    _write_json(store, f"{root}/ranking-comparison.json", result)
+    if result["status"] != "pass":
+        raise RuntimeError(json.dumps(result, indent=2))
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", required=True)
+    parser.add_argument("--compare", action="store_true")
+    parser.add_argument("--timeout", type=int, default=300)
     args = parser.parse_args()
-    result = prepare_ranking_replay(date.fromisoformat(args.date))
+    target_date = date.fromisoformat(args.date)
+    if args.compare:
+        result = compare_ranking_replay(target_date, timeout_seconds=args.timeout)
+    else:
+        result = prepare_ranking_replay(target_date)
     print(json.dumps(result, indent=2, default=str))
 
 
