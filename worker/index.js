@@ -1,6 +1,7 @@
 const MASSIVE_BASE_URL = "https://api.massive.com";
 const CLOUDFLARE_INGEST_METADATA_KEY = "metadata/latest-cloudflare-ingest.json";
 const FEATURE_STATE_METADATA_KEY = "metadata/latest-feature-state.json";
+const RANKING_STATE_METADATA_KEY = "metadata/latest-ranking-state.json";
 
 function newYorkDateFromTimestamp(timestampMs) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -195,6 +196,14 @@ export default {
         env,
         FEATURE_STATE_METADATA_KEY,
         "incremental feature state has not been published yet",
+      );
+    }
+
+    if (url.pathname === "/api/ranking-state/status") {
+      return r2JsonResponse(
+        env,
+        RANKING_STATE_METADATA_KEY,
+        "incremental ranking state has not been published yet",
       );
     }
 
