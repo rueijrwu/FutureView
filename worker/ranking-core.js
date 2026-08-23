@@ -13,8 +13,14 @@ const DEFAULT_CONFIG = Object.freeze({
   extensionPenaltyMax: 0.12,
 });
 
+const RANKING_KEY_DECIMALS = 12;
+
 function finite(value) {
   return Number.isFinite(Number(value));
+}
+
+function quantizeRankingKey(value) {
+  return Number(Number(value).toFixed(RANKING_KEY_DECIMALS));
 }
 
 function averagePercentileRanks(rows, field) {
@@ -37,8 +43,9 @@ function averagePercentileRanks(rows, field) {
 function ordinalDescending(rows, field) {
   return [...rows]
     .sort((a, b) => {
-      const delta = Number(b[field]) - Number(a[field]);
-      if (delta !== 0) return delta;
+      const aKey = quantizeRankingKey(a[field]);
+      const bKey = quantizeRankingKey(b[field]);
+      if (bKey !== aKey) return bKey - aKey;
       const aSymbol = String(a.symbol);
       const bSymbol = String(b.symbol);
       if (aSymbol < bSymbol) return -1;
