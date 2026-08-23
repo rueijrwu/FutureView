@@ -33,13 +33,31 @@ Daily Top 50 is intended for both candidate discovery and human market familiari
 - `src/futureview/screener/` — filtering and cross-sectional ranking
 - `src/futureview/storage/` — DuckDB schemas and persistence
 - `src/futureview/backtest/` — event-driven portfolio simulation
-- future modules: market-data providers, analytics, options overlay, API, dashboard
+- `src/futureview/dashboard/` — presentation-only static snapshot export
+- `site/` — Cloudflare Pages static dashboard
+- future modules: concrete market-data providers, analytics, options overlay, API
 
 ## Data stack
 
 Python 3.12+, Polars, DuckDB, Parquet, PyArrow.
 
 Raw market data, derived features, ranking snapshots, portfolio state, and trade/position events are kept separate so research can be reproduced and strategy parameters can be changed without corrupting source data.
+
+## Cloudflare Pages
+
+FutureView uses a framework-free static dashboard so deployment remains independent from the Python research engine.
+
+Recommended Cloudflare Pages Git settings:
+
+- Production branch: `master`
+- Framework preset: `None`
+- Build command: `exit 0`
+- Build output directory: `site`
+- Root directory: repository root
+
+Pull-request branches receive Cloudflare preview deployments through the Git integration. The dashboard reads `site/data/latest.json`; the research pipeline writes this presentation snapshot after a successful daily ranking run.
+
+Historical OHLCV, full feature tables, and full ranking history should live in persistent object storage such as Cloudflare R2 rather than in the Git repository. Only compact presentation snapshots need to be published with the static dashboard.
 
 ## Development sequence
 
