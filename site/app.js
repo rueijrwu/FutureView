@@ -1,9 +1,15 @@
 const fmt = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 });
 
 function deltaClass(value) {
+  if (value === null || value === undefined) return "";
   if (value > 0) return "positive";
   if (value < 0) return "negative";
   return "";
+}
+
+function formatRankChange(value) {
+  if (value === null || value === undefined) return "NEW";
+  return `${value > 0 ? "+" : ""}${value}`;
 }
 
 function renderRanking(rows) {
@@ -17,16 +23,16 @@ function renderRanking(rows) {
 
   for (const row of rows) {
     const tr = document.createElement("tr");
-    const rank5d = row.rank_change_5d ?? 0;
-    const rank20d = row.rank_change_20d ?? 0;
+    const rank5d = row.rank_change_5d;
+    const rank20d = row.rank_change_20d;
     tr.innerHTML = `
       <td>${row.rank ?? "—"}</td>
       <td class="symbol">${row.symbol ?? "—"}</td>
       <td>${fmt.format(row.stock_score ?? 0)}</td>
       <td>${fmt.format(row.rs20 ?? 0)}</td>
       <td>${fmt.format(row.rs60 ?? 0)}</td>
-      <td class="${deltaClass(rank5d)}">${rank5d > 0 ? "+" : ""}${rank5d}</td>
-      <td class="${deltaClass(rank20d)}">${rank20d > 0 ? "+" : ""}${rank20d}</td>
+      <td class="${deltaClass(rank5d)}">${formatRankChange(rank5d)}</td>
+      <td class="${deltaClass(rank20d)}">${formatRankChange(rank20d)}</td>
       <td>${fmt.format(row.extension_atr ?? 0)}</td>
       <td class="breakout ${row.breakout20 ? "positive" : ""}">${row.breakout20 ? "YES" : "—"}</td>
     `;

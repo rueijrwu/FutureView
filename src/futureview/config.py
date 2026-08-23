@@ -19,11 +19,15 @@ class ScreenerConfig(BaseModel):
 
 
 class RankingConfig(BaseModel):
-    rs20_weight: float = 0.30
-    rs60_weight: float = 0.25
+    rs20_weight: float = 0.25
+    rs60_weight: float = 0.20
     trend_weight: float = 0.20
     breakout_weight: float = 0.15
     volume_weight: float = 0.10
+    persistence_weight: float = 0.10
+    persistence_lookback: int = Field(default=20, ge=2)
+    extension_penalty_start_atr: float = Field(default=1.5, ge=0)
+    extension_penalty_max: float = Field(default=0.12, ge=0)
 
     @model_validator(mode="after")
     def weights_sum_to_one(self) -> RankingConfig:
@@ -33,6 +37,7 @@ class RankingConfig(BaseModel):
             + self.trend_weight
             + self.breakout_weight
             + self.volume_weight
+            + self.persistence_weight
         )
         if abs(total - 1.0) > 1e-9:
             raise ValueError(f"ranking weights must sum to 1.0, got {total:.6f}")
