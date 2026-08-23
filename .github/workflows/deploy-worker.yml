@@ -2,6 +2,13 @@ name: Deploy FutureView Worker
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - "worker/**"
+      - "wrangler.jsonc"
+      - ".github/workflows/deploy-worker.yml"
 
 permissions:
   contents: read
