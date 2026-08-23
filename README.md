@@ -22,6 +22,10 @@ FutureView is a point-in-time market research platform for systematic screening,
 
 ## Initial screener
 
+The baseline scanner ranks **active U.S. common stocks only**. Massive ticker-reference metadata is used to restrict the ranking universe to `type=CS`, so ETFs are excluded before cross-sectional scoring and Top-50 selection.
+
+ETF OHLCV is intentionally retained in the historical R2 database. It is not currently part of the stock screener, but will be reused later for market-regime and capital-allocation research.
+
 The baseline universe filter favors liquid, established right-side trends. The ranking model combines 20-day and 60-day relative strength, trend quality, breakout strength, and volume confirmation, with an extension constraint based on ATR.
 
 Daily Top 50 is intended for both candidate discovery and human market familiarization. Historical ranking snapshots are first-class data so ranking trajectory and forward returns can be studied without look-ahead.
@@ -35,7 +39,7 @@ Daily Top 50 is intended for both candidate discovery and human market familiari
 - `src/futureview/backtest/` — event-driven portfolio simulation
 - `src/futureview/dashboard/` — presentation-only static snapshot export
 - `site/` — Cloudflare Pages static dashboard
-- future modules: concrete market-data providers, analytics, options overlay, API
+- future modules: analytics, ETF regime analysis, options overlay, API
 
 ## Data stack
 
@@ -63,11 +67,11 @@ Historical OHLCV, full feature tables, and full ranking history should live in p
 
 Phase 1: data provider + historical database + feature engine.
 
-Phase 2: Top-50 screener + ranking history + forward-return analytics.
+Phase 2: Top-50 common-stock screener + ranking history + forward-return analytics.
 
 Phase 3: underlying-only event-driven backtest including new-high profit taking and 5/10-day moving-average exits.
 
-Phase 4: Core/Reserve/Tactical dynamic allocation and market-regime logic.
+Phase 4: ETF-based market-regime analysis and Core/Reserve/Tactical dynamic allocation. The retained ETF history will be used to study broad-market trend, risk appetite, sector leadership, defensive rotation, credit conditions, and other signals that can determine the allowed tactical-capital ceiling and reservoir cash posture. ETF signals will control risk capacity rather than enter the stock Top-50 ranking.
 
 Phase 5: historical option-chain layer and Top-1-to-3 leader call overlay.
 

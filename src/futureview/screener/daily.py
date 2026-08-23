@@ -10,6 +10,7 @@ import polars as pl
 
 from futureview.config import load_strategy_config
 from futureview.dashboard.export import write_dashboard_snapshot
+from futureview.data.massive import MassiveMarketDataProvider
 from futureview.screener.pipeline import build_ranking_history, top_n_for_date
 from futureview.storage.r2 import R2Store
 
@@ -91,10 +92,16 @@ def run_daily_scanner(
     store = R2Store.from_env()
     prices = _load_price_history(store)
     config = load_strategy_config(config_path)
+    provider = MassiveMarketDataProvider.from_env()
+    common_stock_symbols = provider.fetch_active_common_stock_symbols()
 
-    ranking_history = build_ranking_history(prices, config)
+    ranking_history = build_ranking_history(
+        prices,
+        config,
+        eligible_symbols=common_stock_symbols,
+    )
     if ranking_history.is_empty():
-        raise RuntimeError("No securities passed the configured hard filters.")
+        raise RuntimeError("No common stocks passed the configured hard filters.")
 
     latest_date = ranking_history.select(pl.col("date").max()).item()
     if not isinstance(latest_date, date):
@@ -109,7 +116,10 @@ def run_daily_scanner(
     _write_parquet(store, latest_all, ranking_key)
     _write_parquet(store, top50, top_key)
 
-    universe_count = prices.filter(pl.col("date") == latest_date).height
+    latest_prices = prices.filter(pl.col("date") == latest_date)
+    universe_count = latest_prices.filter(
+        pl.col("symbol").is_in(sorted(common_stock_symbols))
+    ).height
     write_dashboard_snapshot(
         top50,
         dashboard_path,
@@ -122,6 +132,7 @@ def run_daily_scanner(
 
     metadata = {
         "date": latest_date.isoformat(),
+        "universe": "active_common_stocks",
         "universe_count": universe_count,
         "ranked_count": latest_all.height,
         "top_count": top50.height,
@@ -141,7 +152,7 @@ def main() -> None:
     trading_date, ranked_count, top_count = run_daily_scanner()
     print(
         f"scanner complete for {trading_date}: "
-        f"{ranked_count} ranked securities, {top_count} dashboard rows"
+        f"{ranked_count} ranked common stocks, {top_count} dashboard rows"
     )
 
 

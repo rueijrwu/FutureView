@@ -16,9 +16,16 @@ def build_feature_history(prices: pl.DataFrame, config: StrategyConfig) -> pl.Da
     return add_relative_strength(features, benchmark_symbol=config.benchmark)
 
 
-def build_ranking_history(prices: pl.DataFrame, config: StrategyConfig) -> pl.DataFrame:
+def build_ranking_history(
+    prices: pl.DataFrame,
+    config: StrategyConfig,
+    *,
+    eligible_symbols: set[str] | None = None,
+) -> pl.DataFrame:
     """Run hard filters and cross-sectional ranking for every available date."""
     features = build_feature_history(prices, config)
+    if eligible_symbols is not None:
+        features = features.filter(pl.col("symbol").is_in(sorted(eligible_symbols)))
     candidates = apply_hard_filters(features, config.screener)
     return rank_cross_sections(candidates, config.ranking)
 
