@@ -20,12 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy Worker
-        uses: cloudflare/wrangler-action@v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.R2_ACCOUNT_ID }}
-          secrets: |
-            MASSIVE_API_KEY
+      - name: Deploy Worker and Workflow
         env:
-          MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        run: npx --yes wrangler@4.125.0 deploy
