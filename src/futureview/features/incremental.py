@@ -41,7 +41,7 @@ class RollingSymbolState:
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "RollingSymbolState":
+    def from_dict(cls, payload: dict[str, Any]) -> RollingSymbolState:
         return cls(
             symbol=str(payload["symbol"]),
             as_of=date.fromisoformat(str(payload["as_of"])),
@@ -124,7 +124,8 @@ def bootstrap_states(history: pl.DataFrame) -> dict[str, RollingSymbolState]:
         raise ValueError(f"price frame is missing required columns: {sorted(missing)}")
 
     states: dict[str, RollingSymbolState] = {}
-    for key, rows in history.sort(["symbol", "date"]).partition_by("symbol", as_dict=True).items():
+    partitions = history.sort(["symbol", "date"]).partition_by("symbol", as_dict=True)
+    for key, rows in partitions.items():
         symbol = key[0] if isinstance(key, tuple) else key
         if rows.height >= 200:
             states[str(symbol)] = bootstrap_symbol_state(rows, str(symbol))

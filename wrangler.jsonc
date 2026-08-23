@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "futureview",
-  "main": "./worker/index.js",
+  "main": "./worker/main.js",
   "compatibility_date": "2026-08-23",
   "assets": {
     "directory": "./site",
@@ -12,6 +12,14 @@
     {
       "binding": "RESEARCH",
       "bucket_name": "futureview-data"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "futureview-incremental-features",
+      "binding": "INCREMENTAL_FEATURES",
+      "class_name": "IncrementalFeatureWorkflow",
+      "schedules": ["40 23 * * 1-5"]
     }
   ],
   "triggers": {
