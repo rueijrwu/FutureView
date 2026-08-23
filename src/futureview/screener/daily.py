@@ -11,6 +11,12 @@ import polars as pl
 from futureview.config import load_strategy_config
 from futureview.dashboard.export import write_dashboard_snapshot
 from futureview.data.massive import MassiveMarketDataProvider
+from futureview.features.incremental import (
+    STATE_SHARDS,
+    STATE_VERSION,
+    bootstrap_states,
+    state_shard,
+)
 from futureview.screener.pipeline import build_ranking_history, top_n_for_date
 from futureview.storage.r2 import R2Store
 
@@ -20,6 +26,7 @@ PARQUET_PRICE_SUFFIX = "/bars.parquet"
 JSON_PRICE_PREFIX = "prices/daily-json/date="
 JSON_PRICE_SUFFIX = "/bars.json"
 DASHBOARD_KEY = "dashboard/latest.json"
+STATE_PREFIX = f"state/rolling/v{STATE_VERSION}"
 
 
 def _price_keys(store: R2Store, prefix: str, suffix: str) -> list[str]:
@@ -120,6 +127,52 @@ def _write_parquet(store: R2Store, frame: pl.DataFrame, key: str) -> None:
     store.put_bytes(key, buffer.getvalue(), content_type="application/vnd.apache.parquet")
 
 
+def _write_incremental_state(store: R2Store, prices: pl.DataFrame, as_of: date) -> dict[str, object]:
+    states = bootstrap_states(prices)
+    shards: list[list[dict[str, object]]] = [[] for _ in range(STATE_SHARDS)]
+    for symbol, state in sorted(states.items()):
+        shards[state_shard(symbol)].append(state.to_dict())
+
+    keys: list[str] = []
+    for shard_id, records in enumerate(shards):
+        key = f"{STATE_PREFIX}/shard={shard_id:02d}.json"
+        payload = {
+            "version": STATE_VERSION,
+            "as_of": as_of.isoformat(),
+            "shard": shard_id,
+            "shard_count": STATE_SHARDS,
+            "count": len(records),
+            "states": records,
+        }
+        store.put_bytes(
+            key,
+            json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            content_type="application/json",
+        )
+        keys.append(key)
+
+    metadata: dict[str, object] = {
+        "version": STATE_VERSION,
+        "as_of": as_of.isoformat(),
+        "shard_count": STATE_SHARDS,
+        "symbol_count": len(states),
+        "prefix": STATE_PREFIX,
+        "keys": keys,
+        "updated_at": datetime.now(tz=NEW_YORK).isoformat(),
+    }
+    store.put_bytes(
+        f"{STATE_PREFIX}/metadata.json",
+        json.dumps(metadata, indent=2).encode("utf-8"),
+        content_type="application/json",
+    )
+    store.put_bytes(
+        "metadata/latest-feature-state.json",
+        json.dumps(metadata, indent=2).encode("utf-8"),
+        content_type="application/json",
+    )
+    return metadata
+
+
 def run_daily_scanner(
     *,
     config_path: str | Path = "config/strategy.yaml",
@@ -152,6 +205,8 @@ def run_daily_scanner(
     _write_parquet(store, latest_all, ranking_key)
     _write_parquet(store, top50, top_key)
 
+    state_metadata = _write_incremental_state(store, prices, latest_date)
+
     latest_prices = prices.filter(pl.col("date") == latest_date)
     universe_count = latest_prices.filter(
         pl.col("symbol").is_in(sorted(common_stock_symbols))
@@ -181,6 +236,12 @@ def run_daily_scanner(
         "top_key": top_key,
         "dashboard_key": DASHBOARD_KEY,
         "market_data_sources": ["r2_parquet_history", "cloudflare_daily_json"],
+        "feature_state": {
+            "version": state_metadata["version"],
+            "prefix": state_metadata["prefix"],
+            "shard_count": state_metadata["shard_count"],
+            "symbol_count": state_metadata["symbol_count"],
+        },
         "updated_at": datetime.now(tz=NEW_YORK).isoformat(),
     }
     store.put_bytes(
