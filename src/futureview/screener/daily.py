@@ -17,6 +17,7 @@ from futureview.storage.r2 import R2Store
 NEW_YORK = ZoneInfo("America/New_York")
 PRICE_PREFIX = "prices/daily/date="
 PRICE_SUFFIX = "/bars.parquet"
+DASHBOARD_KEY = "dashboard/latest.json"
 
 
 def _price_keys(store: R2Store) -> list[str]:
@@ -120,7 +121,7 @@ def run_daily_scanner(
     universe_count = latest_prices.filter(
         pl.col("symbol").is_in(sorted(common_stock_symbols))
     ).height
-    write_dashboard_snapshot(
+    dashboard_file = write_dashboard_snapshot(
         top50,
         dashboard_path,
         as_of=latest_date,
@@ -128,6 +129,11 @@ def run_daily_scanner(
         market_regime="Research",
         cash_posture="Rule-based",
         top_n=config.screener.top_n,
+    )
+    store.put_bytes(
+        DASHBOARD_KEY,
+        dashboard_file.read_bytes(),
+        content_type="application/json",
     )
 
     metadata = {
@@ -138,6 +144,7 @@ def run_daily_scanner(
         "top_count": top50.height,
         "ranking_key": ranking_key,
         "top_key": top_key,
+        "dashboard_key": DASHBOARD_KEY,
         "updated_at": datetime.now(tz=NEW_YORK).isoformat(),
     }
     store.put_bytes(
