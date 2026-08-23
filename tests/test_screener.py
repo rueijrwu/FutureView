@@ -1,9 +1,18 @@
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 
 from futureview.config import RankingConfig, ScreenerConfig
 from futureview.screener.filters import apply_hard_filters
+from futureview.screener.incremental_ranking import (
+    RankingSymbolState,
+    advance_ranking_state,
+    bootstrap_ranking_states,
+    new_ranking_state,
+    persistence_for_current_session,
+    rank_changes_for_current_session,
+    ranking_state_shard,
+)
 from futureview.screener.ranking import rank_cross_sections
 
 
@@ -38,3 +47,60 @@ def test_stronger_candidate_ranks_first() -> None:
     ranked = rank_cross_sections(filtered, RankingConfig())
     assert ranked.row(0, named=True)["symbol"] == "AAA"
     assert ranked.row(0, named=True)["rank"] == 1
+
+
+def test_ranking_state_bootstrap_includes_absent_sessions_as_zero() -> None:
+    start = date(2026, 7, 1)
+    rows: list[dict[str, object]] = []
+    for offset in range(25):
+        session = start + timedelta(days=offset)
+        rows.append({"symbol": "AAA", "date": session, "base_rank": 10, "rank": 12})
+        if offset not in {3, 7, 20}:
+            rows.append({"symbol": "BBB", "date": session, "base_rank": 40, "rank": 44})
+
+    states = bootstrap_ranking_states(pl.DataFrame(rows))
+    bbb = states["BBB"]
+    assert len(bbb.base_top50_flags) == 19
+    assert sum(bbb.base_top50_flags) == 17
+    assert len(bbb.rank_history) == 20
+    assert bbb.rank_history[-5] is None
+    assert bbb.rank_history[-20] == 44
+
+
+def test_incremental_ranking_state_matches_persistence_and_rank_change_semantics() -> None:
+    state = RankingSymbolState(
+        symbol="AAA",
+        as_of=date(2026, 8, 19),
+        base_top50_flags=(1,) * 18 + (0,),
+        rank_history=tuple(range(21, 1, -1)),
+    )
+
+    persistence = persistence_for_current_session(state, is_base_top50=True)
+    assert persistence == 0.95
+
+    change_5d, change_20d = rank_changes_for_current_session(state, current_rank=3)
+    assert change_5d == 4
+    assert change_20d == 18
+
+    next_state = advance_ranking_state(
+        state,
+        trading_date=date(2026, 8, 20),
+        is_base_top50=True,
+        current_rank=3,
+    )
+    assert next_state.base_top50_flags[-1] == 1
+    assert len(next_state.base_top50_flags) == 19
+    assert next_state.rank_history[-1] == 3
+    assert len(next_state.rank_history) == 20
+
+
+def test_new_symbol_state_backfills_prior_sessions_and_round_trips() -> None:
+    state = new_ranking_state(
+        "NEW",
+        as_of=date(2026, 8, 19),
+        prior_session_count=100,
+    )
+    assert state.base_top50_flags == (0,) * 19
+    assert state.rank_history == (None,) * 20
+    assert RankingSymbolState.from_dict(state.to_dict()) == state
+    assert ranking_state_shard("NEW") == ranking_state_shard("NEW")
