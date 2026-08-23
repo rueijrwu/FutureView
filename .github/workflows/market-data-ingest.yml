@@ -24,14 +24,16 @@ on:
     - cron: "15 22 * * 1-5"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  ingest:
+  ingest-and-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: master
 
       - uses: actions/setup-python@v5
         with:
@@ -59,3 +61,23 @@ jobs:
             ARGS+=(--date "$INPUT_DATE")
           fi
           python -m futureview.data.ingest "${ARGS[@]}"
+
+      - name: Build daily ranking and dashboard snapshot
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: python -m futureview.screener.daily
+
+      - name: Publish dashboard snapshot to master
+        run: |
+          if git diff --quiet -- site/data/latest.json; then
+            echo "Dashboard snapshot is unchanged."
+            exit 0
+          fi
+          git config user.name "futureview-bot"
+          git config user.email "futureview-bot@users.noreply.github.com"
+          git add site/data/latest.json
+          git commit -m "Update daily FutureView ranking"
+          git push origin HEAD:master
