@@ -127,7 +127,11 @@ def _write_parquet(store: R2Store, frame: pl.DataFrame, key: str) -> None:
     store.put_bytes(key, buffer.getvalue(), content_type="application/vnd.apache.parquet")
 
 
-def _write_incremental_state(store: R2Store, prices: pl.DataFrame, as_of: date) -> dict[str, object]:
+def _write_incremental_state(
+    store: R2Store,
+    prices: pl.DataFrame,
+    as_of: date,
+) -> dict[str, object]:
     states = bootstrap_states(prices)
     shards: list[list[dict[str, object]]] = [[] for _ in range(STATE_SHARDS)]
     for symbol, state in sorted(states.items()):
