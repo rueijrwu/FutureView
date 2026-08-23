@@ -28,6 +28,7 @@ JSON_PRICE_PREFIX = "prices/daily-json/date="
 JSON_PRICE_SUFFIX = "/bars.json"
 DASHBOARD_KEY = "dashboard/latest.json"
 STATE_PREFIX = f"state/rolling/v{STATE_VERSION}"
+LATEST_COMMON_STOCK_UNIVERSE_KEY = "metadata/latest-common-stock-universe.json"
 
 
 def _price_keys(store: R2Store, prefix: str, suffix: str) -> list[str]:
@@ -178,6 +179,46 @@ def _write_incremental_state(
     return metadata
 
 
+def _publish_common_stock_universe(
+    store: R2Store,
+    symbols: set[str],
+    *,
+    as_of: date,
+) -> dict[str, object]:
+    sorted_symbols = sorted(symbols)
+    data_key = f"reference/tickers/date={as_of.isoformat()}/common-stocks.json"
+    payload = {
+        "as_of": as_of.isoformat(),
+        "market": "stocks",
+        "type": "CS",
+        "active": True,
+        "count": len(sorted_symbols),
+        "symbols": sorted_symbols,
+        "source": "massive",
+        "producer": "python-batch-reference",
+        "updated_at": datetime.now(tz=NEW_YORK).isoformat(),
+    }
+    store.put_bytes(
+        data_key,
+        json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        content_type="application/json",
+    )
+    metadata: dict[str, object] = {
+        "as_of": as_of.isoformat(),
+        "count": len(sorted_symbols),
+        "data_key": data_key,
+        "source": "massive",
+        "producer": "python-batch-reference",
+        "updated_at": payload["updated_at"],
+    }
+    store.put_bytes(
+        LATEST_COMMON_STOCK_UNIVERSE_KEY,
+        json.dumps(metadata, indent=2).encode("utf-8"),
+        content_type="application/json",
+    )
+    return metadata
+
+
 def run_daily_scanner(
     *,
     config_path: str | Path = "config/strategy.yaml",
@@ -200,6 +241,12 @@ def run_daily_scanner(
     latest_date = ranking_history.select(pl.col("date").max()).item()
     if not isinstance(latest_date, date):
         raise TypeError("ranking history did not contain a valid latest date")
+
+    universe_metadata = _publish_common_stock_universe(
+        store,
+        common_stock_symbols,
+        as_of=latest_date,
+    )
 
     latest_all = ranking_history.filter(pl.col("date") == latest_date).sort("rank")
     latest_all = _with_rank_changes(ranking_history, latest_all)
@@ -246,6 +293,7 @@ def run_daily_scanner(
         "top_key": top_key,
         "dashboard_key": DASHBOARD_KEY,
         "market_data_sources": ["r2_parquet_history", "cloudflare_daily_json"],
+        "common_stock_universe": universe_metadata,
         "feature_state": {
             "version": state_metadata["version"],
             "prefix": state_metadata["prefix"],
