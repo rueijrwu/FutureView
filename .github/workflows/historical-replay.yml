@@ -106,3 +106,14 @@ jobs:
           PARAMS=$(printf '{"target_date":"%s","root":"%s","ranking_state_metadata_key":"%s/source-ranking-state/metadata.json","universe_key":"%s/input/common-stocks.json"}' \
             "$REPLAY_DATE" "$ROOT" "$ROOT" "$ROOT")
           npx --yes wrangler@latest workflows trigger futureview-ranking-replay "$PARAMS"
+
+      - name: Compare Cloudflare ranking output with Python batch reference
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          REPLAY_DATE: ${{ inputs.date }}
+        run: >-
+          python -m futureview.screener.ranking_replay
+          --date "$REPLAY_DATE" --compare --timeout 300
