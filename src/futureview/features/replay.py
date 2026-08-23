@@ -58,6 +58,15 @@ def _read_json(store: R2Store, key: str) -> dict[str, object]:
     return json.loads(store.get_bytes(key))
 
 
+def _is_missing(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        return math.isnan(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
 def prepare_historical_replay(target_date: date) -> dict[str, object]:
     store = R2Store.from_env()
     prices = _load_price_history(store)
@@ -172,6 +181,23 @@ def compare_historical_replay(
     if not isinstance(reference, dict):
         raise RuntimeError("invalid replay reference payload")
 
+    replay_metadata = _read_json(store, f"{root}/metadata.json")
+    source_state_metadata = _read_json(store, str(replay_metadata["state_metadata_key"]))
+    source_symbols: set[str] = set()
+    for key in source_state_metadata.get("keys", []):
+        payload = _read_json(store, str(key))
+        for row in payload.get("states", []):
+            if isinstance(row, dict) and row.get("symbol"):
+                source_symbols.add(str(row["symbol"]))
+
+    bars_payload = _read_json(store, str(replay_metadata["bars_key"]))
+    bar_symbols = {
+        str(row["symbol"])
+        for row in bars_payload.get("bars", [])
+        if isinstance(row, dict) and row.get("symbol")
+    }
+    expected_incremental_symbols = source_symbols.intersection(bar_symbols)
+
     actual: dict[str, dict[str, object]] = {}
     for key in cloudflare_metadata.get("feature_keys", []):
         payload = _read_json(store, str(key))
@@ -179,7 +205,11 @@ def compare_historical_replay(
             if isinstance(row, dict) and row.get("symbol"):
                 actual[str(row["symbol"])] = row
 
-    common = sorted(set(reference).intersection(actual))
+    actual_symbols = set(actual)
+    missing_symbols = sorted(expected_incremental_symbols - actual_symbols)
+    unexpected_symbols = sorted(actual_symbols - expected_incremental_symbols)
+    common = sorted(expected_incremental_symbols.intersection(actual_symbols).intersection(reference))
+
     mismatches: list[dict[str, object]] = []
     max_abs_error = 0.0
     for symbol in common:
@@ -190,9 +220,11 @@ def compare_historical_replay(
         for column in COMPARE_COLUMNS:
             expected = expected_row.get(column)
             observed = actual_row.get(column)
-            if expected is None and observed is None:
+            expected_missing = _is_missing(expected)
+            observed_missing = _is_missing(observed)
+            if expected_missing and observed_missing:
                 continue
-            if expected is None or observed is None:
+            if expected_missing != observed_missing:
                 mismatches.append(
                     {"symbol": symbol, "column": column, "expected": expected, "actual": observed}
                 )
@@ -222,18 +254,29 @@ def compare_historical_replay(
                     }
                 )
 
+    coverage_ok = not missing_symbols and not unexpected_symbols
+    parity_ok = not mismatches
     result = {
         "date": target_date.isoformat(),
-        "reference_count": len(reference),
+        "batch_reference_count": len(reference),
+        "source_state_symbol_count": len(source_symbols),
+        "target_bar_symbol_count": len(bar_symbols),
+        "expected_incremental_symbol_count": len(expected_incremental_symbols),
         "cloudflare_count": len(actual),
         "compared_symbol_count": len(common),
+        "missing_symbol_count": len(missing_symbols),
+        "unexpected_symbol_count": len(unexpected_symbols),
         "mismatch_count": len(mismatches),
         "max_abs_error": max_abs_error,
-        "status": "pass" if not mismatches else "fail",
+        "coverage_status": "pass" if coverage_ok else "fail",
+        "parity_status": "pass" if parity_ok else "fail",
+        "status": "pass" if coverage_ok and parity_ok else "fail",
+        "sample_missing_symbols": missing_symbols[:20],
+        "sample_unexpected_symbols": unexpected_symbols[:20],
         "sample_mismatches": mismatches[:20],
     }
     _write_json(store, f"{root}/comparison.json", result)
-    if mismatches:
+    if not coverage_ok or not parity_ok:
         raise RuntimeError(json.dumps(result, indent=2))
     return result
 
