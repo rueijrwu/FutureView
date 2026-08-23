@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 import polars as pl
@@ -155,6 +155,47 @@ class MassiveMarketDataProvider:
         if status not in (None, "OK"):
             raise MassiveAPIError(f"Massive returned status {status!r}")
         return grouped_daily_payload_to_frame(payload, trading_date)
+
+    def fetch_active_common_stock_symbols(self) -> set[str]:
+        """Return the current active U.S. common-stock universe (Massive type CS)."""
+        params: dict[str, object] = {
+            "market": "stocks",
+            "type": "CS",
+            "active": "true",
+            "limit": 1000,
+            "sort": "ticker",
+            "order": "asc",
+        }
+        symbols: set[str] = set()
+        path = "/v3/reference/tickers"
+
+        while True:
+            payload = self._get_json(path, params)
+            results = payload.get("results")
+            if isinstance(results, list):
+                for item in results:
+                    if not isinstance(item, dict):
+                        continue
+                    ticker = item.get("ticker")
+                    if ticker:
+                        symbols.add(str(ticker))
+
+            next_url = payload.get("next_url")
+            if not isinstance(next_url, str) or not next_url:
+                break
+
+            parsed = urlsplit(next_url)
+            path = parsed.path
+            params = {
+                key: value
+                for key, value in parse_qsl(parsed.query)
+                if key.lower() != "apikey"
+            }
+            time.sleep(13.0)
+
+        if not symbols:
+            raise MassiveAPIError("Massive returned an empty active common-stock universe")
+        return symbols
 
     def fetch_latest_available_daily(
         self,
