@@ -1,5 +1,5 @@
 const MASSIVE_BASE_URL = "https://api.massive.com";
-const CLOUDFARE_INGEST_METADATA_KEY = "metadata/latest-cloudflare-ingest.json";
+const CLOUDFLARE_INGEST_METADATA_KEY = "metadata/latest-cloudflare-ingest.json";
 
 function newYorkDateFromTimestamp(timestampMs) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -107,7 +107,7 @@ async function ingestLatestAvailableSession(env, scheduledTime) {
       mode: "shadow",
     };
 
-    await env.RESEARCH.put(CLOUDFARE_INGEST_METADATA_KEY, JSON.stringify(metadata), {
+    await env.RESEARCH.put(CLOUDFLARE_INGEST_METADATA_KEY, JSON.stringify(metadata), {
       httpMetadata: { contentType: "application/json; charset=utf-8" },
     });
 
@@ -154,7 +154,7 @@ export default {
     if (url.pathname === "/api/ingest/status") {
       return r2JsonResponse(
         env,
-        CLOUDFARE_INGEST_METADATA_KEY,
+        CLOUDFLARE_INGEST_METADATA_KEY,
         "Cloudflare ingestion has not completed yet",
       );
     }
