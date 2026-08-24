@@ -6,6 +6,7 @@ node_modules/
 .wrangler.local.json
 .local-state/
 .local-sync/
+.local-data/
 .local-backtest/
 .DS_Store
 *.log
