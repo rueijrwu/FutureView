@@ -59,7 +59,10 @@ async function loadUniverse(bucket) {
 
 async function loadPriorRankingState(bucket) {
   const metadata = await readJsonOrNull(bucket, LATEST_RANKING_STATE_KEY);
-  if (metadata === null) {
+  const canonicalState = metadata !== null
+    && String(metadata.producer ?? "").startsWith("cloudflare")
+    && metadata.strategy_version === STRATEGY_VERSION;
+  if (!canonicalState) {
     return { states: new Map(), priorSessionCount: 0, asOf: null };
   }
   if (
@@ -189,8 +192,6 @@ export async function runProductionRanking({
   };
   await writeJson(bucket, metadataKey, rankingMetadata);
 
-  // D1 is the query/index layer. A D1 failure blocks latest-pointer promotion,
-  // while complete date-scoped R2 artifacts remain available for diagnosis/retry.
   await ensureStrategyVersion(db);
   await persistRankingToD1(db, {
     rankingMetadata,
