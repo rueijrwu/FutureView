@@ -181,18 +181,25 @@ export async function runProductionRanking({ bucket, featureKeys, tradingDate, w
     producer: "cloudflare-js",
     updated_at: now,
   };
-
-  // Promote latest objects only after every date-scoped artifact has succeeded.
-  await writeJson(bucket, LATEST_RANKING_STATE_KEY, stateMetadata);
-  await writeJson(bucket, LATEST_RANKING_KEY, rankingMetadata);
-  await writeJson(bucket, LATEST_TOP50_KEY, {
+  const top50Pointer = {
     date: tradingDate,
     count: top50.length,
     data_key: top50Key,
     producer: "cloudflare-js",
     updated_at: now,
-  });
-  await writeJson(bucket, DASHBOARD_KEY, dashboard);
+  };
 
-  return rankingMetadata;
+  return {
+    rankingMetadata,
+    stateMetadata,
+    dashboard,
+    top50Pointer,
+  };
+}
+
+export async function promoteProductionRanking(bucket, staged) {
+  await writeJson(bucket, LATEST_RANKING_STATE_KEY, staged.stateMetadata);
+  await writeJson(bucket, LATEST_RANKING_KEY, staged.rankingMetadata);
+  await writeJson(bucket, LATEST_TOP50_KEY, staged.top50Pointer);
+  await writeJson(bucket, DASHBOARD_KEY, staged.dashboard);
 }
