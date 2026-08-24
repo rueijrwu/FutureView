@@ -27,6 +27,7 @@ The core rules are:
 5. **Reduce exposure progressively as trend structure deteriorates.**
 6. **Let strong trends continue instead of taking profit simply because a stock reaches a new high.**
 7. **Use stock-specific risk and profit-management levels when volatility or structure requires it.**
+8. **Concentrate offensive capital in the strongest market sectors rather than spreading capital mechanically across weak groups.**
 
 The ranking model should therefore answer:
 
@@ -172,6 +173,133 @@ volume expands
 This is preferable to chasing a stock that has already become highly volatile and vertically extended.
 
 Base quality and volatility contraction should therefore be important ranking inputs.
+
+---
+
+## Ranking Philosophy
+
+The ranking engine should primarily evaluate **setup quality**, not historical return alone.
+
+The ranking should emphasize five questions:
+
+### 1. Trend existence
+
+Does a bullish trend actually exist?
+
+### 2. Trend strength
+
+Is the trend strong enough to justify offensive exposure?
+
+### 3. Trend confirmation
+
+Is the move confirmed by breakout behavior, volume, and price structure?
+
+### 4. Trend maturity
+
+Is the stock early/healthy in the move, or already excessively extended?
+
+### 5. Tradeability
+
+Is liquidity, volatility, and risk structure appropriate for a multi-week position?
+
+A useful research starting point is:
+
+```text
+SetupScore =
+    25% Trend Structure
+  + 20% Breakout / Pivot Quality
+  + 20% Volume Quality
+  + 15% Base / Volatility Contraction
+  + 10% Relative Strength
+  + 10% Trend Persistence
+  - Risk / Extension Penalties
+```
+
+These weights are **research hypotheses**, not permanent strategy constants.
+
+Relative strength versus SPY and the relevant sector should remain useful supporting evidence, but the strategy should not reduce to simply ranking the stocks with the strongest recent returns.
+
+---
+
+## Top-50, Sector Rotation, and Final Stock Selection
+
+The stock ranking and the final portfolio-selection process are separate layers.
+
+FutureView should first rank the qualified stock universe by SetupScore and retain the **Top 50** as the active opportunity set.
+
+The offensive portfolio is then selected through a sector-strength layer:
+
+```text
+Qualified U.S. common stocks
+        ↓
+Setup-quality ranking
+        ↓
+Top 50 stocks
+        ↓
+Group Top 50 by sector
+        ↓
+Rank sector strength
+        ↓
+Select strongest 3 sectors
+        ↓
+Select top 3 qualified stocks in each sector
+        ↓
+Maximum 9 offensive stocks
+```
+
+The purpose is to follow both **stock trend** and **sector trend**. A strong individual stock in a broadly weak sector should generally receive less preference than a similarly strong stock participating in broad sector leadership.
+
+### Sector strength
+
+Sector ranking should measure broad participation rather than letting a single exceptional stock define the entire sector.
+
+Useful inputs include:
+
+- representation of the sector within the Top 50
+- median or aggregate SetupScore of Top-50 members in the sector
+- sector relative strength versus SPY
+- sector breakout breadth
+- volume participation across leading stocks
+
+An initial research hypothesis is:
+
+```text
+SectorScore =
+    35% Top-50 Representation
+  + 25% Median Setup Quality
+  + 20% Relative Strength vs SPY
+  + 10% Breakout Breadth
+  + 10% Volume Participation
+```
+
+These weights must be audited historically and are not permanent constants.
+
+### Final stock selection
+
+Within each of the three strongest sectors, select the **three highest-ranked stocks that still satisfy the entry-quality requirements**.
+
+The target maximum is:
+
+```text
+3 sectors × 3 stocks = 9 stocks
+```
+
+However, the strategy should **not force exactly nine positions**.
+
+If a selected sector has fewer than three genuinely qualified setups, only the qualified stocks should be used. For example:
+
+```text
+Sector A: 3 qualified stocks
+Sector B: 3 qualified stocks
+Sector C: 1 qualified stock
+Total:    7 offensive positions
+```
+
+Unused capacity remains uncommitted rather than being filled with lower-quality trades.
+
+This preserves the core principle:
+
+> If the market does not provide a valid setup, do not manufacture one.
 
 ---
 
@@ -355,51 +483,6 @@ The system should support systematic defaults while still allowing a stock-speci
 
 ---
 
-## Ranking Philosophy
-
-The ranking engine should primarily evaluate **setup quality**, not historical return alone.
-
-The ranking should emphasize five questions:
-
-### 1. Trend existence
-
-Does a bullish trend actually exist?
-
-### 2. Trend strength
-
-Is the trend strong enough to justify offensive exposure?
-
-### 3. Trend confirmation
-
-Is the move confirmed by breakout behavior, volume, and price structure?
-
-### 4. Trend maturity
-
-Is the stock early/healthy in the move, or already excessively extended?
-
-### 5. Tradeability
-
-Is liquidity, volatility, and risk structure appropriate for a multi-week position?
-
-A useful research starting point is:
-
-```text
-SetupScore =
-    25% Trend Structure
-  + 20% Breakout / Pivot Quality
-  + 20% Volume Quality
-  + 15% Base / Volatility Contraction
-  + 10% Relative Strength
-  + 10% Trend Persistence
-  - Risk / Extension Penalties
-```
-
-These weights are **research hypotheses**, not permanent strategy constants.
-
-Relative strength versus SPY and the relevant sector should remain useful supporting evidence, but the strategy should not reduce to simply ranking the stocks with the strongest recent returns.
-
----
-
 ## Important Supporting Indicators
 
 The following indicators align well with this strategy:
@@ -450,7 +533,26 @@ The total offensive allocation must not exceed:
 60% of total portfolio capital
 ```
 
-This limit is independent of how many individual stocks qualify.
+The final offensive portfolio contains at most **nine stocks**, selected from the strongest three sectors with at most three stocks per sector.
+
+If all nine positions eventually reach equal fully built size, the theoretical average maximum per stock is approximately:
+
+```text
+60% / 9 ≈ 6.67% of total portfolio NAV
+```
+
+Because positions are pyramided, the full allocation is not committed at the initial entry. Using the research baseline of 40% / 35% / 25% of a full stock allocation, a fully allocated 6.67%-NAV position would be built approximately as:
+
+```text
+Initial   ≈ 2.67% NAV
+Add #1    ≈ 2.33% NAV
+Add #2    ≈ 1.67% NAV
+Full      ≈ 6.67% NAV
+```
+
+These tranche sizes are research assumptions and should be audited.
+
+If fewer than nine valid positions are available, unused offensive capacity remains uncommitted.
 
 Defensive capital, reserve capital, cash posture, and regime-level allocation are separate layers and are intentionally not defined in this document yet.
 
@@ -464,6 +566,16 @@ FutureView's offensive strategy is best summarized as:
 Find liquid stocks with improving multi-week trend structure
         ↓
 prefer constructive bases and volatility contraction
+        ↓
+rank qualified stocks by setup quality
+        ↓
+retain the Top 50 opportunity set
+        ↓
+identify the strongest 3 sectors
+        ↓
+select up to the Top 3 qualified stocks per sector
+        ↓
+maximum 9 offensive stocks
         ↓
 wait for right-side price and volume confirmation
         ↓
@@ -480,4 +592,4 @@ use stock-specific structural risk controls for the remainder
 
 The strategy should continuously favor confirmed market strength over prediction:
 
-> **Trade with the trend. Add to strength. Never average down. Avoid exhaustion. Exit as the trend breaks.**
+> **Trade with the trend. Follow the strongest sectors. Add to strength. Never average down. Avoid exhaustion. Exit as the trend breaks.**
