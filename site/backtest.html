@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FutureView · Win-Rate Audit</title>
+  <meta name="description" content="FutureView historical strategy win-rate audit" />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./backtest.css" />
+</head>
+<body>
+  <main class="shell audit-shell">
+    <nav class="top-nav" aria-label="Research navigation">
+      <a href="./index.html">Top 50</a>
+      <a class="active" href="./backtest.html">Backtest Audit</a>
+    </nav>
+
+    <header class="hero audit-hero">
+      <div>
+        <p class="eyebrow">STRATEGY VALIDATION</p>
+        <h1>Win-Rate Audit</h1>
+        <p class="subtitle">Historical validation from the canonical Cloudflare backtest. D1 resolves research state; R2 stores the full result.</p>
+      </div>
+      <div class="status-card">
+        <span class="status-dot" id="audit-status-dot"></span>
+        <div>
+          <strong id="audit-status">Loading latest backtest</strong>
+          <small id="audit-range">Waiting for result metadata</small>
+        </div>
+      </div>
+    </header>
+
+    <section class="metrics audit-metrics" aria-label="Primary strategy metrics">
+      <article><span>Win rate</span><strong id="win-rate">—</strong><small id="win-count">—</small></article>
+      <article><span>Payoff ratio</span><strong id="payoff-ratio">—</strong><small>Avg win ÷ |avg loss|</small></article>
+      <article><span>Profit factor</span><strong id="profit-factor">—</strong><small>Gross profit ÷ gross loss</small></article>
+      <article><span>Expectancy / trade</span><strong id="expectancy">—</strong><small>Win-rate weighted return</small></article>
+    </section>
+
+    <section class="audit-grid">
+      <article class="panel audit-panel">
+        <div class="panel-head">
+          <div><p class="eyebrow">OUTCOME QUALITY</p><h2>Trade distribution</h2></div>
+        </div>
+        <div class="detail-grid">
+          <div><span>Average win</span><strong id="avg-win">—</strong></div>
+          <div><span>Average loss</span><strong id="avg-loss">—</strong></div>
+          <div><span>Median return</span><strong id="median-return">—</strong></div>
+          <div><span>Avg hold</span><strong id="avg-hold">—</strong></div>
+        </div>
+        <div class="win-loss-bar" aria-label="Win loss distribution">
+          <div class="win-segment" id="win-segment"></div>
+          <div class="flat-segment" id="flat-segment"></div>
+          <div class="loss-segment" id="loss-segment"></div>
+        </div>
+        <div class="legend" id="trade-legend">—</div>
+      </article>
+
+      <article class="panel audit-panel">
+        <div class="panel-head">
+          <div><p class="eyebrow">PORTFOLIO CONTEXT</p><h2>Backtest envelope</h2></div>
+        </div>
+        <dl class="definition-grid">
+          <div><dt>Total return</dt><dd id="total-return">—</dd></div>
+          <div><dt>Max drawdown</dt><dd id="max-drawdown">—</dd></div>
+          <div><dt>Initial capital</dt><dd id="initial-capital">—</dd></div>
+          <div><dt>Final equity</dt><dd id="final-equity">—</dd></div>
+          <div><dt>Sessions</dt><dd id="session-count">—</dd></div>
+          <div><dt>Median hold</dt><dd id="median-hold">—</dd></div>
+        </dl>
+      </article>
+    </section>
+
+    <section class="panel audit-table-panel">
+      <div class="panel-head">
+        <div><p class="eyebrow">EXIT DIAGNOSTICS</p><h2>Win rate by exit reason</h2></div>
+      </div>
+      <div class="table-wrap">
+        <table class="audit-table">
+          <thead><tr><th>Exit reason</th><th>Trades</th><th>Win rate</th><th>Median return</th><th>Payoff</th></tr></thead>
+          <tbody id="exit-reason-body"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel audit-table-panel" id="rank-panel" hidden>
+      <div class="panel-head">
+        <div><p class="eyebrow">SELECTION QUALITY</p><h2>Win rate by entry rank</h2></div>
+      </div>
+      <div class="table-wrap">
+        <table class="audit-table">
+          <thead><tr><th>Entry rank</th><th>Trades</th><th>Win rate</th><th>Avg return</th><th>Profit factor</th></tr></thead>
+          <tbody id="rank-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel audit-panel scope-panel">
+      <div class="panel-head">
+        <div><p class="eyebrow">VALIDATION SCOPE</p><h2>What this result actually proves</h2></div>
+        <p class="hint">Unsupported strategy layers are deliberately marked as not instrumented.</p>
+      </div>
+      <div class="scope-grid" id="scope-grid"></div>
+      <div class="audit-notes" id="audit-notes"></div>
+    </section>
+
+    <footer>
+      <span>FutureView · Strategy Research</span>
+      <span>Historical simulation only · No claim of future performance</span>
+    </footer>
+  </main>
+  <script src="./backtest.js" defer></script>
+</body>
+</html>
