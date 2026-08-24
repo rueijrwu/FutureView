@@ -28,9 +28,10 @@ jobs:
         run: |
           set -euo pipefail
           API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database"
-          RESPONSE=$(curl -fsS "$API?name=futureview" \
+          RESPONSE=$(curl -fsS "$API" \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
-          DB_ID=$(printf '%s' "$RESPONSE" | jq -r '.result[0].uuid // empty')
+          DB_ID=$(printf '%s' "$RESPONSE" | jq -r \
+            '.result[]? | select(.name == "futureview") | .uuid' | head -n 1)
 
           if [ -z "$DB_ID" ]; then
             RESPONSE=$(curl -fsS -X POST "$API" \
