@@ -1,3 +1,25 @@
+.backtest-log-page {
+  width: 100%;
+  text-align: left;
+}
+
+.backtest-copy {
+  margin: 0 0 0.75rem 0;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.82rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.backtest-copy:hover {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
 .backtest-log {
   margin: 0;
   width: 100%;
