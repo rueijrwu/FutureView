@@ -1,78 +1,115 @@
 # FutureView
 
-FutureView is a point-in-time market research platform for systematic screening, ranking, portfolio research, and backtesting.
+FutureView is a point-in-time U.S. equity research platform for systematic screening, ranking, portfolio research, and backtesting.
 
-## Design goals
+## Core principles
 
-1. Maintain a reproducible historical market database.
-2. Generate a daily cross-sectional ranking and Top-50 market view.
-3. Track ranking trajectories, persistence, breakouts, trend, relative strength, and extension.
-4. Use exactly the same feature/ranking logic in live screening and historical backtests.
-5. Model the portfolio as Emergency Reserve + Core/Reserve + Tactical Momentum.
-6. Keep order execution manual; FutureView is a research and decision-support system.
+- One canonical JavaScript strategy engine is shared by production ranking, replay validation, and backtesting.
+- Cloudflare owns production scheduling and execution.
+- D1 is the relational query/index layer.
+- R2 stores bulk market data and reproducible research artifacts.
+- Massive supplies market and reference data.
+- GitHub is source control, CI, and deployment only.
+- Routine market updates never create Git commits.
+- Automated order execution is intentionally out of scope.
 
-## Portfolio policy
+## Production flow
 
-- Tactical Momentum is opportunity-driven and capped at roughly two-thirds of investable capital.
-- Unused tactical capital returns to the Core/Reserve reservoir.
-- Profit-taking triggers portfolio re-evaluation rather than automatic reinvestment.
-- Emergency Reserve targets 10–30% of total assets and must not fall below 10%.
-- Emergency Reserve deployment during extreme fear is restricted to broad ETFs and large-cap/core assets.
-- The reservoir adjusts cash exposure and reallocates capital as total assets and market conditions change.
+```text
+Cloudflare Worker Cron
+  ↓
+Massive common-stock universe refresh
+  ↓
+Massive grouped-daily OHLCV ingest
+  ↓
+FeatureBootstrapWorkflow (fresh environment only)
+  or
+IncrementalFeatureWorkflow
+  ↓
+canonical JS ranking core
+  ↓
+D1 ranking index + R2 ranking/state snapshots
+  ↓
+latest pointer promotion
+  ↓
+JS replay validation
+```
 
-## Initial screener
+A weekly Worker cron starts the JS backtest Workflow over production ranking snapshots.
 
-The baseline scanner ranks **active U.S. common stocks only**. Massive ticker-reference metadata is used to restrict the ranking universe to `type=CS`, so ETFs are excluded before cross-sectional scoring and Top-50 selection.
+## Storage responsibilities
 
-ETF OHLCV is intentionally retained in the historical R2 database. It is not currently part of the stock screener, but will be reused later for market-regime and capital-allocation research.
+### D1
 
-The baseline universe filter favors liquid, established right-side trends. The ranking model combines 20-day and 60-day relative strength, trend quality, breakout strength, and volume confirmation, with an extension constraint based on ATR.
+- instruments and common-stock universe membership
+- universe snapshot index
+- ranking run metadata
+- ranking entries and rank history
+- strategy versions
+- workflow/backtest metadata
 
-Daily Top 50 is intended for both candidate discovery and human market familiarization. Historical ranking snapshots are first-class data so ranking trajectory and forward returns can be studied without look-ahead.
+### R2
 
-## Architecture
+- daily OHLCV JSON
+- rolling feature-state shards
+- daily feature shards
+- full ranking and Top-50 snapshots
+- ranking-state shards
+- replay validation artifacts
+- backtest results
+- dashboard presentation payloads
 
-- `config/` — strategy and portfolio policy
-- `src/futureview/features/` — point-in-time feature calculations
-- `src/futureview/screener/` — filtering and cross-sectional ranking
-- `src/futureview/storage/` — DuckDB schemas and persistence
-- `src/futureview/backtest/` — event-driven portfolio simulation
-- `src/futureview/dashboard/` — presentation-only static snapshot export
-- `site/` — Cloudflare Pages static dashboard
-- future modules: analytics, ETF regime analysis, options overlay, API
+## Screener
 
-## Data stack
+The ranking universe is active U.S. common stocks (`type=CS`) from Massive. ETFs remain outside the stock Top-50 ranking and can later support market-regime research.
 
-Python 3.12+, Polars, DuckDB, Parquet, PyArrow.
+The current ranking model combines:
 
-Raw market data, derived features, ranking snapshots, portfolio state, and trade/position events are kept separate so research can be reproduced and strategy parameters can be changed without corrupting source data.
+- 20-session relative strength
+- 60-session relative strength
+- trend quality
+- breakout/proximity strength
+- volume confirmation
+- 20-session Top-50 persistence
+- ATR-based extension penalty
 
-## Cloudflare Pages
+Hard filters include minimum price/liquidity, `close > SMA50 > SMA200`, positive SMA50 slope, positive relative strength, and a 3-ATR extension ceiling.
 
-FutureView uses a framework-free static dashboard so deployment remains independent from the Python research engine.
+The canonical strategy configuration lives in `worker/strategy-config.js`.
 
-Recommended Cloudflare Pages Git settings:
+## Backtest baseline
 
-- Production branch: `master`
-- Framework preset: `None`
-- Build command: `exit 0`
-- Build output directory: `site`
-- Root directory: repository root
+The JS backtest uses production ranking snapshots and next-session-open execution so signals formed at a session close cannot trade at that same close. The initial baseline uses Top-10 breakout candidates, up to 10 positions, 15–60 session holding windows, and an SMA10 exit rule. Backtest assumptions are separately versioned from ranking rules.
 
-Pull-request branches receive Cloudflare preview deployments through the Git integration. The dashboard reads `site/data/latest.json`; the research pipeline writes this presentation snapshot after a successful daily ranking run.
+## API
 
-Historical OHLCV, full feature tables, and full ranking history should live in persistent object storage such as Cloudflare R2 rather than in the Git repository. Only compact presentation snapshots need to be published with the static dashboard.
+Current Worker routes include:
 
-## Development sequence
+- `GET /api/health`
+- `GET /api/rankings/latest`
+- `GET /api/rankings/history`
+- `GET /api/rankings/date/YYYY-MM-DD`
+- `GET /api/symbols/:symbol/rankings`
+- `GET /api/ingest/status`
+- `GET /api/universe/status`
+- `GET /api/state/status`
+- `GET /api/bootstrap/status`
+- `GET /api/ranking-state/status`
+- `GET /api/replay/status`
+- `GET /api/backtests/latest`
 
-Phase 1: data provider + historical database + feature engine.
+## Repository layout
 
-Phase 2: Top-50 common-stock screener + ranking history + forward-return analytics.
+- `worker/` — canonical JS runtime, strategy, Workflows, API, replay, backtest
+- `migrations/` — D1 migrations
+- `site/` — deployed static assets consumed through the Worker API
+- `view/` — React/Vite frontend development tree
+- `tests-js/` — JavaScript regression tests
+- `docs/` — design and roadmap documentation
+- `wrangler.jsonc` — Cloudflare Worker/Workflow/Cron configuration
 
-Phase 3: underlying-only event-driven backtest including new-high profit taking and 5/10-day moving-average exits.
+## Deployment
 
-Phase 4: ETF-based market-regime analysis and Core/Reserve/Tactical dynamic allocation. The retained ETF history will be used to study broad-market trend, risk appetite, sector leadership, defensive rotation, credit conditions, and other signals that can determine the allowed tactical-capital ceiling and reservoir cash posture. ETF signals will control risk capacity rather than enter the stock Top-50 ranking.
+`.github/workflows/deploy-worker.yml` resolves or creates the `futureview` D1 database, applies all D1 migrations, generates the runtime D1 binding, and deploys the Worker/Workflows. The D1 database ID is not hardcoded in the repository.
 
-Phase 5: historical option-chain layer and Top-1-to-3 leader call overlay.
-
-Automated order execution is intentionally out of scope.
+`.github/workflows/ci.yml` runs JavaScript syntax checks, regression tests, D1 migration validation, and frontend lint/build checks.
