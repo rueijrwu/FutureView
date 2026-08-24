@@ -44,7 +44,9 @@ export function normalizeGroupedDaily(payload, tradingDate) {
 
   for (const item of results) {
     if (!item?.T) continue;
-    const values = [item.o, item.h, item.l, item.c, item.v].map(Number);
+    const rawValues = [item.o, item.h, item.l, item.c, item.v];
+    if (rawValues.some((value) => value === null || value === undefined || value === "")) continue;
+    const values = rawValues.map(Number);
     if (!values.every(Number.isFinite)) continue;
 
     bars.push({
