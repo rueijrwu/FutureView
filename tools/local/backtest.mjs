@@ -3,7 +3,11 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { advanceBacktest, createBacktestState, finalizeBacktest } from "../../worker/backtest-core.js";
 import { trueRange, updateSymbolState } from "../../worker/feature-core.js";
 import { rankCrossSection } from "../../worker/ranking-core.js";
-import { BACKTEST_CONFIG_V1, STRATEGY_VERSION } from "../../worker/strategy-config.js";
+import {
+  BACKTEST_CONFIG_V1,
+  RANKING_CONFIG_SECTOR_RS_EXPERIMENT,
+  STRATEGY_VERSION,
+} from "../../worker/strategy-config.js";
 import {
   createFilesystemJsonStore,
   materializeFromSyncCache,
@@ -15,6 +19,22 @@ const CHECKPOINT_FILE = `${CACHE_DIR}/checkpoint.json`;
 const DAILY_JSON_ROOT = ".local-data/objects/prices/daily-json";
 const WARMUP_SESSIONS = 211;
 const DEFAULT_BACKTEST_SESSIONS = 126;
+const SECTOR_CORRELATION_LOOKBACK = 60;
+const LOCAL_RANKING_EXPERIMENT = "sector-rs-correlation-v1";
+const SECTOR_ETFS = Object.freeze([
+  "XLB",
+  "XLC",
+  "XLE",
+  "XLF",
+  "XLI",
+  "XLK",
+  "XLP",
+  "XLRE",
+  "XLU",
+  "XLV",
+  "XLY",
+]);
+const BENCHMARK_SYMBOLS = new Set(["SPY", ...SECTOR_ETFS]);
 const store = createFilesystemJsonStore();
 
 function fail(message) {
@@ -102,11 +122,76 @@ function mean(values) {
   return values.reduce((sum, value) => sum + Number(value), 0) / values.length;
 }
 
+function dailyReturns(closes, lookback = SECTOR_CORRELATION_LOOKBACK) {
+  const values = (closes ?? []).slice(-(lookback + 1)).map(Number);
+  if (values.length < lookback + 1 || values.some((value) => !Number.isFinite(value) || value <= 0)) {
+    return null;
+  }
+  const returns = [];
+  for (let i = 1; i < values.length; i += 1) {
+    returns.push(values[i] / values[i - 1] - 1);
+  }
+  return returns;
+}
+
+function correlation(left, right) {
+  if (!left || !right || left.length !== right.length || left.length < 2) return null;
+  const leftMean = mean(left);
+  const rightMean = mean(right);
+  let covariance = 0;
+  let leftVariance = 0;
+  let rightVariance = 0;
+  for (let i = 0; i < left.length; i += 1) {
+    const leftDelta = Number(left[i]) - leftMean;
+    const rightDelta = Number(right[i]) - rightMean;
+    covariance += leftDelta * rightDelta;
+    leftVariance += leftDelta ** 2;
+    rightVariance += rightDelta ** 2;
+  }
+  const denominator = Math.sqrt(leftVariance * rightVariance);
+  if (!(denominator > 0)) return null;
+  return covariance / denominator;
+}
+
+function closestSectorBenchmarks(featureStates, eligible) {
+  const benchmarkReturns = new Map();
+  for (const symbol of SECTOR_ETFS) {
+    const values = dailyReturns(featureStates.get(symbol)?.closes);
+    if (values) benchmarkReturns.set(symbol, values);
+  }
+  if (benchmarkReturns.size !== SECTOR_ETFS.length) {
+    const missing = SECTOR_ETFS.filter((symbol) => !benchmarkReturns.has(symbol));
+    fail(`sector ETF history is incomplete for: ${missing.join(", ")}`);
+  }
+
+  const sectorBenchmarkBySymbol = new Map();
+  const correlationBySymbol = new Map();
+  for (const symbol of eligible) {
+    const stockReturns = dailyReturns(featureStates.get(symbol)?.closes);
+    if (!stockReturns) continue;
+    let bestSymbol = null;
+    let bestCorrelation = -Infinity;
+    for (const sectorSymbol of SECTOR_ETFS) {
+      const value = correlation(stockReturns, benchmarkReturns.get(sectorSymbol));
+      if (value == null) continue;
+      if (value > bestCorrelation) {
+        bestCorrelation = value;
+        bestSymbol = sectorSymbol;
+      }
+    }
+    if (bestSymbol) {
+      sectorBenchmarkBySymbol.set(symbol, bestSymbol);
+      correlationBySymbol.set(symbol, bestCorrelation);
+    }
+  }
+  return { sectorBenchmarkBySymbol, correlationBySymbol };
+}
+
 function bootstrapStates(sessions, eligible) {
   const histories = new Map();
   for (const session of sessions) {
     for (const bar of session.bars) {
-      if (!eligible.has(bar.symbol) && bar.symbol !== "SPY") continue;
+      if (!eligible.has(bar.symbol) && !BENCHMARK_SYMBOLS.has(bar.symbol)) continue;
       let history = histories.get(bar.symbol);
       if (!history) {
         history = { closes: [], highs: [], volumes: [], trueRanges: [], sma50History: [], lastDate: null };
@@ -141,7 +226,11 @@ function bootstrapStates(sessions, eligible) {
       sma50_history: history.sma50History.slice(-11),
     });
   }
-  if (!states.has("SPY")) fail("SPY did not bootstrap; cannot compute relative strength");
+
+  const missingBenchmarks = [...BENCHMARK_SYMBOLS].filter((symbol) => !states.has(symbol));
+  if (missingBenchmarks.length) {
+    fail(`benchmark history did not bootstrap for: ${missingBenchmarks.join(", ")}`);
+  }
   return states;
 }
 
@@ -182,17 +271,28 @@ function processSession(checkpoint, payload, eligible) {
     features.push(feature);
   }
 
+  const { sectorBenchmarkBySymbol, correlationBySymbol } = closestSectorBenchmarks(
+    nextFeatureStates,
+    eligible,
+  );
   const ranked = rankCrossSection({
     features,
     tradingDate: payload.date,
     eligibleSymbols: eligible,
     priorStates: checkpoint.rankingStates,
     priorSessionCount: checkpoint.processedDates.length,
+    sectorBenchmarkBySymbol,
+    config: RANKING_CONFIG_SECTOR_RS_EXPERIMENT,
   });
 
+  const rankings = ranked.rankings.map((row) => ({
+    ...row,
+    sector_benchmark_correlation: correlationBySymbol.get(String(row.symbol)) ?? null,
+  }));
   writeFileSync(sessionPath(payload.date), JSON.stringify({
     date: payload.date,
-    rankings: ranked.rankings,
+    ranking_experiment: LOCAL_RANKING_EXPERIMENT,
+    rankings,
     features,
   }));
   checkpoint.featureStates = nextFeatureStates;
@@ -200,7 +300,7 @@ function processSession(checkpoint, payload, eligible) {
   checkpoint.processedDates.push(payload.date);
   checkpoint.asOf = payload.date;
   saveCheckpoint(checkpoint);
-  console.log(`[local:backtest] processed ${payload.date}: ${features.length} features / ${ranked.rankings.length} ranked`);
+  console.log(`[local:backtest] processed ${payload.date}: ${features.length} features / ${rankings.length} ranked / ${sectorBenchmarkBySymbol.size} sector mappings`);
 }
 
 async function loadUniverse() {
@@ -249,12 +349,14 @@ if (!options.endDate) {
 let checkpoint = loadCheckpoint();
 
 if (!checkpoint) {
+  console.log(`[local:backtest] experiment: ${LOCAL_RANKING_EXPERIMENT}`);
   console.log(`[local:backtest] bootstrap ${WARMUP_SESSIONS} warm-up + ${options.sessions} backtest sessions through ${endDate} from local history`);
   const all = collectBackward(endDate, WARMUP_SESSIONS + options.sessions);
   const warmup = all.slice(0, WARMUP_SESSIONS);
   checkpoint = {
-    version: 3,
+    version: 4,
     strategyVersion: STRATEGY_VERSION,
+    rankingExperiment: LOCAL_RANKING_EXPERIMENT,
     universeAsOf: universe.asOf,
     asOf: warmup.at(-1).date,
     processedDates: [],
@@ -264,8 +366,12 @@ if (!checkpoint) {
   saveCheckpoint(checkpoint);
   for (const session of all.slice(WARMUP_SESSIONS)) processSession(checkpoint, session, universe.symbols);
 } else {
-  if (checkpoint.strategyVersion !== STRATEGY_VERSION) {
-    fail("strategy version changed; rerun npm run local:backtest -- --rebuild");
+  if (
+    Number(checkpoint.version) !== 4
+    || checkpoint.strategyVersion !== STRATEGY_VERSION
+    || checkpoint.rankingExperiment !== LOCAL_RANKING_EXPERIMENT
+  ) {
+    fail("local ranking experiment changed; rerun npm run local:backtest -- --rebuild");
   }
   if (checkpoint.universeAsOf !== universe.asOf) {
     console.warn(`[local:backtest] universe changed ${checkpoint.universeAsOf} -> ${universe.asOf}; keeping cached history. Use --rebuild for a clean universe-consistent run.`);
@@ -289,6 +395,10 @@ const resultKey = `backtests/run=${id}/result.json`;
 const result = {
   id,
   strategy_version: STRATEGY_VERSION,
+  ranking_experiment: LOCAL_RANKING_EXPERIMENT,
+  ranking_config: RANKING_CONFIG_SECTOR_RS_EXPERIMENT,
+  sector_etfs: SECTOR_ETFS,
+  sector_correlation_lookback: SECTOR_CORRELATION_LOOKBACK,
   config: BACKTEST_CONFIG_V1,
   start_date: selected[0],
   end_date: selected.at(-1),
@@ -307,6 +417,7 @@ await store.putJson(resultKey, result);
 await store.putJson("metadata/latest-backtest.json", {
   id,
   strategy_version: STRATEGY_VERSION,
+  ranking_experiment: LOCAL_RANKING_EXPERIMENT,
   start_date: selected[0],
   end_date: selected.at(-1),
   status: "complete",
@@ -319,6 +430,7 @@ await store.putJson("metadata/latest-backtest.json", {
 });
 
 console.log("\n[local:backtest] READY");
+console.log(`[local:backtest] experiment: ${LOCAL_RANKING_EXPERIMENT}`);
 console.log(`[local:backtest] sessions: ${selected.length} (${selected[0]} -> ${selected.at(-1)})`);
 console.log(`[local:backtest] trades: ${finalized.summary.trade_count}; win rate: ${finalized.summary.win_rate == null ? "n/a" : `${(finalized.summary.win_rate * 100).toFixed(2)}%`}`);
 console.log(`[local:backtest] total return: ${(finalized.summary.total_return * 100).toFixed(2)}%; max drawdown: ${(finalized.summary.max_drawdown * 100).toFixed(2)}%`);
