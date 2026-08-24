@@ -126,23 +126,36 @@ function replayRequest(event) {
   return payload;
 }
 
+function productionRequest(event) {
+  const payload = event.payload ?? {};
+  if (payload.mode !== "production" || !payload.ingest_date) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(payload.ingest_date)) {
+    throw new Error("production ingest_date must be YYYY-MM-DD");
+  }
+  return {
+    date: payload.ingest_date,
+    data_key: `prices/daily-json/date=${payload.ingest_date}/bars.json`,
+  };
+}
+
 export class IncrementalFeatureWorkflow extends WorkflowEntrypoint {
   async run(event, step) {
     const replay = replayRequest(event);
+    const production = replay ? null : productionRequest(event);
     const source = await step.do("resolve source state and daily bars", async () => {
       const state = replay
         ? await readJson(this.env.RESEARCH, replay.state_metadata_key)
         : await readJson(this.env.RESEARCH, LATEST_STATE_KEY);
       const ingest = replay
         ? { date: replay.target_date, data_key: replay.bars_key }
-        : await readJson(this.env.RESEARCH, LATEST_INGEST_KEY);
+        : production ?? await readJson(this.env.RESEARCH, LATEST_INGEST_KEY);
       if (Number(state.version) !== STATE_VERSION || Number(state.shard_count) !== STATE_SHARDS) {
         throw new Error(
           `unsupported feature state contract: v${state.version}, shards=${state.shard_count}`,
         );
       }
       if (!ingest.date || !ingest.data_key) {
-        throw new Error("latest ingestion metadata is incomplete");
+        throw new Error("ingestion metadata is incomplete");
       }
       return { state, ingest };
     });
