@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 
 import { buildBacktestAudit } from "../worker/backtest-audit.js";
 
+function assertClose(actual, expected, tolerance = 1e-12) {
+  assert.ok(
+    Math.abs(Number(actual) - Number(expected)) <= tolerance,
+    `expected ${actual} to be within ${tolerance} of ${expected}`,
+  );
+}
+
 test("buildBacktestAudit calculates win rate and payoff metrics", () => {
   const audit = buildBacktestAudit({
     id: "sample",
@@ -25,14 +32,14 @@ test("buildBacktestAudit calculates win rate and payoff metrics", () => {
   assert.equal(audit.overall.trade_count, 3);
   assert.equal(audit.overall.wins, 2);
   assert.equal(audit.overall.losses, 1);
-  assert.equal(audit.overall.win_rate, 2 / 3);
-  assert.equal(audit.overall.average_win_return, 0.15);
-  assert.equal(audit.overall.average_loss_return, -0.05);
-  assert.equal(audit.overall.payoff_ratio, 3);
-  assert.equal(audit.overall.profit_factor, 6);
-  assert.equal(audit.overall.median_return, 0.10);
-  assert.equal(audit.overall.break_even_win_rate, 0.25);
-  assert.equal(audit.overall.win_rate_edge, (2 / 3) - 0.25);
+  assertClose(audit.overall.win_rate, 2 / 3);
+  assertClose(audit.overall.average_win_return, 0.15);
+  assertClose(audit.overall.average_loss_return, -0.05);
+  assertClose(audit.overall.payoff_ratio, 3);
+  assertClose(audit.overall.profit_factor, 6);
+  assertClose(audit.overall.median_return, 0.10);
+  assertClose(audit.overall.break_even_win_rate, 0.25);
+  assertClose(audit.overall.win_rate_edge, (2 / 3) - 0.25);
   assert.equal(audit.overall.sample_label, "early");
   assert.ok(audit.overall.win_rate_ci95_low < audit.overall.win_rate);
   assert.ok(audit.overall.win_rate_ci95_high > audit.overall.win_rate);
