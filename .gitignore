@@ -4,6 +4,7 @@ node_modules/
 .dev.vars
 .wrangler/
 .wrangler.local.json
+.local-state/
 .local-sync/
 .DS_Store
 *.log
