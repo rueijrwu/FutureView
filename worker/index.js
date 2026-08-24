@@ -1,3 +1,4 @@
+import { buildBacktestAudit } from "./backtest-audit.js";
 import {
   rankingByDateFromD1,
   rankingDatesFromD1,
@@ -23,6 +24,16 @@ async function r2JsonResponse(env, key, unavailableMessage, status = 503) {
       "cache-control": "no-store",
     },
   });
+}
+
+async function readLatestBacktest(env) {
+  const pointer = await env.RESEARCH.get(BACKTEST_METADATA_KEY);
+  if (!pointer) return null;
+  const metadata = await pointer.json();
+  if (!metadata.result_key) return metadata;
+  const result = await env.RESEARCH.get(metadata.result_key);
+  if (!result) return null;
+  return result.json();
 }
 
 async function r2RankingByDate(env, tradingDate) {
@@ -155,13 +166,21 @@ export default {
     }
 
     if (url.pathname === "/api/backtests/latest") {
-      const pointer = await env.RESEARCH.get(BACKTEST_METADATA_KEY);
-      if (!pointer) {
+      const result = await readLatestBacktest(env);
+      if (!result) {
         return Response.json({ error: "backtest has not completed yet" }, { status: 503 });
       }
-      const metadata = await pointer.json();
-      if (!metadata.result_key) return Response.json(metadata);
-      return r2JsonResponse(env, metadata.result_key, "backtest result is unavailable");
+      return Response.json(result, { headers: { "cache-control": "no-store" } });
+    }
+
+    if (url.pathname === "/api/backtests/audit") {
+      const result = await readLatestBacktest(env);
+      if (!result) {
+        return Response.json({ error: "backtest has not completed yet" }, { status: 503 });
+      }
+      return Response.json(buildBacktestAudit(result), {
+        headers: { "cache-control": "no-store" },
+      });
     }
 
     return env.ASSETS.fetch(request);
