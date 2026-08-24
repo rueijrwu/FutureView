@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import './Backtest.css';
 
 type Summary = {
   trade_count: number;
@@ -123,26 +124,14 @@ function formatAudit(audit: Audit) {
     `- evidence: ${overall.sample_label}`,
   ];
 
-  appendBreakdown(
-    lines,
-    'Entry Rank',
-    audit.breakdowns.by_entry_rank,
-    (row) => `trades=${row.trade_count}, win_rate=${pct(row.win_rate)}, avg_return=${pct(row.average_return)}, profit_factor=${num(row.profit_factor)}`,
-  );
+  appendBreakdown(lines, 'Entry Rank', audit.breakdowns.by_entry_rank,
+    (row) => `trades=${row.trade_count}, win_rate=${pct(row.win_rate)}, avg_return=${pct(row.average_return)}, profit_factor=${num(row.profit_factor)}`);
 
-  appendBreakdown(
-    lines,
-    'Holding Period',
-    audit.breakdowns.by_hold_period,
-    (row) => `trades=${row.trade_count}, win_rate=${pct(row.win_rate)}, median_return=${pct(row.median_return)}`,
-  );
+  appendBreakdown(lines, 'Holding Period', audit.breakdowns.by_hold_period,
+    (row) => `trades=${row.trade_count}, win_rate=${pct(row.win_rate)}, median_return=${pct(row.median_return)}`);
 
-  appendBreakdown(
-    lines,
-    'Exit Reasons',
-    audit.breakdowns.by_exit_reason,
-    (row) => `trades=${row.trade_count}, win_rate=${pct(row.win_rate)}, median_return=${pct(row.median_return)}, payoff=${num(row.payoff_ratio)}`,
-  );
+  appendBreakdown(lines, 'Exit Reasons', audit.breakdowns.by_exit_reason,
+    (row) => `trades=${row.trade_count}, win_rate=${pct(row.win_rate)}, median_return=${pct(row.median_return)}, payoff=${num(row.payoff_ratio)}`);
 
   lines.push('', 'Validation Scope');
   for (const [key, validated] of Object.entries(audit.validation_scope)) {
@@ -180,10 +169,10 @@ const Backtest: React.FC = () => {
 
   const output = useMemo(() => audit ? formatAudit(audit) : '', [audit]);
 
-  if (loading) return <pre>[FutureView Backtest]{'\n'}status: loading</pre>;
-  if (error || !audit) return <pre>[FutureView Backtest]{'\n'}status: error{'\n'}error: {error ?? 'audit unavailable'}</pre>;
+  if (loading) return <pre className="backtest-log">[FutureView Backtest]{'\n'}status: loading</pre>;
+  if (error || !audit) return <pre className="backtest-log">[FutureView Backtest]{'\n'}status: error{'\n'}error: {error ?? 'audit unavailable'}</pre>;
 
-  return <pre>{output}</pre>;
+  return <pre className="backtest-log">{output}</pre>;
 };
 
 export default Backtest;
