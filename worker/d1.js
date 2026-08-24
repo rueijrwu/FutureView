@@ -1,4 +1,4 @@
-const BATCH_SIZE = 100;
+const BATCH_SIZE = 500;
 
 function chunks(items, size = BATCH_SIZE) {
   const out = [];
