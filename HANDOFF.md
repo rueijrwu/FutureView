@@ -8,7 +8,7 @@ Last updated: 2026-08-24.
 
 FutureView is a U.S. equity research and backtesting system for a **right-side trend-following swing strategy** with an intended holding horizon of roughly **15-60 trading sessions / 3 weeks-3 months**.
 
-Current priority is **research-core implementation and empirical validation**. Frontend visualization is intentionally deferred until the strategy and audit layers are mature.
+Current priority is **research-core implementation and empirical validation**. Frontend visualization, pyramiding, and options remain secondary until initial-entry quality, sector selection, and risk control are empirically improved.
 
 Production brokerage execution is out of scope.
 
@@ -20,7 +20,7 @@ Development/testing:
 GitHub + Codespaces = primary development environment
 .local-data          = canonical local research store
 Cloudflare R2/D1     = production archive/adapters
-Massive              = ingestion/recovery source
+Massive              = ingestion/recovery/reference-data source
 ```
 
 Production policy:
@@ -30,8 +30,9 @@ Production policy:
 - production success must be proven by runtime/log evidence
 - normal Cloudflare credentials should remain read-only
 - temporary R2/D1 write permission may be enabled only for explicit maintenance/smoke work, then returned to read-only
+- research enrichment workflows must not silently become production writes
 
-No Cron/scheduled production processing is currently relied on during testing.
+No Cron/scheduled production processing is relied on during strategy testing.
 
 ## 3. Canonical Local Data Architecture
 
@@ -41,57 +42,35 @@ Canonical market history:
 .local-data/objects/prices/daily-json/date=YYYY-MM-DD/bars.json
 ```
 
-Historical bootstrap/recovery and daily operation are separate.
+Historical bootstrap/recovery:
 
-### One-time / disaster recovery
-
-```text
+```bash
 npm run recovery:history
 ```
 
-Behavior:
+Normal daily local update:
 
-- materializes mirrored R2 Parquet into canonical daily JSON
-- uses Massive only when local/R2 history is insufficient
-- Massive requests are paced at ~13 seconds
-- retries 429/5xx with backoff
-- recovered sessions are written immediately
-
-Cloudflare recovery publishing:
-
-```text
-npm run recovery:history:publish:smoke
-npm run recovery:history:publish
-```
-
-The smoke path was runtime-validated end-to-end:
-
-```text
-local recovery JSON
--> R2 write
--> R2 read-back/checksum
--> D1 market_data_sessions write
--> D1 read-back
-```
-
-Result: **passed for 1 recovery session**.
-
-### Normal daily local path
-
-```text
+```bash
 npm run local:update
 ```
-
-This mirrors current production data and materializes any new local history. It does **not** rerun historical recovery.
 
 Design principle:
 
 ```text
-Massive  = ingestion/recovery source only
+Massive  = ingestion/recovery/reference-data source
 R2       = production archive
 local    = development/research archive
 backtest = pure consumer of canonical local history
 ```
+
+Historical recovery behavior:
+
+- materializes mirrored R2 Parquet into canonical daily JSON
+- uses Massive only when local/R2 history is insufficient
+- request pacing/backoff protects against 429/5xx
+- recovered sessions are written immediately
+
+Cloudflare recovery publishing exists but is separate from normal local research.
 
 ## 4. Historical Data Status
 
@@ -106,164 +85,284 @@ canonical history: .local-data/objects/prices/daily-json/
 Massive recovery requests: 50
 ```
 
-The prior production R2 archive contained 289 daily Parquet sessions from 2025-06-30 through 2026-08-21. Recovery filled the older gap needed for the 211-session warmup + 126-session backtest window.
-
-Do not spend more development time restructuring historical ingestion unless a real recovery failure appears.
+The older gap required for the 211-session warmup + 126-session backtest window has been filled. Do not spend more development time restructuring historical ingestion unless a real recovery failure appears.
 
 ## 5. Production Snapshot Mirror
 
-```text
+```bash
 npm run local:sync
 ```
 
 Current mirror behavior:
 
 - production R2 is read-only during normal development
-- complete R2 inventory is mirrored incrementally into `.local-data/objects/`
+- R2 inventory is mirrored incrementally into `.local-data/objects/`
 - D1 application tables are mirrored through read-only queries into `.local-data/d1/`
-- R2 binary objects are copied as raw bytes
 - manifest/checkpoint logic avoids repeat downloads
 
-Runtime-validated snapshot:
+Latest known snapshot:
 
 ```text
-R2 objects: 2605
-D1 application tables: 8
-D1 rows: 10645
 universe as_of: 2026-08-23
 feature state as_of: 2026-08-21
 ```
 
-D1 application tables mirrored:
+Important survivorship note:
 
-- instruments
-- universe_snapshots
-- universe_membership
-- ranking_runs
-- ranking_entries
-- workflow_runs
-- strategy_versions
-- backtest_runs
+The current historical backtest replays the synced current common-stock universe across the historical window. This is a known survivorship-bias limitation. Keep it unchanged during controlled v3 comparisons unless point-in-time universe is itself the variable being tested.
 
-Production now also has the `market_data_sessions` migration/index used by recovery publishing and daily ingest.
+## 6. Current Backtest / Strategy Implementation
 
-## 6. Local Backtest Pipeline
+Current strategy identifier in code:
 
 ```text
-npm run local:backtest -- --rebuild
+rightside-v3
 ```
 
-Backtest now consumes canonical local history only. It does not call Massive.
-
-Feature/ranking replay artifacts are cached under `.local-backtest/`; repeat runs reuse historical computation when possible.
-
-Latest proven run:
-
-```text
-id: local-2026-02-23-2026-08-21-126
-strategy: momentum-v2
-status: complete
-period: 2026-02-23 -> 2026-08-21
-sessions: 126
-result: .local-data/objects/backtests/run=local-2026-02-23-2026-08-21-126/result.json
-```
-
-### Latest empirical baseline
-
-Portfolio:
+Current backtest configuration already includes part of the v3 entry layer:
 
 ```text
 initial capital: $100,000
-final equity: $100,930
-total return: 0.93%
-max drawdown: -24.55%
+max positions: 9
+entry rank max: 50
+breakout20 required
+close > SMA5 > SMA10 > SMA20 required
+SMA5 > SMA10 > SMA20 required
+minimum volume ratio20: 0.8
+maximum entry ExtensionATR: 2.5
+minimum hold: 15 sessions
+maximum hold: 60 sessions
+exit below SMA10 after minimum hold
 ```
 
-Trades:
+However, v3 is **not complete**. Sector selection, initial-stop logic, and MAE/MFE are still incomplete/not validated.
+
+Current ranking core still has legacy structure from v2. Do not interpret the strategy name alone as proof that the full v3 design is implemented.
+
+## 7. Historical Empirical Baseline
+
+The stable comparison baseline remains the prior 126-session run:
 
 ```text
+id: local-2026-02-23-2026-08-21-126
+period: 2026-02-23 -> 2026-08-21
+sessions: 126
+initial capital: $100,000
+final equity: $100,930
+total return: +0.93%
+max drawdown: -24.55%
 trades: 75
-wins: 39
-losses: 36
 win rate: 52.00%
-95% CI: 40.87% -> 62.93%
-break-even win rate: 50.85%
-win-rate edge: 1.15%
-average return: 0.30%
-average win: 12.99%
+average return: +0.30%
+average win: +12.99%
 average loss: -13.44%
 payoff ratio: 0.97
 profit factor: 1.02
 average hold: 16.5 sessions
-median hold: 15 sessions
 ```
 
-Important ranking observation:
+Entry-rank evidence:
 
 ```text
 rank 1-3: 51 trades, avg return -1.99%, PF 0.74
 rank 4-6: 19 trades, avg return +4.77%, PF 2.74
-rank 7-10: 5 trades, avg return +6.77%, PF 2.77
+rank 7-10: 5 trades, avg return +6.77%, PF 2.77 (tiny n)
 ```
 
-Do not over-interpret ranks 7-10 because sample size is only 5. The stronger conclusion is that current rank 1-3 selection quality is poor and likely overweights overly hot/extended names.
-
-Holding-period observation:
+Holding-period evidence:
 
 ```text
 1-15 sessions: 48 trades, win rate 35.42%, median -3.89%
 16-30 sessions: 25 trades, win rate 80.00%, median +4.25%
-31-45 sessions: 2 trades, win rate 100%, median +65.79%
+31-45 sessions: 2 trades, win rate 100%, median +65.79% (tiny n)
 ```
 
-This baseline has almost no economic edge and unacceptable drawdown. It is infrastructure/research evidence, not a validated production strategy.
+Interpretation:
 
-## 7. Current Strategy Baseline vs Target
+- baseline economic edge is near zero
+- drawdown is unacceptable
+- rank 1-3 quality is poor despite receiving most trades
+- many trades fail early; survivors can trend strongly
+- v3 should prioritize entry quality and early risk control rather than win-rate optimization
 
-Canonical implemented strategy is still:
+## 8. Rejected Sector-Correlation Experiment
+
+A controlled local experiment tested sector-aware RS by assigning each stock to the one of 11 sector ETFs with the highest trailing-60-session daily-return correlation.
+
+Run:
 
 ```text
-momentum-v2
+id: local-sector-rs-correlation-v1-2026-02-23-2026-08-21-126
+strategy: rightside-v3
+period: 2026-02-23 -> 2026-08-21
+trades: 70
 ```
 
-Current backtest assumptions:
-
-- initial capital $100k
-- max 10 positions
-- entry rank <= 10
-- breakout20 required
-- equal notional
-- minimum hold 15 sessions
-- maximum hold 60 sessions
-- exit below SMA10 after minimum hold
-- next-session-open execution
-- final-close liquidation
-- no costs/slippage
-
-Target strategy is described in `STRATEGY.md` and should evolve into a new version rather than endlessly tuning v2 weights.
-
-Next implementation target:
+Result:
 
 ```text
-strategy-v3
-= right-side entry quality
-+ initial stop / risk control
-+ Top 50 -> strongest 3 sectors -> top 3 stocks/sector
-+ max 9 positions
-+ MAE/MFE instrumentation
+final equity: $60,243
+total return: -39.76%
+max drawdown: -45.75%
+win rate: 35.71%
+average return: -6.20%
+average win: +6.75%
+average loss: -13.39%
+payoff ratio: 0.50
+profit factor: 0.27
+rank 1-3 PF: 0.21
 ```
 
-Pyramiding and options should come **after** the initial-entry and risk-control layer is empirically improved.
+Decision:
 
-## 8. Strategy Principles
+```text
+REJECT correlation-based sector assignment.
+```
+
+Reason: trailing return correlation is a return-cluster classification, not a company-sector classification. The assigned ETF can drift by market regime and destroy the intended meaning of stock-vs-sector leadership.
+
+PR #13 (`feat/sector-aware-rs`) was closed and must not be merged/revived as the sector model.
+
+## 9. Sector Metadata Research: Current Work
+
+Active research branch:
+
+```text
+feat/sector-metadata-enrichment
+```
+
+Draft PR:
+
+```text
+#14 research: point-in-time sector metadata enrichment
+```
+
+Massive ticker overview supports point-in-time reference queries and supplies:
+
+```text
+sic_code
+sic_description
+company description
+list_date
+other ticker reference metadata
+```
+
+Local command:
+
+```bash
+npm run local:sector:enrich -- --as-of=2026-02-23 ...
+```
+
+Cache:
+
+```text
+.local-data/reference/ticker-overview/as-of=2026-02-23/symbols/*.json
+.local-data/reference/ticker-overview/as-of=2026-02-23/manifest.json
+```
+
+Smoke validation:
+
+```text
+AAPL  3571 ELECTRONIC COMPUTERS
+MSFT  7372 SERVICES-PREPACKAGED SOFTWARE
+NVDA  3674 SEMICONDUCTORS & RELATED DEVICES
+JPM   6021 NATIONAL COMMERCIAL BANKS
+LLY   2834 PHARMACEUTICAL PREPARATIONS
+XOM   2911 PETROLEUM REFINING
+```
+
+100-symbol follow-up plus prior smoke produced:
+
+```text
+cached: 105 / 5322
+with SIC: 90
+SIC coverage of cached: 85.7%
+failed requests: 0
+```
+
+Missing classification has two forms:
+
+- `unavailable_as_of` for symbols not available on the historical date
+- `status=ok` but no SIC from Massive
+
+Do not invent sector labels for missing SIC.
+
+The tool also supports ranking-focused enrichment:
+
+```bash
+npm run local:sector:enrich -- \
+  --as-of=2026-02-23 \
+  --ranking-scope=ranked
+```
+
+This should be preferred for research coverage because only symbols that actually enter the ranking candidate set can affect the backtest.
+
+## 10. GitHub Actions Enrichment
+
+Manual Codespace enrichment is too slow because Massive request pacing, not local CPU, is the bottleneck.
+
+A research-only GitHub Actions workflow has been added on `feat/sector-metadata-enrichment` to run SIC enrichment unattended.
+
+Design:
+
+```text
+current universe
+-> deterministic shards
+-> one shard at a time
+-> Massive point-in-time ticker overview
+-> GitHub Actions artifact
+```
+
+Important constraints:
+
+- keep one shard active at a time to avoid multiplying load against one Massive API key
+- artifacts are research outputs only
+- no D1/R2 production writes
+- no deployment approval implied
+
+## 11. Sector / Relative-Strength Design Going Forward
+
+SPY remains the broad-market benchmark.
+
+The intended hierarchy is:
+
+```text
+Market: SPY
+Sector: actual auditable sector ETF
+Stock: individual security
+```
+
+Once SIC-to-sector mapping is validated:
+
+```text
+MarketRS = stock return - SPY return
+SectorRS = stock return - actual-sector ETF return
+Sector strength = sector ETF return - SPY return
+```
+
+Do not use price correlation to infer sector.
+
+Initial controlled sector-RS experiment should preserve total RS weight while only changing benchmark structure, e.g.:
+
+```text
+10% MarketRS20
+10% MarketRS60
+15% SectorRS20
+10% SectorRS60
+```
+
+This weighting remains a research hypothesis, not a permanent strategy rule.
+
+## 12. Strategy Principles
 
 Do not casually change these:
 
-- active U.S. common stocks only for the stock universe
-- SPY remains benchmark for relative strength
+- active U.S. common stocks only
+- SPY remains market benchmark
+- actual/auditable sector classification only
 - 15-60 session target horizon
 - right-side confirmation, not bottom fishing
-- prefer 5/10/20 bullish trend structure and rising intermediate averages
+- prefer bullish 5/10/20 structure and rising intermediate averages
 - liquidity and volume confirmation are separate concepts
 - avoid excessive ATR extension
 - Top 50 opportunity set
@@ -275,9 +374,9 @@ Do not casually change these:
 - stops/risk controls may only tighten
 - never average down
 - add only to profitable positions after new confirmation
-- calls/options are an acceleration layer at first confirmed add, not part of initial baseline
+- options acceleration only after stock-layer edge is validated
 
-## 9. Audit Instrumentation Status
+## 13. Audit Instrumentation Status
 
 Validated by current trade ledger:
 
@@ -288,73 +387,24 @@ Validated by current trade ledger:
 
 Not yet instrumented:
 
-- Top-3 sector filter
+- actual Top-3 sector filter
 - Add #1
 - Add #2
 - option acceleration
 - MAE/MFE
 
-The first v3 work should add MAE/MFE and selection context before option modeling.
-
-## 10. Local Development Commands
-
-Validation:
+## 14. Key Commands
 
 ```bash
 npm run local:check
-```
-
-Latest runtime proof:
-
-- worker syntax checks passed
-- JS tests: 8/8 passed
-- frontend lint passed
-- frontend production build passed
-
-Daily data refresh:
-
-```bash
 npm run local:update
-```
-
-Backtest:
-
-```bash
 npm run local:backtest
 npm run local:backtest -- --rebuild
-```
-
-Local app:
-
-```bash
+npm run local:sector:enrich -- --as-of=2026-02-23 --ranking-scope=ranked
 npm run local:dev
 ```
 
-`local:dev` is now one command that starts both:
-
-```text
-API:      localhost:8787
-Frontend: localhost:5173
-```
-
-The Vite frontend proxies `/api/*` to the local API.
-
-## 11. `/backtest` UI Policy
-
-Frontend visualization is deferred.
-
-Current `/backtest` is intentionally a **plain-text research log**, not a dashboard.
-
-Features:
-
-- left-aligned terminal/log presentation
-- deterministic formatted audit output
-- `Copy log` button copies the complete text for posting back into chat/issues
-- no cards/charts/tables/rich visualization for now
-
-Keep this simple until strategy-v3 research is stable.
-
-## 12. Key Files
+## 15. Key Files
 
 Core strategy/research:
 
@@ -367,6 +417,13 @@ worker/strategy-config.js
 tools/local/backtest.mjs
 ```
 
+Sector/reference research:
+
+```text
+tools/local/sector-enrich.mjs
+.github/workflows/research-sector-enrichment.yml
+```
+
 Local storage/data:
 
 ```text
@@ -377,50 +434,34 @@ tools/local/data-report.mjs
 tools/local/api.mjs
 ```
 
-Recovery / Cloudflare validation:
+Frontend remains a plain-text research log until strategy evidence is stronger.
 
-```text
-tools/recovery/publish-history.mjs
-tools/recovery/full-rebuild.mjs
-tools/recovery/state-repair.mjs
-migrations/0003_market_data_sessions.sql
-```
-
-Frontend research log:
-
-```text
-view/src/pages/Backtest.tsx
-view/src/pages/Backtest.css
-```
-
-Operational lifecycle:
-
-```text
-docs/LOCAL_DATA_LIFECYCLE.md
-```
-
-## 13. Next Work
-
-Do not return to frontend visualization yet.
+## 16. Next Work
 
 Proceed in this order:
 
-1. implement strategy-v3 initial-entry qualification
-2. implement initial stop / risk control that can only tighten
-3. implement sector metadata + Top-3-sector / Top-3-stock selection
-4. cap offensive portfolio at 9 stocks
-5. record MAE/MFE and setup/sector context in the trade ledger
-6. rerun the same 126-session baseline and compare against momentum-v2
-7. only after initial-entry/risk quality improves, implement Add #1 and Add #2
-8. options acceleration last
-9. rich frontend visualization last
+1. complete point-in-time SIC metadata collection for the research-relevant stock set
+2. measure SIC coverage specifically for ranked / Top-50 symbols
+3. build an explicit, deterministic, testable SIC -> FutureView 11-sector mapping
+4. audit ambiguous/missing mappings; do not guess
+5. map sectors to the 11 sector ETFs
+6. rerun controlled actual-sector-RS ablation against the same 126-session baseline
+7. only if sector RS adds evidence, implement sector-strength ranking and Top-3-sector / Top-3-stock selection
+8. implement initial stop / structural risk logic that can only tighten
+9. add MAE/MFE and setup/sector context to trade ledger
+10. rerun the same 126-session baseline
+11. pyramiding only after initial-entry/risk quality improves
+12. options acceleration after pyramiding evidence
+13. rich frontend visualization last
 
-Primary v3 success targets should initially emphasize risk quality, especially:
+Primary v3 success targets:
 
 ```text
-max drawdown: materially below -24.55%
-average loss: materially smaller than -13.44%
-profit factor / expectancy: clearly above the near-flat v2 baseline
+max drawdown materially below -24.55%
+average loss materially smaller than -13.44%
+profit factor clearly above 1.02
+expectancy clearly above +0.30%/trade
+rank 1-3 quality materially better than PF 0.74
 ```
 
 Do not optimize for win rate alone.
