@@ -6,6 +6,7 @@ import process from "node:process";
 const WRANGLER_VERSION = "4.125.0";
 const LOCAL_CONFIG = ".wrangler.local.json";
 const REMOTE_CONFIG = "wrangler.jsonc";
+const LOCAL_STATE_DIR = ".local-state";
 const SYNC_DIR = ".local-sync";
 const MANIFEST_FILE = `${SYNC_DIR}/manifest.json`;
 const R2_BUCKET = "futureview-data";
@@ -42,6 +43,10 @@ function runCapture(command, args, { allowFailure = false } = {}) {
 
 function wranglerArgs(...args) {
   return ["--yes", `wrangler@${WRANGLER_VERSION}`, ...args];
+}
+
+function localPersistenceArgs() {
+  return ["--persist-to", LOCAL_STATE_DIR];
 }
 
 function tempPathForKey(key) {
@@ -109,6 +114,7 @@ function putLocalR2(key, file) {
       "--file", file,
       "--content-type", "application/json",
       "--local",
+      ...localPersistenceArgs(),
       "--config", LOCAL_CONFIG,
     ),
   );
@@ -180,11 +186,13 @@ function parseWranglerJson(stdout) {
 }
 
 function d1Rows(sql, location) {
+  const localArgs = location === "--local" ? localPersistenceArgs() : [];
   const result = runCapture(
     "npx",
     wranglerArgs(
       "d1", "execute", D1_DATABASE,
       location,
+      ...localArgs,
       "--command", sql,
       "--json",
       "--config", location === "--remote" ? REMOTE_CONFIG : LOCAL_CONFIG,
@@ -223,6 +231,7 @@ function applyLocalD1(sql) {
     wranglerArgs(
       "d1", "execute", D1_DATABASE,
       "--local",
+      ...localPersistenceArgs(),
       "--file", sqlFile,
       "--yes",
       "--config", LOCAL_CONFIG,
@@ -280,10 +289,15 @@ function syncD1Snapshot() {
 }
 
 console.log(`FutureView production snapshot -> local development (${FULL_SYNC ? "full" : "incremental"})`);
-console.log("Remote access is read-only by design; all writes target local Wrangler state.");
+console.log("Remote access is read-only by design; all writes target persistent local Wrangler state.");
+console.log(`[local:sync] Local persistence: ${LOCAL_STATE_DIR}`);
 
-if (FULL_SYNC) rmSync(SYNC_DIR, { recursive: true, force: true });
+if (FULL_SYNC) {
+  rmSync(SYNC_DIR, { recursive: true, force: true });
+  rmSync(LOCAL_STATE_DIR, { recursive: true, force: true });
+}
 mkdirSync(SYNC_DIR, { recursive: true });
+mkdirSync(LOCAL_STATE_DIR, { recursive: true });
 
 const universe = syncJsonPointer("metadata/latest-common-stock-universe.json", {
   required: true,
@@ -328,4 +342,5 @@ console.log(`[local:sync] Feature state: ${featureState?.as_of ?? "unknown"}`);
 console.log(`[local:sync] R2 updated: ${copiedKeys.size}; unchanged/skipped: ${skippedKeys.size}`);
 console.log(`[local:sync] D1 changed dates: ${d1.changed_dates}; rows: ${d1.runs} runs / ${d1.entries} top50 entries / ${d1.universes} universes`);
 console.log(`[local:sync] Manifest: ${MANIFEST_FILE}`);
+console.log(`[local:sync] Persistent state: ${LOCAL_STATE_DIR}`);
 console.log("Start/restart development with: npm run local:dev");
