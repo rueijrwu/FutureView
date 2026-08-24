@@ -45,7 +45,8 @@ export async function maybeHandleManualAdmin(request, env) {
   const url = new URL(request.url);
   const isUniverseRefresh = url.pathname === "/api/admin/refresh-universe";
   const isFeatureBootstrap = url.pathname === "/api/admin/bootstrap-features";
-  if (!isUniverseRefresh && !isFeatureBootstrap) return null;
+  const isStateAdoption = url.pathname === "/api/admin/adopt-feature-state";
+  if (!isUniverseRefresh && !isFeatureBootstrap && !isStateAdoption) return null;
 
   if (request.method !== "POST") {
     return Response.json({ error: "method not allowed" }, {
@@ -56,6 +57,22 @@ export async function maybeHandleManualAdmin(request, env) {
 
   const authError = authorizeAdmin(request, env);
   if (authError) return authError;
+
+  if (isStateAdoption) {
+    if (!env.STATE_ADOPTION) {
+      return Response.json({ error: "STATE_ADOPTION Workflow binding is not configured" }, { status: 503 });
+    }
+
+    const instance = await env.STATE_ADOPTION.create({ params: {} });
+    return Response.json({
+      status: "started",
+      action: "adopt-feature-state",
+      workflow_instance: instance.id,
+    }, {
+      status: 202,
+      headers: { "cache-control": "no-store" },
+    });
+  }
 
   if (isFeatureBootstrap) {
     const targetDate = url.searchParams.get("date");
