@@ -9,7 +9,7 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -40,3 +40,8 @@ jobs:
         env:
           CUDA_VISIBLE_DEVICES: ''
         run: futureview-pipeline-smoke
+
+      - name: Run real-data CPU training smoke test
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: futureview-training-smoke
