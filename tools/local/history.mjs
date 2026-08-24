@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import path from "node:path";
 
 import { asyncBufferFromFile, parquetReadObjects } from "hyparquet";
+import { compressors } from "hyparquet-compressors";
 
 const ROOT = ".local-data";
 const OBJECTS = path.join(ROOT, "objects");
@@ -136,7 +137,7 @@ async function materializeParquet(date) {
   if (!existsSync(source)) return false;
 
   const file = await asyncBufferFromFile(source);
-  const rows = await parquetReadObjects({ file });
+  const rows = await parquetReadObjects({ file, compressors });
   const payload = normalizeDocument(date, rows, {
     source: "r2-parquet-mirror",
     producer: "codespaces-history-materializer",
