@@ -14,6 +14,13 @@
       "bucket_name": "futureview-data"
     }
   ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "futureview",
+      "database_id": "3096ba68-394c-47a1-bed8-1dedca339d94"
+    }
+  ],
   "workflows": [
     {
       "name": "futureview-incremental-features",
