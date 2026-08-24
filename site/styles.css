@@ -7,6 +7,9 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: radial-gradient(circle at top, #16203d 0, #0b1020 42%); min-height: 100vh; }
 .shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 28px; }
+.top-nav { display: flex; gap: 10px; margin-bottom: 28px; }
+.top-nav a { color: #8ea1c9; text-decoration: none; padding: 8px 12px; border: 1px solid #263255; border-radius: 999px; font-size: 13px; }
+.top-nav a.active, .top-nav a:hover { color: #eef2ff; border-color: #53679b; background: rgba(83,103,155,.18); }
 .hero { display: flex; justify-content: space-between; gap: 32px; align-items: flex-start; margin-bottom: 28px; }
 .eyebrow { margin: 0 0 8px; font-size: 12px; letter-spacing: .16em; color: #8ea1c9; font-weight: 700; }
 h1 { font-size: clamp(42px, 7vw, 78px); line-height: .92; margin: 0; letter-spacing: -.04em; }
