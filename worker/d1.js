@@ -69,6 +69,35 @@ export async function persistUniverseToD1(db, { asOf, r2Key, instruments, create
   `).bind(asOf, instruments.length, r2Key, "cloudflare-js", createdAt).run();
 }
 
+export async function persistMarketDataSession(db, record) {
+  if (!db) return;
+  const now = record.updatedAt ?? new Date().toISOString();
+  await db.prepare(`
+    INSERT INTO market_data_sessions (
+      trading_date, r2_key, row_count, sha256, source,
+      producer, storage_format, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(trading_date) DO UPDATE SET
+      r2_key=excluded.r2_key,
+      row_count=excluded.row_count,
+      sha256=excluded.sha256,
+      source=excluded.source,
+      producer=excluded.producer,
+      storage_format=excluded.storage_format,
+      updated_at=excluded.updated_at
+  `).bind(
+    record.tradingDate,
+    record.r2Key,
+    record.rowCount,
+    record.sha256,
+    record.source ?? "massive",
+    record.producer ?? "cloudflare-js",
+    record.storageFormat ?? "json",
+    record.createdAt ?? now,
+    now,
+  ).run();
+}
+
 export async function persistRankingToD1(db, { rankingMetadata, rankings }) {
   if (!db) return;
   const date = rankingMetadata.date;
