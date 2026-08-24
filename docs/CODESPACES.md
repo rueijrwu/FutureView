@@ -71,9 +71,35 @@ To develop against current production-shaped data without writing production:
 npm run local:sync
 ```
 
-The sync command reads production R2/D1 through the restricted Cloudflare token and writes only to local Wrangler state. It replaces the local ranking snapshot tables with the selected production snapshot so local API responses are reproducible.
+`local:sync` is incremental. It preserves the local Wrangler D1/R2 state in the Codespace and keeps a persistent sync manifest at:
 
-Production writes are intentionally not part of Codespaces development.
+```text
+.local-sync/manifest.json
+```
+
+On each run it reads only the small remote metadata/pointers needed to determine what changed. If a feature-state, ranking-state, universe, or backtest pointer is unchanged, the previously synced referenced R2 objects are reused instead of being downloaded and written again.
+
+For D1, recent `ranking_runs` are compared by content hash. Only new or changed trading dates have their `ranking_runs`, Top-50 `ranking_entries`, and required `universe_snapshots` copied into local D1. Normal incremental sync does not delete and rebuild the local ranking tables.
+
+Typical unchanged output should therefore look more like:
+
+```text
+[local:sync] metadata/latest-feature-state.json unchanged — skipped 33 referenced object(s)
+[local:sync] metadata/latest-ranking-state.json unchanged — skipped 33 referenced object(s)
+[local:sync] D1 ranking snapshot unchanged — skipped 20 recent run(s)
+```
+
+Wrangler subprocess output for every local R2 write is intentionally suppressed; the sync script prints concise FutureView progress messages instead.
+
+Use a full rebuild only when local state is missing/corrupt, the Codespace was rebuilt, or the local snapshot must deliberately be replaced:
+
+```bash
+npm run local:sync:full
+```
+
+Full sync clears the sync manifest/cache, rewrites the referenced local R2 snapshot, and replaces the local ranking snapshot tables.
+
+The sync command reads production R2/D1 through the restricted Cloudflare token and writes only to local Wrangler state. Production writes are intentionally not part of Codespaces development.
 
 Read-only snapshot sync does **not** constitute deployment approval and must not be treated as permission to run or modify Cloudflare production runtime.
 
