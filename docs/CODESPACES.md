@@ -1,81 +1,77 @@
 # FutureView Codespaces
 
-FutureView uses GitHub Codespaces as the preferred development environment during the manual testing phase.
+FutureView uses GitHub Codespaces as the primary development and research environment.
 
 ## Deployment approval policy
 
-Cloudflare is the **final production host/runtime**, not the default development or testing environment.
+Cloudflare is the final production host/runtime, not the default development runtime.
 
 During development and testing:
 
-- use GitHub and GitHub Codespaces for implementation, testing, validation, and frontend review
-- use local Wrangler D1/R2 state and the local Worker for runtime checks
-- do **not** deploy to Cloudflare, invoke Cloudflare production workflows, or use Cloudflare production runtime for feature validation unless the user explicitly confirms that deployment should happen
-- code existing on `master` does not imply that it should be deployed
-- a Cloudflare deployment is a separate, explicit step that requires user confirmation
-
-The only normal pre-deployment Cloudflare access is the existing **read-only production snapshot sync** used by `npm run local:sync`. That command may read production D1/R2 data through the restricted token, but all development writes and tests remain local.
-
-In short:
+- use GitHub Codespaces for implementation, historical research, backtests, API checks, and frontend review
+- do not deploy to Cloudflare or invoke production workflows unless the user explicitly approves deployment
+- code existing on `master` is not deployment approval
+- `npm run local:sync` may read production snapshots through restricted credentials, but development writes stay local
 
 ```text
 GitHub / Codespaces = develop and test
 Cloudflare           = deploy only after explicit user approval
 ```
 
-## Start
+## Local-first architecture
 
-1. Open the repository on GitHub.
-2. Select **Code → Codespaces → Create codespace on master** (or use a feature branch).
-3. Wait for the dev container to finish. `npm run local:setup` runs automatically through `postCreateCommand`.
-
-## Required Codespaces secrets
-
-Use repository/org Codespaces secrets rather than committing credentials:
-
-- `MASSIVE_API_KEY`
-- `CLOUDFLARE_API_TOKEN` — restricted development/read-only token
-- `R2_ACCOUNT_ID`
-
-Do not place production secrets in tracked files.
-
-## Persistent local state
-
-All local Wrangler bindings used for development are pinned to a workspace-local persistence directory:
+Research data is local-filesystem first:
 
 ```text
-.local-state/
+.local-data/
+  objects/
+    metadata/
+    backtests/
+    ...
+
+.local-backtest/
+  bars/
+  sessions/
+  checkpoint.json
 ```
 
-`local:setup`, `local:sync`, and `local:dev` all use the same `--persist-to .local-state` location. This keeps local D1/R2 data stable across terminal restarts and across reconnecting to the same Codespace from a different computer, as long as the Codespace workspace itself still exists.
-
-The incremental sync manifest is stored separately at:
+The strategy/research core does not depend on R2 or D1 directly. Storage adapters expose the same JSON contract:
 
 ```text
-.local-sync/manifest.json
+getJson(key)
+putJson(key, value)
+exists(key)
 ```
 
-Both `.local-state/` and `.local-sync/` are ignored by Git and remain local to the Codespace workspace.
+Current adapters:
 
-This persistence is intentional: historical data already synced or computed locally should be reused rather than downloaded or recomputed on every development session.
+- `tools/local/fs-store.mjs` — Codespaces filesystem adapter
+- `worker/json-store.js` — Cloudflare R2 adapter
 
-## Local validation
+This keeps feature, ranking, backtest, and audit logic portable. Cloudflare can be smoke-tested later with the same object keys and JSON contracts without making Cloudflare the daily research runtime.
 
-Run the complete setup/validation path when needed:
+## Persistent local caches
+
+The workspace keeps several ignored local directories:
+
+```text
+.local-data/       canonical local research objects
+.local-backtest/   immutable bars, per-session artifacts, checkpoint
+.local-sync/       read-only production snapshot cache / manifest
+.local-state/      Wrangler D1/R2 state for optional Cloudflare adapter tests
+```
+
+Reconnects to the same Codespace reuse these directories as long as the workspace still exists.
+
+Historical data already downloaded or computed should be reused. Normal work should append only new sessions.
+
+## Setup and validation
+
+Use full setup only for a new/rebuilt Codespace, dependency/config changes, or local environment repair:
 
 ```bash
 npm run local:setup
 ```
-
-This:
-
-- validates Node/npm
-- creates local Wrangler configuration
-- installs frontend dependencies
-- applies local D1 migrations against `.local-state/`
-- runs Worker/recovery/local script syntax checks
-- runs JS regression tests
-- runs frontend lint/build
 
 Before pushing changes:
 
@@ -83,96 +79,100 @@ Before pushing changes:
 npm run local:check
 ```
 
-## Sync a production snapshot
-
-To develop against current production-shaped data without writing production:
+## Read-only snapshot sync
 
 ```bash
 npm run local:sync
 ```
 
-`local:sync` is incremental. It preserves the local Wrangler D1/R2 state in `.local-state/` and keeps a persistent sync manifest at:
+This remains the bridge for production-shaped reference data such as the common-stock universe and latest metadata. It is incremental and does not constitute deployment approval.
 
-```text
-.local-sync/manifest.json
-```
-
-On each run it reads only the small remote metadata/pointers needed to determine what changed. If a feature-state, ranking-state, universe, or backtest pointer is unchanged, the previously synced referenced R2 objects are reused instead of being downloaded and written again.
-
-For D1, recent `ranking_runs` are compared by content hash. Only new or changed trading dates have their `ranking_runs`, Top-50 `ranking_entries`, and required `universe_snapshots` copied into local D1. Normal incremental sync does not delete and rebuild the local ranking tables.
-
-Typical unchanged output should therefore look more like:
-
-```text
-[local:sync] metadata/latest-feature-state.json unchanged — skipped 33 referenced object(s)
-[local:sync] metadata/latest-ranking-state.json unchanged — skipped 33 referenced object(s)
-[local:sync] D1 ranking snapshot unchanged — skipped 20 recent run(s)
-```
-
-Wrangler subprocess output for every local R2 write is intentionally suppressed; the sync script prints concise FutureView progress messages instead.
-
-Use a full rebuild only when local state is missing/corrupt, the Codespace was replaced, or the local snapshot must deliberately be rebuilt from scratch:
+Use a full sync only when the local sync state is deliberately being rebuilt:
 
 ```bash
 npm run local:sync:full
 ```
 
-Full sync clears both `.local-sync/` and `.local-state/`, then rebuilds the referenced local R2 snapshot and local D1 ranking snapshot from production read-only sources.
+## Historical local backtest
 
-The sync command reads production R2/D1 through the restricted Cloudflare token and writes only to local Wrangler state. Production writes are intentionally not part of Codespaces development.
+```bash
+npm run local:backtest
+```
 
-Read-only snapshot sync does **not** constitute deployment approval and must not be treated as permission to run or modify Cloudflare production runtime.
+The first run bootstraps the required historical bars, builds canonical JS features/rankings, caches every completed session, runs the backtest, and writes the latest result to `.local-data/objects/metadata/latest-backtest.json` plus its referenced result object.
 
-The sync also copies the latest backtest metadata/result when present so the local backtest audit page can inspect a production-shaped historical result without using the production Worker.
+Later runs reuse `.local-backtest/` and append only sessions newer than the checkpoint.
 
-## Run the local Worker
+Use a deliberate clean rebuild only when strategy/universe consistency requires it:
+
+```bash
+npm run local:backtest -- --rebuild
+```
+
+The historical bootstrap currently applies the synced common-stock universe across the replay window, so results must be interpreted with survivorship-bias caution until point-in-time universes are added.
+
+## Local API
+
+Daily local development uses the Node filesystem API, not Wrangler:
 
 ```bash
 npm run local:dev
 ```
 
-Wrangler listens on port `8787`; Codespaces forwards the port automatically. The Worker reads the same persistent `.local-state/` used by setup and sync.
-
-Useful checks:
+It listens on port `8787` and serves the same API paths used by the Cloudflare Worker, including:
 
 ```bash
 curl http://localhost:8787/api/health
 curl http://localhost:8787/api/universe/status
-curl http://localhost:8787/api/state/status
 curl http://localhost:8787/api/rankings/latest
+curl http://localhost:8787/api/backtests/latest
 curl http://localhost:8787/api/backtests/audit
 ```
 
-For frontend development, keep the local Worker running and start Vite in a second terminal:
+Expected health identity for daily local development:
+
+```json
+{
+  "storage": "filesystem",
+  "runtime": "node-local-js"
+}
+```
+
+## Frontend
+
+Run Vite in another terminal:
 
 ```bash
 npm run dev --prefix view -- --host 0.0.0.0
 ```
 
-Vite listens on port `5173` and proxies `/api/*` requests to the local Worker on port `8787`.
+Vite listens on `5173` and proxies `/api/*` to `127.0.0.1:8787`.
 
-The strategy win-rate analysis page is available at:
+Backtest page:
 
 ```text
 http://localhost:5173/backtest
 ```
 
-In Codespaces, open the forwarded port `5173` and append `/backtest` if needed. This page is a local development view and does not require Cloudflare deployment.
+## Optional Cloudflare adapter smoke test
 
-## Manual testing phase
+Wrangler is retained only for small integration/contract checks:
 
-Cloudflare Cron and the Worker `scheduled()` entrypoint are disabled. Do not use `/cdn-cgi/local/scheduled` or add scheduled triggers during this phase.
+```bash
+npm run local:cloudflare
+```
 
-Production updates are explicit/manual until the pipeline is validated and the project deliberately enables automation again.
+This uses `.local-state/` and the actual Worker/R2/D1 bindings locally. It is not the default research path.
 
-No Cloudflare deployment or production-runtime validation should be performed merely because a feature is ready locally. Wait for explicit user confirmation to deploy.
+A future explicitly approved Cloudflare deployment should validate a small fixture through the same API/storage contracts before any larger production workflow is enabled.
 
 ## Data contract
 
-Local development must keep the same contracts as production:
+Local and Cloudflare paths must preserve:
 
-- D1 schema comes from `migrations/`.
-- R2 object keys and JSON formats match production.
-- Ranking/feature/replay/backtest logic remains shared JavaScript.
+- the same strategy core JavaScript
+- the same object keys and JSON payload contracts
+- the same ranking/backtest semantics
+- D1 schema compatibility where D1 is used
 
-Local convenience code must not create a second strategy implementation.
+Storage backend changes must not create a second strategy implementation.
