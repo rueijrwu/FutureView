@@ -1,4 +1,8 @@
 import { WorkflowEntrypoint } from "cloudflare:workers";
+import {
+  promoteProductionRanking,
+  runProductionRanking,
+} from "./production-ranking.js";
 
 const STATE_VERSION = 1;
 const STATE_SHARDS = 32;
@@ -11,6 +15,12 @@ async function readJson(bucket, key) {
   const object = await bucket.get(key);
   if (object === null) throw new Error(`R2 object not found: ${key}`);
   return object.json();
+}
+
+async function writeJson(bucket, key, payload) {
+  await bucket.put(key, JSON.stringify(payload), {
+    httpMetadata: { contentType: "application/json; charset=utf-8" },
+  });
 }
 
 function meanLast(values, size) {
@@ -30,7 +40,9 @@ function trueRange(high, low, previousClose) {
 }
 
 function updateSymbolState(state, bar, tradingDate) {
-  if (tradingDate <= state.as_of) throw new Error(`${state.symbol}: update date is not newer than state`);
+  if (tradingDate <= state.as_of) {
+    throw new Error(`${state.symbol}: update date is not newer than state`);
+  }
   if (state.closes.length < 200 || state.highs.length < 50 || state.volumes.length < 20) {
     throw new Error(`${state.symbol}: incremental state is not fully bootstrapped`);
   }
@@ -104,12 +116,6 @@ function shardForSymbol(symbol) {
   return total % STATE_SHARDS;
 }
 
-async function writeJson(bucket, key, payload) {
-  await bucket.put(key, JSON.stringify(payload), {
-    httpMetadata: { contentType: "application/json; charset=utf-8" },
-  });
-}
-
 function replayRequest(event) {
   const payload = event.payload ?? {};
   if (payload.mode !== "replay") return null;
@@ -131,9 +137,13 @@ export class IncrementalFeatureWorkflow extends WorkflowEntrypoint {
         ? { date: replay.target_date, data_key: replay.bars_key }
         : await readJson(this.env.RESEARCH, LATEST_INGEST_KEY);
       if (Number(state.version) !== STATE_VERSION || Number(state.shard_count) !== STATE_SHARDS) {
-        throw new Error(`unsupported feature state contract: v${state.version}, shards=${state.shard_count}`);
+        throw new Error(
+          `unsupported feature state contract: v${state.version}, shards=${state.shard_count}`,
+        );
       }
-      if (!ingest.date || !ingest.data_key) throw new Error("latest ingestion metadata is incomplete");
+      if (!ingest.date || !ingest.data_key) {
+        throw new Error("latest ingestion metadata is incomplete");
+      }
       return { state, ingest };
     });
 
@@ -148,7 +158,10 @@ export class IncrementalFeatureWorkflow extends WorkflowEntrypoint {
         workflow_instance: event.instanceId,
         updated_at: new Date().toISOString(),
       };
-      await step.do("publish no-op status", async () => writeJson(this.env.RESEARCH, statusKey, status));
+      await step.do(
+        "publish no-op status",
+        async () => writeJson(this.env.RESEARCH, statusKey, status),
+      );
       return status;
     }
 
@@ -166,7 +179,11 @@ export class IncrementalFeatureWorkflow extends WorkflowEntrypoint {
         const key = replay
           ? `${replay.root}/cloudflare/work/bars/shard=${shardName}.json`
           : `work/incremental/date=${tradingDate}/bars/shard=${shardName}.json`;
-        await writeJson(this.env.RESEARCH, key, { date: tradingDate, shard, bars: shards[shard] });
+        await writeJson(this.env.RESEARCH, key, {
+          date: tradingDate,
+          shard,
+          bars: shards[shard],
+        });
         keys.push(key);
       }
       return { keys, input_count: daily.bars?.length ?? 0 };
@@ -180,13 +197,18 @@ export class IncrementalFeatureWorkflow extends WorkflowEntrypoint {
     for (let shard = 0; shard < STATE_SHARDS; shard += 1) {
       const result = await step.do(
         `update feature shard ${String(shard).padStart(2, "0")}`,
-        { retries: { limit: 3, delay: "10 seconds", backoff: "exponential" }, timeout: "5 minutes" },
+        {
+          retries: { limit: 3, delay: "10 seconds", backoff: "exponential" },
+          timeout: "5 minutes",
+        },
         async () => {
           const sourceStateKey = source.state.keys?.[shard];
           if (!sourceStateKey) throw new Error(`source state key missing for shard ${shard}`);
           const statePayload = await readJson(this.env.RESEARCH, sourceStateKey);
           const barsPayload = await readJson(this.env.RESEARCH, prepared.keys[shard]);
-          const bars = new Map((barsPayload.bars ?? []).map((bar) => [String(bar.symbol), bar]));
+          const bars = new Map(
+            (barsPayload.bars ?? []).map((bar) => [String(bar.symbol), bar]),
+          );
           const nextStates = [];
           const features = [];
           let updated = 0;
@@ -237,46 +259,46 @@ export class IncrementalFeatureWorkflow extends WorkflowEntrypoint {
       carriedSymbols += result.carried;
     }
 
-    const final = await step.do("publish incremental feature state", async () => {
-      const now = new Date().toISOString();
-      const stateMetadata = {
-        version: STATE_VERSION,
-        as_of: tradingDate,
-        shard_count: STATE_SHARDS,
-        symbol_count: updatedSymbols + carriedSymbols,
-        updated_symbol_count: updatedSymbols,
-        carried_symbol_count: carriedSymbols,
-        prefix: replay
-          ? `${replay.root}/cloudflare/state`
-          : `state/rolling/v${STATE_VERSION}/date=${tradingDate}`,
-        keys: stateKeys,
-        producer: "cloudflare-workflow",
-        workflow_instance: event.instanceId,
-        updated_at: now,
-      };
-      const featureMetadata = {
-        version: STATE_VERSION,
-        date: tradingDate,
-        shard_count: STATE_SHARDS,
-        feature_count: updatedSymbols,
-        input_bar_count: prepared.input_count,
-        keys: featureKeys,
-        producer: "cloudflare-workflow",
-        workflow_instance: event.instanceId,
-        updated_at: now,
-      };
-      const workflowStatus = {
-        status: "complete",
-        mode: replay ? "replay" : "production",
-        date: tradingDate,
-        state_as_of_before: source.state.as_of,
-        feature_count: updatedSymbols,
-        carried_symbol_count: carriedSymbols,
-        workflow_instance: event.instanceId,
-        updated_at: now,
-      };
+    const now = new Date().toISOString();
+    const stateMetadata = {
+      version: STATE_VERSION,
+      as_of: tradingDate,
+      shard_count: STATE_SHARDS,
+      symbol_count: updatedSymbols + carriedSymbols,
+      updated_symbol_count: updatedSymbols,
+      carried_symbol_count: carriedSymbols,
+      prefix: replay
+        ? `${replay.root}/cloudflare/state`
+        : `state/rolling/v${STATE_VERSION}/date=${tradingDate}`,
+      keys: stateKeys,
+      producer: "cloudflare-js",
+      workflow_instance: event.instanceId,
+      updated_at: now,
+    };
+    const featureMetadata = {
+      version: STATE_VERSION,
+      date: tradingDate,
+      shard_count: STATE_SHARDS,
+      feature_count: updatedSymbols,
+      input_bar_count: prepared.input_count,
+      keys: featureKeys,
+      producer: "cloudflare-js",
+      workflow_instance: event.instanceId,
+      updated_at: now,
+    };
 
-      if (replay) {
+    if (replay) {
+      const final = await step.do("publish replay feature artifacts", async () => {
+        const workflowStatus = {
+          status: "complete",
+          mode: "replay",
+          date: tradingDate,
+          state_as_of_before: source.state.as_of,
+          feature_count: updatedSymbols,
+          carried_symbol_count: carriedSymbols,
+          workflow_instance: event.instanceId,
+          updated_at: now,
+        };
         const replayMetadata = {
           ...workflowStatus,
           state_keys: stateKeys,
@@ -284,16 +306,58 @@ export class IncrementalFeatureWorkflow extends WorkflowEntrypoint {
           input_bar_count: prepared.input_count,
           promoted_latest: false,
         };
-        await writeJson(this.env.RESEARCH, `${replay.root}/cloudflare/metadata.json`, replayMetadata);
+        await writeJson(
+          this.env.RESEARCH,
+          `${replay.root}/cloudflare/metadata.json`,
+          replayMetadata,
+        );
         await writeJson(this.env.RESEARCH, statusKey, workflowStatus);
         return replayMetadata;
-      }
+      });
+      return final;
+    }
 
+    await step.do("publish date-scoped feature metadata", async () => {
       await writeJson(
         this.env.RESEARCH,
         `state/rolling/v${STATE_VERSION}/date=${tradingDate}/metadata.json`,
         stateMetadata,
       );
+      await writeJson(
+        this.env.RESEARCH,
+        `features/daily/date=${tradingDate}/metadata.json`,
+        featureMetadata,
+      );
+    });
+
+    const stagedRanking = await step.do(
+      "build JS production ranking",
+      {
+        retries: { limit: 2, delay: "10 seconds", backoff: "exponential" },
+        timeout: "5 minutes",
+      },
+      async () => runProductionRanking({
+        bucket: this.env.RESEARCH,
+        featureKeys,
+        tradingDate,
+        workflowInstance: event.instanceId,
+      }),
+    );
+
+    const final = await step.do("promote complete JS production snapshot", async () => {
+      await promoteProductionRanking(this.env.RESEARCH, stagedRanking);
+      const workflowStatus = {
+        status: "complete",
+        mode: "production",
+        date: tradingDate,
+        state_as_of_before: source.state.as_of,
+        feature_count: updatedSymbols,
+        carried_symbol_count: carriedSymbols,
+        ranking_candidate_count: stagedRanking.rankingMetadata.candidate_count,
+        top50_count: stagedRanking.rankingMetadata.top50_count,
+        workflow_instance: event.instanceId,
+        updated_at: new Date().toISOString(),
+      };
       await writeJson(this.env.RESEARCH, LATEST_FEATURES_KEY, featureMetadata);
       await writeJson(this.env.RESEARCH, LATEST_STATE_KEY, stateMetadata);
       await writeJson(this.env.RESEARCH, LATEST_WORKFLOW_KEY, workflowStatus);
