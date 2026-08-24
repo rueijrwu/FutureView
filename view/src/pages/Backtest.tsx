@@ -7,6 +7,11 @@ type Summary = {
   losses: number;
   breakeven: number;
   win_rate: number | null;
+  win_rate_ci95_low: number | null;
+  win_rate_ci95_high: number | null;
+  break_even_win_rate: number | null;
+  win_rate_edge: number | null;
+  sample_label: 'early' | 'developing' | 'stronger';
   average_return: number | null;
   median_return: number | null;
   average_win_return: number | null;
@@ -39,6 +44,7 @@ type Audit = {
   breakdowns: {
     by_exit_reason: Breakdown[];
     by_entry_rank: Breakdown[];
+    by_hold_period: Breakdown[];
   };
   validation_scope: Record<string, boolean>;
   notes: string[];
@@ -47,19 +53,25 @@ type Audit = {
 const pct = (value: number | null, digits = 1) => value === null ? '—' : `${(value * 100).toFixed(digits)}%`;
 const num = (value: number | null, digits = 2) => value === null ? '—' : value.toFixed(digits);
 const money = (value: number | null) => value === null ? '—' : new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  maximumFractionDigits: 0,
+  style: 'currency', currency: 'USD', maximumFractionDigits: 0,
 }).format(value);
 
 const scopeLabels: Record<string, string> = {
   overall_trade_win_rate: 'Overall trade win rate',
   initial_entry_trade_outcomes: 'Initial-entry outcomes',
+  entry_rank_buckets: 'Entry-rank buckets',
+  hold_period_buckets: 'Holding-period buckets',
   sector_top3_filter: 'Top-3 sector filter',
   add_1: 'Add #1',
   add_2: 'Add #2',
   option_acceleration: 'Option acceleration',
   mae_mfe: 'MAE / MFE',
+};
+
+const sampleText: Record<Summary['sample_label'], string> = {
+  early: 'Early sample (<30 trades)',
+  developing: 'Developing sample (30–99 trades)',
+  stronger: 'Stronger sample (100+ trades)',
 };
 
 const Backtest: React.FC = () => {
@@ -75,15 +87,9 @@ const Backtest: React.FC = () => {
         if (!response.ok) throw new Error(body?.error ?? 'Backtest audit is unavailable');
         return body as Audit;
       })
-      .then((body) => {
-        if (active) setAudit(body);
-      })
-      .catch((reason: Error) => {
-        if (active) setError(reason.message);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+      .then((body) => { if (active) setAudit(body); })
+      .catch((reason: Error) => { if (active) setError(reason.message); })
+      .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
 
@@ -94,6 +100,7 @@ const Backtest: React.FC = () => {
   const expectancy = overall.average_win_return !== null && overall.average_loss_return !== null && overall.win_rate !== null
     ? overall.win_rate * overall.average_win_return + (1 - overall.win_rate) * overall.average_loss_return
     : null;
+  const economicallyPositive = overall.win_rate_edge !== null && overall.win_rate_edge > 0;
 
   return (
     <main className="backtest-page">
@@ -101,19 +108,35 @@ const Backtest: React.FC = () => {
         <div>
           <p className="eyebrow">Strategy validation</p>
           <h1>Win-Rate Audit</h1>
-          <p className="audit-subtitle">Canonical historical backtest from D1 metadata + R2 result storage.</p>
+          <p className="audit-subtitle">Historical validation from local D1/R2 snapshot through the canonical JS backtest result.</p>
         </div>
         <div className="audit-meta">
-          <span>{audit.strategy_version ?? 'unknown strategy'}</span>
+          <span>{audit.strategy_version ?? 'unknown strategy'} · {audit.status}</span>
           <strong>{audit.start_date ?? '—'} → {audit.end_date ?? '—'}</strong>
+          {audit.updated_at && <small>Result: {new Date(audit.updated_at).toLocaleString()}</small>}
         </div>
       </header>
 
       <section className="primary-grid" aria-label="Primary backtest metrics">
         <article className="metric-card featured">
-          <span>Win rate</span>
+          <span>Observed win rate</span>
           <strong>{pct(overall.win_rate)}</strong>
           <small>{overall.wins} wins / {overall.trade_count} trades</small>
+        </article>
+        <article className="metric-card">
+          <span>95% win-rate range</span>
+          <strong className="range-value">{pct(overall.win_rate_ci95_low)}–{pct(overall.win_rate_ci95_high)}</strong>
+          <small>Wilson confidence interval</small>
+        </article>
+        <article className="metric-card">
+          <span>Break-even win rate</span>
+          <strong>{pct(overall.break_even_win_rate)}</strong>
+          <small>given observed avg win / loss</small>
+        </article>
+        <article className={`metric-card ${economicallyPositive ? 'positive-card' : ''}`}>
+          <span>Win-rate edge</span>
+          <strong>{pct(overall.win_rate_edge)}</strong>
+          <small>observed minus break-even</small>
         </article>
         <article className="metric-card">
           <span>Payoff ratio</span>
@@ -130,16 +153,17 @@ const Backtest: React.FC = () => {
           <strong>{pct(expectancy)}</strong>
           <small>win-rate weighted return</small>
         </article>
+        <article className="metric-card">
+          <span>Evidence level</span>
+          <strong className="sample-value">{overall.sample_label}</strong>
+          <small>{sampleText[overall.sample_label]}</small>
+        </article>
       </section>
 
       <section className="secondary-grid">
         <article className="panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Outcome quality</p>
-              <h2>Trade distribution</h2>
-            </div>
-          </div>
+          <p className="eyebrow">Outcome quality</p>
+          <h2>Trade distribution</h2>
           <div className="distribution-row">
             <div><span>Average win</span><strong>{pct(overall.average_win_return)}</strong></div>
             <div><span>Average loss</span><strong>{pct(overall.average_loss_return)}</strong></div>
@@ -172,57 +196,56 @@ const Backtest: React.FC = () => {
         </article>
       </section>
 
-      <section className="panel table-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Exit diagnostics</p>
-            <h2>Win rate by exit reason</h2>
-          </div>
-        </div>
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>Exit reason</th><th>Trades</th><th>Win rate</th><th>Median return</th><th>Payoff</th></tr></thead>
-            <tbody>
-              {audit.breakdowns.by_exit_reason.map((row) => (
-                <tr key={row.key}>
-                  <td>{row.key}</td><td>{row.trade_count}</td><td>{pct(row.win_rate)}</td><td>{pct(row.median_return)}</td><td>{num(row.payoff_ratio)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      <section className="panel conclusion-panel">
+        <p className="eyebrow">Current read</p>
+        <h2>{economicallyPositive ? 'Observed win rate is above the current break-even threshold.' : 'Observed win rate is not yet above the current break-even threshold.'}</h2>
+        <p>
+          Current sample: <strong>{overall.trade_count}</strong> trades. The measured win rate is <strong>{pct(overall.win_rate)}</strong>,
+          with a 95% interval of <strong>{pct(overall.win_rate_ci95_low)}–{pct(overall.win_rate_ci95_high)}</strong>.
+          The current payoff profile implies a break-even win rate of <strong>{pct(overall.break_even_win_rate)}</strong>.
+        </p>
       </section>
 
-      {audit.breakdowns.by_entry_rank.length > 0 && (
-        <section className="panel table-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Selection quality</p>
-              <h2>Win rate by entry rank</h2>
-            </div>
-          </div>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Entry rank</th><th>Trades</th><th>Win rate</th><th>Avg return</th><th>Profit factor</th></tr></thead>
-              <tbody>
-                {audit.breakdowns.by_entry_rank.map((row) => (
-                  <tr key={row.key}>
-                    <td>{row.key}</td><td>{row.trade_count}</td><td>{pct(row.win_rate)}</td><td>{pct(row.average_return)}</td><td>{num(row.profit_factor)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
+      <section className="panel table-panel">
+        <p className="eyebrow">Selection quality</p>
+        <h2>Win rate by entry rank</h2>
+        {audit.breakdowns.by_entry_rank.length ? (
+          <div className="table-wrap"><table>
+            <thead><tr><th>Entry rank</th><th>Trades</th><th>Win rate</th><th>95% low</th><th>Avg return</th><th>Profit factor</th></tr></thead>
+            <tbody>{audit.breakdowns.by_entry_rank.map((row) => (
+              <tr key={row.key}><td>{row.key}</td><td>{row.trade_count}</td><td>{pct(row.win_rate)}</td><td>{pct(row.win_rate_ci95_low)}</td><td>{pct(row.average_return)}</td><td>{num(row.profit_factor)}</td></tr>
+            ))}</tbody>
+          </table></div>
+        ) : <p className="empty-copy">Entry rank is not present in the existing backtest result. Re-run the backtest with the current trade ledger to populate this breakdown.</p>}
+      </section>
+
+      <section className="two-table-grid">
+        <article className="panel table-panel">
+          <p className="eyebrow">Timing</p>
+          <h2>By holding period</h2>
+          <div className="table-wrap"><table>
+            <thead><tr><th>Sessions</th><th>Trades</th><th>Win rate</th><th>Median return</th></tr></thead>
+            <tbody>{audit.breakdowns.by_hold_period.map((row) => (
+              <tr key={row.key}><td>{row.key}</td><td>{row.trade_count}</td><td>{pct(row.win_rate)}</td><td>{pct(row.median_return)}</td></tr>
+            ))}</tbody>
+          </table></div>
+        </article>
+
+        <article className="panel table-panel">
+          <p className="eyebrow">Exit diagnostics</p>
+          <h2>By exit reason</h2>
+          <div className="table-wrap"><table>
+            <thead><tr><th>Exit reason</th><th>Trades</th><th>Win rate</th><th>Median return</th><th>Payoff</th></tr></thead>
+            <tbody>{audit.breakdowns.by_exit_reason.map((row) => (
+              <tr key={row.key}><td>{row.key}</td><td>{row.trade_count}</td><td>{pct(row.win_rate)}</td><td>{pct(row.median_return)}</td><td>{num(row.payoff_ratio)}</td></tr>
+            ))}</tbody>
+          </table></div>
+        </article>
+      </section>
 
       <section className="panel scope-panel">
-        <div className="panel-heading">
-          <div>
-            <p className="eyebrow">Validation scope</p>
-            <h2>What this result actually proves</h2>
-          </div>
-        </div>
+        <p className="eyebrow">Validation scope</p>
+        <h2>What this result actually proves</h2>
         <div className="scope-grid">
           {Object.entries(audit.validation_scope).map(([key, validated]) => (
             <div className={validated ? 'scope-item validated' : 'scope-item pending'} key={key}>
@@ -231,9 +254,7 @@ const Backtest: React.FC = () => {
             </div>
           ))}
         </div>
-        <div className="audit-notes">
-          {audit.notes.map((note) => <p key={note}>{note}</p>)}
-        </div>
+        <div className="audit-notes">{audit.notes.map((note) => <p key={note}>{note}</p>)}</div>
       </section>
     </main>
   );
