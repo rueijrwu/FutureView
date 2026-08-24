@@ -11,6 +11,9 @@ const FEATURE_STATE_METADATA_KEY = "metadata/latest-feature-state.json";
 const RANKING_STATE_METADATA_KEY = "metadata/latest-ranking-state.json";
 const UNIVERSE_METADATA_KEY = "metadata/latest-common-stock-universe.json";
 const REPLAY_METADATA_KEY = "metadata/latest-js-replay.json";
+const BACKTEST_METADATA_KEY = "metadata/latest-backtest.json";
+const DAILY_CRON = "30 23 * * MON-FRI";
+const BACKTEST_CRON = "0 14 * * SUN";
 
 function newYorkDateFromTimestamp(timestampMs) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -302,10 +305,37 @@ export default {
       );
     }
 
+    if (url.pathname === "/api/backtests/latest") {
+      const pointer = await env.RESEARCH.get(BACKTEST_METADATA_KEY);
+      if (!pointer) {
+        return Response.json({ error: "backtest has not completed yet" }, { status: 503 });
+      }
+      const metadata = await pointer.json();
+      if (!metadata.result_key) return Response.json(metadata);
+      return r2JsonResponse(env, metadata.result_key, "backtest result is unavailable");
+    }
+
     return env.ASSETS.fetch(request);
   },
 
   async scheduled(controller, env, ctx) {
+    if (controller.cron === BACKTEST_CRON) {
+      ctx.waitUntil(
+        (async () => {
+          const instance = await env.BACKTEST.create({
+            params: { lookback_sessions: 126 },
+          });
+          console.log(`Weekly JS backtest started: ${instance.id}`);
+        })(),
+      );
+      return;
+    }
+
+    if (controller.cron !== DAILY_CRON) {
+      console.warn(`Ignoring unknown cron trigger: ${controller.cron}`);
+      return;
+    }
+
     ctx.waitUntil(
       (async () => {
         const targetDate = newYorkDateFromTimestamp(controller.scheduledTime);
