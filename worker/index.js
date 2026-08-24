@@ -163,6 +163,13 @@ async function ingestLatestAvailableSession(env, scheduledTime) {
   throw new Error(`No Massive grouped-daily session found on or before ${targetDate}`);
 }
 
+async function hasCloudflareFeatureState(env) {
+  const object = await env.RESEARCH.get(FEATURE_STATE_METADATA_KEY);
+  if (object === null) return false;
+  const metadata = await object.json();
+  return String(metadata.producer ?? "").startsWith("cloudflare");
+}
+
 async function r2JsonResponse(env, key, unavailableMessage, status = 503) {
   const object = await env.RESEARCH.get(key);
   if (object === null) {
@@ -352,8 +359,7 @@ export default {
         console.log(`Common-stock universe ready for ${universe.as_of}: ${universe.count}`);
 
         const ingest = await ingestLatestAvailableSession(env, controller.scheduledTime);
-        const featureState = await env.RESEARCH.head(FEATURE_STATE_METADATA_KEY);
-        if (featureState === null) {
+        if (!(await hasCloudflareFeatureState(env))) {
           const bootstrap = await env.FEATURE_BOOTSTRAP.create({
             params: { target_date: ingest.date },
           });
