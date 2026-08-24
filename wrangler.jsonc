@@ -30,11 +30,5 @@
       "binding": "BACKTEST",
       "class_name": "BacktestWorkflow"
     }
-  ],
-  "triggers": {
-    "crons": [
-      "30 23 * * MON-FRI",
-      "0 14 * * SUN"
-    ]
-  }
+  ]
 }
