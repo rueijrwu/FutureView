@@ -38,9 +38,11 @@ export function createFilesystemJsonStore() {
 }
 
 export function readSyncCacheJson(key) {
-  const file = `.local-sync/${String(key).replace(/[^A-Za-z0-9._-]/g, "__")}`;
-  if (!existsSync(file)) return null;
-  return JSON.parse(readFileSync(file, "utf8"));
+  const name = String(key).replace(/[^A-Za-z0-9._-]/g, "__");
+  for (const file of [`.local-sync/${name}`, `.local-sync/tmp/${name}`]) {
+    if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8"));
+  }
+  return null;
 }
 
 export async function materializeFromSyncCache(store, key) {
