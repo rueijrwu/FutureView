@@ -74,17 +74,6 @@ function isWeekend(iso) {
   return day === 0 || day === 6;
 }
 
-function nyDate() {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
 function barPath(date) { return `${BAR_DIR}/${date}.json`; }
 function sessionPath(date) { return `${SESSION_DIR}/${date}.json`; }
 
@@ -263,6 +252,15 @@ async function loadUniverse() {
   };
 }
 
+async function latestCompletedSession() {
+  const featureState = await materializeFromSyncCache(store, "metadata/latest-feature-state.json");
+  const date = featureState?.as_of ?? featureState?.date ?? null;
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    fail("latest completed feature session is missing; run npm run local:sync first or pass --end=YYYY-MM-DD");
+  }
+  return date;
+}
+
 function runBacktest(processedDates, sessions) {
   const selected = processedDates.slice(-sessions);
   let state = createBacktestState(BACKTEST_CONFIG_V1);
@@ -284,7 +282,10 @@ ensureDirs();
 const key = apiKey();
 if (!key) fail("MASSIVE_API_KEY is required in the environment or .dev.vars");
 const universe = await loadUniverse();
-const endDate = options.endDate ?? nyDate();
+const endDate = options.endDate ?? await latestCompletedSession();
+if (!options.endDate) {
+  console.log(`[local:backtest] using latest completed synced session ${endDate}`);
+}
 let checkpoint = loadCheckpoint();
 
 if (!checkpoint) {
