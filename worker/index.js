@@ -8,7 +8,6 @@ import { refreshCommonStockUniverse } from "./universe.js";
 const MASSIVE_BASE_URL = "https://api.massive.com";
 const CLOUDFLARE_INGEST_METADATA_KEY = "metadata/latest-cloudflare-ingest.json";
 const FEATURE_STATE_METADATA_KEY = "metadata/latest-feature-state.json";
-const FEATURE_BOOTSTRAP_METADATA_KEY = "metadata/latest-feature-bootstrap.json";
 const RANKING_STATE_METADATA_KEY = "metadata/latest-ranking-state.json";
 const UNIVERSE_METADATA_KEY = "metadata/latest-common-stock-universe.json";
 const REPLAY_METADATA_KEY = "metadata/latest-js-replay.json";
@@ -163,11 +162,16 @@ async function ingestLatestAvailableSession(env, scheduledTime) {
   throw new Error(`No Massive grouped-daily session found on or before ${targetDate}`);
 }
 
-async function hasCloudflareFeatureState(env) {
+async function requireCloudflareFeatureState(env) {
   const object = await env.RESEARCH.get(FEATURE_STATE_METADATA_KEY);
-  if (object === null) return false;
+  if (object === null) {
+    throw new Error("canonical Cloudflare feature state is missing");
+  }
   const metadata = await object.json();
-  return String(metadata.producer ?? "").startsWith("cloudflare");
+  if (!String(metadata.producer ?? "").startsWith("cloudflare")) {
+    throw new Error("feature state is not canonical Cloudflare state");
+  }
+  return metadata;
 }
 
 async function r2JsonResponse(env, key, unavailableMessage, status = 503) {
@@ -297,14 +301,6 @@ export default {
       );
     }
 
-    if (url.pathname === "/api/bootstrap/status") {
-      return r2JsonResponse(
-        env,
-        FEATURE_BOOTSTRAP_METADATA_KEY,
-        "JS feature bootstrap has not completed yet",
-      );
-    }
-
     if (url.pathname === "/api/ranking-state/status") {
       return r2JsonResponse(
         env,
@@ -359,13 +355,7 @@ export default {
         console.log(`Common-stock universe ready for ${universe.as_of}: ${universe.count}`);
 
         const ingest = await ingestLatestAvailableSession(env, controller.scheduledTime);
-        if (!(await hasCloudflareFeatureState(env))) {
-          const bootstrap = await env.FEATURE_BOOTSTRAP.create({
-            params: { target_date: ingest.date },
-          });
-          console.log(`JS feature bootstrap started for ${ingest.date}: ${bootstrap.id}`);
-          return;
-        }
+        await requireCloudflareFeatureState(env);
 
         const instance = await env.INCREMENTAL_FEATURES.create({
           params: {
