@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { rankCrossSection } from "../worker/ranking-core.js";
+import { RANKING_CONFIG_SECTOR_RS_EXPERIMENT } from "../worker/strategy-config.js";
 
 function feature(symbol, overrides = {}) {
   return {
@@ -22,11 +23,12 @@ function feature(symbol, overrides = {}) {
   };
 }
 
-function benchmark() {
+function benchmark(symbol = "SPY", overrides = {}) {
   return {
-    symbol: "SPY",
+    symbol,
     return20: 0.05,
     return60: 0.08,
+    ...overrides,
   };
 }
 
@@ -79,4 +81,28 @@ test("ranking state advances persistence and rank history", () => {
   assert.equal(state.base_top50_flags.at(-1), 1);
   assert.equal(state.rank_history.at(-1), 1);
   assert.equal(result.rankings[0].rank_change_5d, 9);
+});
+
+test("sector-aware mode rewards stock leadership versus its mapped ETF", () => {
+  const result = rankCrossSection({
+    features: [
+      benchmark(),
+      benchmark("XLK", { return20: 0.18, return60: 0.28 }),
+      benchmark("XLF", { return20: 0.06, return60: 0.10 }),
+      feature("AAA"),
+      feature("BBB"),
+    ],
+    tradingDate: "2026-08-20",
+    eligibleSymbols: new Set(["AAA", "BBB"]),
+    sectorBenchmarkBySymbol: new Map([
+      ["AAA", "XLK"],
+      ["BBB", "XLF"],
+    ]),
+    config: RANKING_CONFIG_SECTOR_RS_EXPERIMENT,
+  });
+
+  assert.deepEqual(result.rankings.map((row) => row.symbol), ["BBB", "AAA"]);
+  assert.equal(result.rankings[0].sector_benchmark_symbol, "XLF");
+  assert.ok(result.rankings[0].sector_rs20 > result.rankings[1].sector_rs20);
+  assert.ok(result.rankings[0].sector_rs60 > result.rankings[1].sector_rs60);
 });
