@@ -1,0 +1,100 @@
+name: Recover Feature State (Repair)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_date:
+        description: "Source state date (YYYY-MM-DD)"
+        required: true
+        type: string
+      source_prefix:
+        description: "Optional R2 prefix containing shard=00..31.json; blank uses state/rolling/v1/date=<source_date>"
+        required: false
+        default: ""
+        type: string
+      confirm:
+        description: "Type PROMOTE to overwrite latest feature-state pointer"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: futureview-feature-state-recovery
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: ${{ inputs.confirm == 'PROMOTE' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      BUCKET: futureview-data
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Validate input
+        env:
+          SOURCE_DATE: ${{ inputs.source_date }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "source_date must be YYYY-MM-DD"; exit 1; }
+
+      - name: Download source shards from R2
+        env:
+          SOURCE_DATE: ${{ inputs.source_date }}
+          SOURCE_PREFIX_INPUT: ${{ inputs.source_prefix }}
+        run: |
+          set -euo pipefail
+          SOURCE_PREFIX="$SOURCE_PREFIX_INPUT"
+          if [ -z "$SOURCE_PREFIX" ]; then
+            SOURCE_PREFIX="state/rolling/v1/date=${SOURCE_DATE}"
+          fi
+          mkdir -p /tmp/source-state
+          for i in $(seq -w 0 31); do
+            echo "Downloading shard $i from ${SOURCE_PREFIX}"
+            npx --yes wrangler@4.125.0 r2 object get \
+              "${BUCKET}/${SOURCE_PREFIX}/shard=${i}.json" \
+              --file "/tmp/source-state/shard=${i}.json" --remote
+          done
+
+      - name: Validate and rebuild canonical state
+        env:
+          SOURCE_DATE: ${{ inputs.source_date }}
+        run: |
+          node tools/recovery/state-repair.mjs /tmp/source-state /tmp/repaired-state "$SOURCE_DATE"
+
+      - name: Upload repaired date-scoped state
+        env:
+          SOURCE_DATE: ${{ inputs.source_date }}
+        run: |
+          set -euo pipefail
+          for i in $(seq -w 0 31); do
+            npx --yes wrangler@4.125.0 r2 object put \
+              "${BUCKET}/state/rolling/v1/date=${SOURCE_DATE}/shard=${i}.json" \
+              --file "/tmp/repaired-state/shard=${i}.json" \
+              --content-type "application/json" --remote
+          done
+          npx --yes wrangler@4.125.0 r2 object put \
+            "${BUCKET}/state/rolling/v1/date=${SOURCE_DATE}/metadata.json" \
+            --file /tmp/repaired-state/metadata.json --content-type "application/json" --remote
+
+      - name: Promote latest pointer last
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4.125.0 r2 object put \
+            "${BUCKET}/metadata/latest-feature-state.json" \
+            --file /tmp/repaired-state/metadata.json --content-type "application/json" --remote
+          npx --yes wrangler@4.125.0 r2 object put \
+            "${BUCKET}/metadata/latest-feature-bootstrap.json" \
+            --file /tmp/repaired-state/status.json --content-type "application/json" --remote
+
+      - name: Show recovery result
+        run: cat /tmp/repaired-state/status.json
