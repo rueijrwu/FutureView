@@ -22,31 +22,40 @@ Primary implementation language:
 Python
 ```
 
-Primary execution environment:
+Primary ML framework:
 
 ```text
-local workstation
-Tesla P100 GPU
-CUDA 9.0 environment available
+PyTorch
+```
+
+Primary local acceleration stack:
+
+```text
+NVIDIA CUDA ecosystem
+CUDA toolkit: up to 12.9
+cuDNN: 9.x
+GPU: Tesla P100
 ```
 
 Research should be local-first. Cloud deployment, Cloudflare workers, frontend code, and production orchestration are not part of the initial CNN research path.
 
-The implementation should prefer a Python scientific / ML stack and use GPU acceleration where it materially helps training or batched inference.
+Use the PyTorch CUDA ecosystem as the standard implementation path for model definition, training, checkpointing, mixed CPU/GPU data flow, and batched inference.
 
-Important compatibility rule:
+For the first SPY daily-data experiments, the dataset is small enough that CPU preprocessing is acceptable. GPU acceleration is primarily useful for repeated walk-forward CNN training, hyperparameter experiments, and later multi-instrument expansion.
 
-> Do not assume the newest PyTorch / TensorFlow release will support CUDA 9.0 or the local driver stack.
+Environment policy:
 
-Before locking the ML framework, verify the actual local NVIDIA driver, CUDA runtime/toolkit, Python version, and framework compatibility. If the existing CUDA 9.0 environment is too old for a practical modern framework, prefer upgrading or isolating the ML environment rather than writing custom CUDA kernels prematurely.
-
-For the first SPY daily-data experiments, dataset size is small enough that CPU preprocessing is acceptable. GPU acceleration is mainly useful for repeated walk-forward CNN training and larger later-stage experiments.
+- use an isolated Python environment for the research stack
+- pin Python, PyTorch, CUDA-compatible dependencies, and experiment configuration
+- verify PyTorch sees the Tesla P100 before training
+- record `torch`, CUDA runtime, cuDNN, GPU, and driver information with each experiment
+- prefer official PyTorch-supported CUDA builds rather than custom CUDA kernels unless a demonstrated bottleneck later justifies them
 
 ## 3. Core Research Principles
 
 1. Start with SPY only.
 2. Use price and volume only.
-3. Use a CNN as the primary predictive model.
+3. Use a CNN implemented in PyTorch as the primary predictive model.
 4. Do not assume older market data is equally representative of the current market.
 5. Test training-history length empirically instead of fixing it by intuition.
 6. Use strict chronological / walk-forward validation. Never random-shuffle overlapping time-series samples.
@@ -210,6 +219,8 @@ CNN-5    CNN-10   CNN-20
 The 5-, 10-, and 20-session receptive fields are intended to represent short, intermediate, and swing-trend structures.
 
 The network should learn their relative importance rather than receiving fixed manual weights.
+
+Implementation should use standard PyTorch modules first, such as `torch.nn.Conv1d`, pooling, normalization, activation, and small fully connected layers. Avoid custom CUDA kernels in the initial research stage.
 
 ### Explicit moving-average ablation
 
@@ -485,7 +496,7 @@ raw OHLCV CNN + explicit MA5/10/20 branch
 
 Only after the 20-session baseline is understood should alternative horizons such as 10, 30, or 40 sessions be tested.
 
-## 16. Local Python Research Structure
+## 16. Local Python / PyTorch Research Structure
 
 Suggested initial repository structure:
 
@@ -503,6 +514,7 @@ src/
     train.py
     walkforward.py
     evaluate.py
+    device.py
 configs/
   baseline.yaml
 scripts/
@@ -520,20 +532,30 @@ Recommended responsibilities:
 data.py        -> canonical OHLCV loading / source reconciliation
 features.py    -> causal normalization and optional MA features
 labels.py      -> future trend-quality / MAE / MFE / efficiency labels
-datasets.py    -> 50-session sequence construction
-models.py      -> small multi-scale 1D CNN variants
-train.py       -> deterministic training loop / seeds / checkpoints
+datasets.py    -> PyTorch Dataset / 50-session sequence construction
+models.py      -> PyTorch small multi-scale 1D CNN variants
+train.py       -> PyTorch training loop / optimizer / scheduler / checkpoints
 walkforward.py -> purged chronological fold generation
 evaluate.py    -> decile, calibration, return, MAE/MFE audits
+device.py      -> CUDA/P100 capability and device selection
 ```
 
 Persist raw downloaded data, canonical cleaned data, model artifacts, and experiment results separately. Generated data and model checkpoints should normally remain outside Git unless intentionally versioned.
 
-## 17. GPU / Reproducibility Policy
+## 17. PyTorch / CUDA / Reproducibility Policy
 
-GPU acceleration is allowed and preferred for neural-network training when supported by the installed framework.
+PyTorch with CUDA is the canonical neural-network stack for this branch.
 
-However:
+Preferred execution pattern:
+
+```text
+CPU: download, cleaning, feature/label construction, fold generation
+GPU: CNN training, validation inference, batched test inference
+```
+
+Use CUDA only where it improves the research workflow. Correct chronology and reproducibility remain more important than maximum GPU utilization.
+
+Core principles:
 
 ```text
 correct chronology > GPU speed
@@ -545,8 +567,10 @@ Record for every experiment:
 
 ```text
 Python version
-ML framework version
-CUDA runtime/version
+PyTorch version
+torch.version.cuda
+cuDNN version
+NVIDIA driver version
 GPU model
 random seed
 training date range
@@ -557,9 +581,20 @@ model configuration
 label configuration
 ```
 
+At runtime, verify and record at minimum:
+
+```python
+torch.cuda.is_available()
+torch.cuda.get_device_name(0)
+torch.version.cuda
+torch.backends.cudnn.version()
+```
+
 Set deterministic seeds where practical and save configuration plus metrics with every run.
 
-Tesla P100 has ample compute for the initial small 1D CNN. Do not enlarge the network merely to use the GPU.
+The Tesla P100 has ample compute for the initial small 1D CNN. Do not enlarge the network merely to use the GPU.
+
+Mixed precision should be treated as optional rather than assumed. Use it only if the selected PyTorch/P100 path is stable and demonstrably beneficial for this small model.
 
 ## 18. Expansion Path
 
@@ -631,19 +666,20 @@ They can be reconsidered only after the basic trend-detection hypothesis is vali
 
 ## 20. First Implementation Milestones
 
-1. Establish a reproducible local Python environment and verify whether the current Tesla P100 / CUDA setup supports the selected ML framework.
-2. Build canonical SPY daily OHLCV dataset, preferably up to 5 recent years.
-3. Cross-check recent overlap between Yahoo Finance and Massive where practical.
-4. Implement causal preprocessing and 50-session sample generation.
-5. Implement 20-session future trend-quality labels and evaluation fields.
-6. Implement simple non-CNN baselines.
-7. Implement the small multi-scale 1D CNN with 5/10/20-session receptive fields.
-8. Implement the explicit MA branch variant.
-9. Implement strict purged walk-forward training/evaluation.
-10. Run 1Y / 2Y / 3Y / 5Y training-history comparisons.
-11. Run 5Y recency-weighted comparison.
-12. Produce TrendScore quantile/decile audit tables.
-13. Decide empirically whether the CNN contains sufficient out-of-sample trend information to justify Phase 2.
+1. Establish a reproducible local Python + PyTorch environment and verify CUDA/cuDNN access to the Tesla P100.
+2. Record the local PyTorch, CUDA, cuDNN, NVIDIA driver, and GPU versions in an environment report.
+3. Build canonical SPY daily OHLCV dataset, preferably up to 5 recent years.
+4. Cross-check recent overlap between Yahoo Finance and Massive where practical.
+5. Implement causal preprocessing and 50-session sample generation.
+6. Implement 20-session future trend-quality labels and evaluation fields.
+7. Implement simple non-CNN baselines.
+8. Implement the PyTorch small multi-scale 1D CNN with 5/10/20-session receptive fields.
+9. Implement the explicit MA branch variant.
+10. Implement strict purged walk-forward training/evaluation.
+11. Run 1Y / 2Y / 3Y / 5Y training-history comparisons.
+12. Run 5Y recency-weighted comparison.
+13. Produce TrendScore quantile/decile audit tables.
+14. Decide empirically whether the CNN contains sufficient out-of-sample trend information to justify Phase 2.
 
 ## 21. Initial Success Criterion
 
