@@ -77,6 +77,8 @@ Production writes are intentionally not part of Codespaces development.
 
 Read-only snapshot sync does **not** constitute deployment approval and must not be treated as permission to run or modify Cloudflare production runtime.
 
+The sync also copies the latest backtest metadata/result when present so the local backtest audit page can inspect a production-shaped historical result without using the production Worker.
+
 ## Run the local Worker
 
 ```bash
@@ -92,15 +94,24 @@ curl http://localhost:8787/api/health
 curl http://localhost:8787/api/universe/status
 curl http://localhost:8787/api/state/status
 curl http://localhost:8787/api/rankings/latest
+curl http://localhost:8787/api/backtests/audit
 ```
 
-For frontend-only development:
+For frontend development, keep the local Worker running and start Vite in a second terminal:
 
 ```bash
 npm run dev --prefix view -- --host 0.0.0.0
 ```
 
-Vite listens on port `5173`.
+Vite listens on port `5173` and proxies `/api/*` requests to the local Worker on port `8787`.
+
+The strategy win-rate analysis page is available at:
+
+```text
+http://localhost:5173/backtest
+```
+
+In Codespaces, open the forwarded port `5173` and append `/backtest` if needed. This page is a local development view and does not require Cloudflare deployment.
 
 ## Manual testing phase
 
