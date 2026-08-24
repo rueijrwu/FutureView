@@ -1,3 +1,4 @@
+import { persistRankingToD1 } from "./d1.js";
 import { rankCrossSection } from "./ranking-core.js";
 
 const RANKING_STATE_VERSION = 1;
@@ -77,7 +78,13 @@ async function loadPriorRankingState(bucket) {
   };
 }
 
-export async function runProductionRanking({ bucket, featureKeys, tradingDate, workflowInstance }) {
+export async function runProductionRanking({
+  bucket,
+  db,
+  featureKeys,
+  tradingDate,
+  workflowInstance,
+}) {
   const features = await loadFeatures(bucket, featureKeys);
   const universe = await loadUniverse(bucket);
   const prior = await loadPriorRankingState(bucket);
@@ -171,6 +178,13 @@ export async function runProductionRanking({ bucket, featureKeys, tradingDate, w
     updated_at: now,
   };
   await writeJson(bucket, metadataKey, rankingMetadata);
+
+  // D1 is the query/index layer. A D1 failure blocks latest-pointer promotion,
+  // while the complete date-scoped R2 artifacts remain available for diagnosis/retry.
+  await persistRankingToD1(db, {
+    rankingMetadata,
+    rankings: result.rankings,
+  });
 
   const dashboard = {
     as_of: tradingDate,
