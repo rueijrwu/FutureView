@@ -157,6 +157,7 @@ export class FeatureBootstrapWorkflow extends WorkflowEntrypoint {
       };
     });
     const eligible = new Set((universe.symbols ?? []).map(String));
+    eligible.add("SPY");
     const workRoot = `work/feature-bootstrap/instance=${event.instanceId}`;
     const sessions = [];
     let cursor = shiftIsoDate(targetDate, -1);
@@ -252,6 +253,7 @@ export class FeatureBootstrapWorkflow extends WorkflowEntrypoint {
         workflow_instance: event.instanceId,
         universe_as_of: universe.asOf,
         bootstrap_session_count: sessions.length,
+        benchmark: "SPY",
         updated_at: now,
       };
       await writeJson(
@@ -266,6 +268,7 @@ export class FeatureBootstrapWorkflow extends WorkflowEntrypoint {
         source_as_of: sourceAsOf,
         symbol_count: symbolCount,
         session_count: sessions.length,
+        benchmark: "SPY",
         workflow_instance: event.instanceId,
         updated_at: now,
       });
