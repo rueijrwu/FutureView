@@ -390,7 +390,7 @@ if (checkpoint.processedDates.length < options.sessions) {
 
 const { selected, finalized } = runBacktest(checkpoint.processedDates, options.sessions);
 const now = new Date().toISOString();
-const id = `local-${selected[0]}-${selected.at(-1)}-${options.sessions}`;
+const id = `local-${LOCAL_RANKING_EXPERIMENT}-${selected[0]}-${selected.at(-1)}-${options.sessions}`;
 const resultKey = `backtests/run=${id}/result.json`;
 const result = {
   id,
