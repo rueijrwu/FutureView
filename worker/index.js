@@ -8,6 +8,7 @@ import { refreshCommonStockUniverse } from "./universe.js";
 const MASSIVE_BASE_URL = "https://api.massive.com";
 const CLOUDFLARE_INGEST_METADATA_KEY = "metadata/latest-cloudflare-ingest.json";
 const FEATURE_STATE_METADATA_KEY = "metadata/latest-feature-state.json";
+const FEATURE_BOOTSTRAP_METADATA_KEY = "metadata/latest-feature-bootstrap.json";
 const RANKING_STATE_METADATA_KEY = "metadata/latest-ranking-state.json";
 const UNIVERSE_METADATA_KEY = "metadata/latest-common-stock-universe.json";
 const REPLAY_METADATA_KEY = "metadata/latest-js-replay.json";
@@ -289,6 +290,14 @@ export default {
       );
     }
 
+    if (url.pathname === "/api/bootstrap/status") {
+      return r2JsonResponse(
+        env,
+        FEATURE_BOOTSTRAP_METADATA_KEY,
+        "JS feature bootstrap has not completed yet",
+      );
+    }
+
     if (url.pathname === "/api/ranking-state/status") {
       return r2JsonResponse(
         env,
@@ -343,6 +352,15 @@ export default {
         console.log(`Common-stock universe ready for ${universe.as_of}: ${universe.count}`);
 
         const ingest = await ingestLatestAvailableSession(env, controller.scheduledTime);
+        const featureState = await env.RESEARCH.head(FEATURE_STATE_METADATA_KEY);
+        if (featureState === null) {
+          const bootstrap = await env.FEATURE_BOOTSTRAP.create({
+            params: { target_date: ingest.date },
+          });
+          console.log(`JS feature bootstrap started for ${ingest.date}: ${bootstrap.id}`);
+          return;
+        }
+
         const instance = await env.INCREMENTAL_FEATURES.create({
           params: {
             mode: "production",
