@@ -1,5 +1,10 @@
 import { persistRankingToD1 } from "./d1.js";
 import { rankCrossSection } from "./ranking-core.js";
+import { STRATEGY_VERSION } from "./strategy-config.js";
+import {
+  ensureStrategyVersion,
+  tagRankingRunStrategy,
+} from "./strategy-store.js";
 
 const RANKING_STATE_VERSION = 1;
 const RANKING_STATE_SHARDS = 32;
@@ -111,6 +116,7 @@ export async function runProductionRanking({
 
   await writeJson(bucket, rankingKey, {
     version: RANKING_STATE_VERSION,
+    strategy_version: STRATEGY_VERSION,
     date: tradingDate,
     count: result.rankings.length,
     rankings: result.rankings,
@@ -120,6 +126,7 @@ export async function runProductionRanking({
   });
   await writeJson(bucket, top50Key, {
     version: RANKING_STATE_VERSION,
+    strategy_version: STRATEGY_VERSION,
     date: tradingDate,
     count: top50.length,
     rankings: top50,
@@ -141,6 +148,7 @@ export async function runProductionRanking({
       .sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)));
     await writeJson(bucket, key, {
       version: RANKING_STATE_VERSION,
+      strategy_version: STRATEGY_VERSION,
       as_of: tradingDate,
       shard,
       shard_count: RANKING_STATE_SHARDS,
@@ -152,6 +160,7 @@ export async function runProductionRanking({
 
   const stateMetadata = {
     version: RANKING_STATE_VERSION,
+    strategy_version: STRATEGY_VERSION,
     as_of: tradingDate,
     shard_count: RANKING_STATE_SHARDS,
     symbol_count: result.states.size,
@@ -166,6 +175,7 @@ export async function runProductionRanking({
 
   const rankingMetadata = {
     version: RANKING_STATE_VERSION,
+    strategy_version: STRATEGY_VERSION,
     date: tradingDate,
     candidate_count: result.candidateCount,
     top50_count: top50.length,
@@ -180,14 +190,17 @@ export async function runProductionRanking({
   await writeJson(bucket, metadataKey, rankingMetadata);
 
   // D1 is the query/index layer. A D1 failure blocks latest-pointer promotion,
-  // while the complete date-scoped R2 artifacts remain available for diagnosis/retry.
+  // while complete date-scoped R2 artifacts remain available for diagnosis/retry.
+  await ensureStrategyVersion(db);
   await persistRankingToD1(db, {
     rankingMetadata,
     rankings: result.rankings,
   });
+  await tagRankingRunStrategy(db, tradingDate);
 
   const dashboard = {
     as_of: tradingDate,
+    strategy_version: STRATEGY_VERSION,
     universe_count: universe.count,
     market_regime: "Research",
     cash_posture: "Rule-based",
@@ -197,6 +210,7 @@ export async function runProductionRanking({
   };
   const top50Pointer = {
     date: tradingDate,
+    strategy_version: STRATEGY_VERSION,
     count: top50.length,
     data_key: top50Key,
     producer: "cloudflare-js",
