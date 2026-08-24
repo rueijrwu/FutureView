@@ -1,4 +1,8 @@
-import { latestRankingFromD1 } from "./d1.js";
+import {
+  rankingByDateFromD1,
+  rankingDatesFromD1,
+  symbolRankingHistoryFromD1,
+} from "./d1-read.js";
 import { refreshCommonStockUniverse } from "./universe.js";
 
 const MASSIVE_BASE_URL = "https://api.massive.com";
@@ -6,6 +10,7 @@ const CLOUDFLARE_INGEST_METADATA_KEY = "metadata/latest-cloudflare-ingest.json";
 const FEATURE_STATE_METADATA_KEY = "metadata/latest-feature-state.json";
 const RANKING_STATE_METADATA_KEY = "metadata/latest-ranking-state.json";
 const UNIVERSE_METADATA_KEY = "metadata/latest-common-stock-universe.json";
+const REPLAY_METADATA_KEY = "metadata/latest-js-replay.json";
 
 function newYorkDateFromTimestamp(timestampMs) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -154,10 +159,10 @@ async function ingestLatestAvailableSession(env, scheduledTime) {
   throw new Error(`No Massive grouped-daily session found on or before ${targetDate}`);
 }
 
-async function r2JsonResponse(env, key, unavailableMessage) {
+async function r2JsonResponse(env, key, unavailableMessage, status = 503) {
   const object = await env.RESEARCH.get(key);
   if (object === null) {
-    return Response.json({ error: unavailableMessage }, { status: 503 });
+    return Response.json({ error: unavailableMessage }, { status });
   }
 
   return new Response(object.body, {
@@ -168,21 +173,37 @@ async function r2JsonResponse(env, key, unavailableMessage) {
   });
 }
 
-async function latestRankingResponse(env) {
+async function r2RankingByDate(env, tradingDate) {
+  const object = await env.RESEARCH.get(`rankings/date=${tradingDate}/top50.json`);
+  if (!object) return null;
+  const payload = await object.json();
+  return {
+    as_of: tradingDate,
+    universe_count: null,
+    market_regime: "Research",
+    cash_posture: "Rule-based",
+    rankings: payload.rankings ?? [],
+    source: "r2",
+    updated_at: payload.updated_at ?? null,
+  };
+}
+
+async function rankingResponse(env, tradingDate = null) {
   try {
-    const payload = await latestRankingFromD1(env.DB);
+    const payload = await rankingByDateFromD1(env.DB, tradingDate);
     if (payload?.rankings?.length) {
-      const universe = await env.RESEARCH.get(UNIVERSE_METADATA_KEY);
-      if (universe) {
-        const metadata = await universe.json();
-        payload.universe_count = metadata.count ?? payload.universe_count;
-      }
       return Response.json(payload, {
         headers: { "cache-control": "no-store" },
       });
     }
   } catch (error) {
     console.error("D1 ranking query failed; falling back to R2", error);
+  }
+
+  if (tradingDate) {
+    const payload = await r2RankingByDate(env, tradingDate);
+    if (payload) return Response.json(payload, { headers: { "cache-control": "no-store" } });
+    return Response.json({ error: `ranking not found for ${tradingDate}` }, { status: 404 });
   }
 
   return r2JsonResponse(
@@ -202,11 +223,43 @@ export default {
         status: "ok",
         database: env.DB ? "d1-bound" : "unbound",
         storage: "r2",
+        runtime: "cloudflare-js",
       });
     }
 
     if (url.pathname === "/api/rankings/latest") {
-      return latestRankingResponse(env);
+      return rankingResponse(env);
+    }
+
+    if (url.pathname === "/api/rankings/history") {
+      try {
+        const dates = await rankingDatesFromD1(env.DB, url.searchParams.get("limit") ?? 100);
+        return Response.json({ count: dates.length, dates, source: "d1" });
+      } catch (error) {
+        console.error("Unable to query ranking history", error);
+        return Response.json({ error: "ranking history is unavailable" }, { status: 503 });
+      }
+    }
+
+    const rankingDateMatch = url.pathname.match(/^\/api\/rankings\/date\/(\d{4}-\d{2}-\d{2})$/);
+    if (rankingDateMatch) {
+      return rankingResponse(env, rankingDateMatch[1]);
+    }
+
+    const symbolHistoryMatch = url.pathname.match(/^\/api\/symbols\/([^/]+)\/rankings$/);
+    if (symbolHistoryMatch) {
+      try {
+        const symbol = decodeURIComponent(symbolHistoryMatch[1]).toUpperCase();
+        const rows = await symbolRankingHistoryFromD1(
+          env.DB,
+          symbol,
+          url.searchParams.get("limit") ?? 100,
+        );
+        return Response.json({ symbol, count: rows.length, rankings: rows, source: "d1" });
+      } catch (error) {
+        console.error("Unable to query symbol ranking history", error);
+        return Response.json({ error: "symbol ranking history is unavailable" }, { status: 503 });
+      }
     }
 
     if (url.pathname === "/api/ingest/status") {
@@ -238,6 +291,14 @@ export default {
         env,
         RANKING_STATE_METADATA_KEY,
         "incremental ranking state has not been published yet",
+      );
+    }
+
+    if (url.pathname === "/api/replay/status") {
+      return r2JsonResponse(
+        env,
+        REPLAY_METADATA_KEY,
+        "JS replay validation has not completed yet",
       );
     }
 
