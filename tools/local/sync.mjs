@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-import { createFilesystemJsonStore } from "./fs-store.mjs";
+import { createFilesystemJsonStore, objectPath } from "./fs-store.mjs";
 
 const WRANGLER_VERSION = "4.125.0";
 const REMOTE_CONFIG = "wrangler.jsonc";
@@ -53,13 +54,13 @@ function tempPathForKey(key) {
 }
 
 function loadManifest() {
-  if (FULL_SYNC || !existsSync(MANIFEST_FILE)) return { version: 2, objects: {} };
+  if (FULL_SYNC || !existsSync(MANIFEST_FILE)) return { version: 3, objects: {} };
   try {
     const raw = JSON.parse(readFileSync(MANIFEST_FILE, "utf8"));
-    return { version: 2, objects: raw.objects ?? raw.r2 ?? {} };
+    return { version: 3, objects: raw.objects ?? raw.r2 ?? {} };
   } catch (error) {
     console.warn(`[local:sync] Ignoring unreadable manifest: ${error.message}`);
-    return { version: 2, objects: {} };
+    return { version: 3, objects: {} };
   }
 }
 
@@ -70,7 +71,7 @@ function saveManifest(manifest) {
   }, null, 2)}\n`);
 }
 
-async function fetchRemoteJson(key, { required = false } = {}) {
+function fetchRemoteObject(key, { required = false } = {}) {
   const file = tempPathForKey(key);
   const result = run(
     "npx",
@@ -84,19 +85,30 @@ async function fetchRemoteJson(key, { required = false } = {}) {
   );
   if (result.status !== 0) return null;
   const body = readFileSync(file);
-  return {
-    payload: JSON.parse(body.toString("utf8")),
-    hash: hashBuffer(body),
-  };
+  return { body, hash: hashBuffer(body) };
+}
+
+function parseJsonObject(key, body) {
+  try {
+    return JSON.parse(body.toString("utf8"));
+  } catch (error) {
+    fail(`expected JSON metadata at ${key}: ${error.message}`);
+  }
+}
+
+function writeLocalObject(key, body) {
+  const file = objectPath(key);
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, body);
 }
 
 const manifest = loadManifest();
 let updated = 0;
 let unchanged = 0;
 
-async function syncObject(key, { required = false } = {}) {
+async function syncRawObject(key, { required = false } = {}) {
   if (!key) return null;
-  const remote = await fetchRemoteJson(key, { required });
+  const remote = fetchRemoteObject(key, { required });
   if (!remote) {
     console.log(`[local:sync] Optional object not present: ${key}`);
     return null;
@@ -107,21 +119,27 @@ async function syncObject(key, { required = false } = {}) {
     && await store.exists(key);
   if (same) {
     unchanged += 1;
-    return remote.payload;
+    return remote;
   }
 
-  await store.putJson(key, remote.payload);
+  writeLocalObject(key, remote.body);
   manifest.objects[key] = { hash: remote.hash };
   updated += 1;
   console.log(`[local:sync] updated ${key}`);
-  return remote.payload;
+  return remote;
+}
+
+async function syncJsonObject(key, { required = false } = {}) {
+  const remote = await syncRawObject(key, { required });
+  if (!remote) return null;
+  return parseJsonObject(key, remote.body);
 }
 
 async function syncPointer(key, { required = false, refs = () => [] } = {}) {
-  const payload = await syncObject(key, { required });
+  const payload = await syncJsonObject(key, { required });
   if (!payload) return null;
   for (const ref of refs(payload).filter(Boolean)) {
-    await syncObject(ref, { required: true });
+    await syncRawObject(ref, { required: true });
   }
   return payload;
 }
@@ -147,14 +165,14 @@ const featureState = await syncPointer("metadata/latest-feature-state.json", {
 await syncPointer("metadata/latest-cloudflare-ingest.json", {
   refs: (payload) => [payload.data_key],
 });
-await syncObject("dashboard/latest.json");
+await syncJsonObject("dashboard/latest.json");
 await syncPointer("metadata/latest-ranking.json", {
   refs: (payload) => [payload.ranking_key, payload.top50_key],
 });
 await syncPointer("metadata/latest-top50.json", {
   refs: (payload) => [payload.data_key],
 });
-await syncPointer("metadata/latest-ranking-state.json");
+await syncJsonObject("metadata/latest-ranking-state.json");
 await syncPointer("metadata/latest-js-replay.json", {
   refs: (payload) => [payload.data_key],
 });
