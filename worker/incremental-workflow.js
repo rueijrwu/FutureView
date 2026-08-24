@@ -338,6 +338,7 @@ export class IncrementalFeatureWorkflow extends WorkflowEntrypoint {
       },
       async () => runProductionRanking({
         bucket: this.env.RESEARCH,
+        db: this.env.DB,
         featureKeys,
         tradingDate,
         workflowInstance: event.instanceId,
