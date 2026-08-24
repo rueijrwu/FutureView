@@ -1,6 +1,0 @@
-# FutureView local Worker secrets.
-# Copy is created automatically as .dev.vars by npm run local:setup.
-# Keep real secrets only in .dev.vars; never commit them.
-
-MASSIVE_API_KEY=
-ADMIN_TOKEN=local-development-only
