@@ -16,7 +16,10 @@ const DEFAULT_CONFIG = Object.freeze({
 const RANKING_KEY_DECIMALS = 12;
 
 function finite(value) {
-  return Number.isFinite(Number(value));
+  return value !== null
+    && value !== undefined
+    && value !== ""
+    && Number.isFinite(Number(value));
 }
 
 function quantizeRankingKey(value) {
