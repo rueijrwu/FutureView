@@ -1,10 +1,19 @@
+import { persistMarketDataSession } from "./d1.js";
+
 const MASSIVE_BASE_URL = "https://api.massive.com";
 const CLOUDFLARE_INGEST_METADATA_KEY = "metadata/latest-cloudflare-ingest.json";
 
+async function sha256Hex(text) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function writeJson(bucket, key, payload) {
-  await bucket.put(key, JSON.stringify(payload), {
+  const body = JSON.stringify(payload);
+  await bucket.put(key, body, {
     httpMetadata: { contentType: "application/json; charset=utf-8" },
   });
+  return { body, sha256: await sha256Hex(body) };
 }
 
 async function fetchGroupedDaily(env, tradingDate) {
@@ -63,16 +72,38 @@ export function normalizeGroupedDaily(payload, tradingDate) {
   return bars;
 }
 
+async function indexExistingSession(env, tradingDate, dataKey) {
+  const object = await env.RESEARCH.get(dataKey);
+  if (!object) throw new Error(`R2 object disappeared while indexing ${dataKey}`);
+  const body = await object.text();
+  const document = JSON.parse(body);
+  const rowCount = Array.isArray(document.bars) ? document.bars.length : Number(document.count ?? 0);
+  const sha256 = await sha256Hex(body);
+  await persistMarketDataSession(env.DB, {
+    tradingDate,
+    r2Key: dataKey,
+    rowCount,
+    sha256,
+    source: document.source ?? "massive",
+    producer: document.producer ?? "cloudflare-js",
+    storageFormat: "json",
+  });
+  return { rowCount, sha256 };
+}
+
 export async function writeDailySession(env, tradingDate) {
   const dataKey = `prices/daily-json/date=${tradingDate}/bars.json`;
   const existing = await env.RESEARCH.head(dataKey);
   if (existing !== null) {
+    const indexed = await indexExistingSession(env, tradingDate, dataKey);
     const metadata = {
       date: tradingDate,
       source: "massive",
       producer: "cloudflare-js",
       storage_format: "json",
       data_key: dataKey,
+      count: indexed.rowCount,
+      sha256: indexed.sha256,
       status: "already_exists",
       mode: "production",
       updated_at: new Date().toISOString(),
@@ -96,7 +127,19 @@ export async function writeDailySession(env, tradingDate) {
     count: bars.length,
     bars,
   };
-  await writeJson(env.RESEARCH, dataKey, document);
+  const written = await writeJson(env.RESEARCH, dataKey, document);
+  const now = new Date().toISOString();
+  await persistMarketDataSession(env.DB, {
+    tradingDate,
+    r2Key: dataKey,
+    rowCount: bars.length,
+    sha256: written.sha256,
+    source: "massive",
+    producer: "cloudflare-js",
+    storageFormat: "json",
+    createdAt: now,
+    updatedAt: now,
+  });
 
   const metadata = {
     date: tradingDate,
@@ -105,10 +148,11 @@ export async function writeDailySession(env, tradingDate) {
     storage_format: "json",
     data_key: dataKey,
     count: bars.length,
+    sha256: written.sha256,
     discarded_count: Math.max(0, rawCount - bars.length),
     status: "written",
     mode: "production",
-    updated_at: new Date().toISOString(),
+    updated_at: now,
   };
   await writeJson(env.RESEARCH, CLOUDFLARE_INGEST_METADATA_KEY, metadata);
 
