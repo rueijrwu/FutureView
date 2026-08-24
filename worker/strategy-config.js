@@ -1,4 +1,4 @@
-export const STRATEGY_VERSION = "momentum-v2";
+export const STRATEGY_VERSION = "rightside-v3";
 
 export const RANKING_CONFIG_V2 = Object.freeze({
   minPrice: 10.0,
@@ -15,14 +15,25 @@ export const RANKING_CONFIG_V2 = Object.freeze({
   extensionPenaltyMax: 0.12,
 });
 
-// Research baseline. This is intentionally separate from live ranking rules so
-// position-management assumptions can evolve without changing stock selection.
-export const BACKTEST_CONFIG_V1 = Object.freeze({
+// Research baseline for the right-side swing strategy. Sector selection and
+// staged adds are intentionally separate follow-on layers; this config only
+// contains rules supported by the current feature set.
+export const BACKTEST_CONFIG_V2 = Object.freeze({
   initialCapital: 100_000,
-  maxPositions: 10,
-  entryRankMax: 10,
+  maxPositions: 9,
+  entryRankMax: 50,
   requireBreakout20: true,
+  requireCloseAboveSma5: true,
+  requireCloseAboveSma10: true,
+  requireCloseAboveSma20: true,
+  requireSma5AboveSma10: true,
+  requireSma10AboveSma20: true,
+  minVolumeRatio20: 0.8,
+  maxEntryExtensionAtr: 2.5,
   minHoldSessions: 15,
   maxHoldSessions: 60,
   exitBelowSma10: true,
 });
+
+// Compatibility alias for older imports while the v3 migration is completed.
+export const BACKTEST_CONFIG_V1 = BACKTEST_CONFIG_V2;
