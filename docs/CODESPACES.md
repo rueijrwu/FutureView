@@ -18,6 +18,8 @@ GitHub / Codespaces = develop and test
 Cloudflare           = deploy only after explicit user approval
 ```
 
+Small explicitly approved Cloudflare validation deployments are allowed for adapter/API smoke testing. They should validate contracts only and must not trigger large production workflows.
+
 ## Local-first architecture
 
 Research data is local-filesystem first:
@@ -25,52 +27,47 @@ Research data is local-filesystem first:
 ```text
 .local-data/
   objects/
+    prices/daily-json/
     metadata/
     backtests/
     ...
+  d1/
 
 .local-backtest/
-  bars/
   sessions/
   checkpoint.json
 ```
 
-The strategy/research core does not depend on R2 or D1 directly. Storage adapters expose the same JSON contract:
+The canonical historical market-data contract used by local research is:
 
 ```text
-getJson(key)
-putJson(key, value)
-exists(key)
+.local-data/objects/prices/daily-json/date=YYYY-MM-DD/bars.json
 ```
 
-Current adapters:
+Legacy mirrored R2 parquet history under `prices/daily/` is an archive/source. The historical recovery utility materializes it into the canonical JSON contract once. Daily Cloudflare ingestion already writes the same `prices/daily-json/.../bars.json` contract, so historical bootstrap and daily updates converge on one format.
 
-- `tools/local/fs-store.mjs` — Codespaces filesystem adapter
-- `worker/json-store.js` — Cloudflare R2 adapter
+The strategy/research core does not depend on R2 or D1 directly. Storage adapters expose the same logical contracts, keeping feature, ranking, backtest, and audit logic portable.
 
-This keeps feature, ranking, backtest, and audit logic portable. Cloudflare can be smoke-tested later with the same object keys and JSON contracts without making Cloudflare the daily research runtime.
+## Persistent local data
 
-## Persistent local caches
-
-The workspace keeps several ignored local directories:
+The workspace keeps ignored local directories:
 
 ```text
-.local-data/       canonical local research objects
-.local-backtest/   immutable bars, per-session artifacts, checkpoint
-.local-sync/       read-only production snapshot cache / manifest
-.local-state/      Wrangler D1/R2 state for optional Cloudflare adapter tests
+.local-data/       canonical local research data plus read-only R2/D1 mirror
+.local-backtest/   derived feature/ranking sessions and checkpoint
+.local-sync/       production mirror manifest
+.local-state/      Wrangler state for optional Cloudflare adapter tests
 ```
 
-Reconnects to the same Codespace reuse these directories as long as the workspace still exists.
-
-Historical data already downloaded or computed should be reused. Normal work should append only new sessions.
+Historical data already downloaded or computed should be reused. Normal daily work appends only new completed sessions.
 
 ## Setup and validation
 
-Use full setup only for a new/rebuilt Codespace, dependency/config changes, or local environment repair:
+For a new/rebuilt Codespace:
 
 ```bash
 npm run local:setup
+npm run local:history:setup
 ```
 
 Before pushing changes:
@@ -79,19 +76,66 @@ Before pushing changes:
 npm run local:check
 ```
 
-## Read-only snapshot sync
+## Read-only production mirror
 
 ```bash
 npm run local:sync
 ```
 
-This remains the bridge for production-shaped reference data such as the common-stock universe and latest metadata. It is incremental and does not constitute deployment approval.
+This incrementally mirrors all production R2 objects and a read-only D1 application-table snapshot into `.local-data/`. It performs no production writes.
 
-Use a full sync only when the local sync state is deliberately being rebuilt:
+Use a full mirror rebuild only when deliberately recovering local storage:
 
 ```bash
 npm run local:sync:full
 ```
+
+## One-time historical bootstrap / disaster recovery
+
+Historical acquisition is intentionally separate from backtesting.
+
+```bash
+npm run local:history
+```
+
+Default target is 337 completed sessions (211 warm-up + 126 backtest sessions) through the latest completed feature session.
+
+The recovery tool is resumable and follows this order:
+
+```text
+existing canonical daily-json
+→ materialize mirrored R2 parquet history
+→ only if still short, fetch missing older sessions from Massive
+```
+
+Massive recovery uses grouped daily data, 13-second pacing, 429/5xx retry/backoff, and writes every successful session immediately. If the process is interrupted, rerunning resumes from already persisted history.
+
+Useful variants:
+
+```bash
+npm run local:history -- --sessions=400
+npm run local:history -- --end=2026-08-21
+npm run local:history -- --mode=materialize
+```
+
+`--mode=materialize` never calls Massive; it only converts already mirrored parquet sessions into the canonical daily-json contract.
+
+## Daily update after historical bootstrap
+
+Once history is complete, normal local updates are:
+
+```bash
+npm run local:update
+```
+
+This performs:
+
+```text
+production R2/D1 read-only incremental mirror
+→ materialize any newly mirrored daily data into canonical local history
+```
+
+The normal daily path does not run a historical recovery loop. Production daily ingestion is expected to add only the newest completed session, so Massive rate limits are not a normal research concern.
 
 ## Historical local backtest
 
@@ -99,44 +143,29 @@ npm run local:sync:full
 npm run local:backtest
 ```
 
-The first run bootstraps the required historical bars, builds canonical JS features/rankings, caches every completed session, runs the backtest, and writes the latest result to `.local-data/objects/metadata/latest-backtest.json` plus its referenced result object.
+`local:backtest` is now a pure consumer of canonical local daily history. It does not call Massive.
 
-Later runs reuse `.local-backtest/` and append only sessions newer than the checkpoint.
+The first run uses 211 local warm-up sessions, builds canonical JS features/rankings, caches derived sessions under `.local-backtest/`, runs the requested backtest window, and writes the result under `.local-data/objects/backtests/` plus `metadata/latest-backtest.json`.
 
-Use a deliberate clean rebuild only when strategy/universe consistency requires it:
+Later runs reuse the checkpoint and process only newly available local sessions.
+
+Use a clean derived-state rebuild only when strategy/universe consistency requires it:
 
 ```bash
 npm run local:backtest -- --rebuild
 ```
 
-The historical bootstrap currently applies the synced common-stock universe across the replay window, so results must be interpreted with survivorship-bias caution until point-in-time universes are added.
+The historical replay currently applies the synced common-stock universe across the historical window, so interpret results with survivorship-bias caution until point-in-time universes are added.
 
 ## Local API
 
-Daily local development uses the Node filesystem API, not Wrangler:
+Daily local development uses the Node filesystem API:
 
 ```bash
 npm run local:dev
 ```
 
-It listens on port `8787` and serves the same API paths used by the Cloudflare Worker, including:
-
-```bash
-curl http://localhost:8787/api/health
-curl http://localhost:8787/api/universe/status
-curl http://localhost:8787/api/rankings/latest
-curl http://localhost:8787/api/backtests/latest
-curl http://localhost:8787/api/backtests/audit
-```
-
-Expected health identity for daily local development:
-
-```json
-{
-  "storage": "filesystem",
-  "runtime": "node-local-js"
-}
-```
+It listens on port `8787` and serves the same API paths used by the Cloudflare Worker.
 
 ## Frontend
 
@@ -148,23 +177,35 @@ npm run dev --prefix view -- --host 0.0.0.0
 
 Vite listens on `5173` and proxies `/api/*` to `127.0.0.1:8787`.
 
-Backtest page:
+## Cloudflare adapter/API smoke tests
 
-```text
-http://localhost:5173/backtest
-```
-
-## Optional Cloudflare adapter smoke test
-
-Wrangler is retained only for small integration/contract checks:
+Wrangler local adapter testing remains available:
 
 ```bash
 npm run local:cloudflare
 ```
 
-This uses `.local-state/` and the actual Worker/R2/D1 bindings locally. It is not the default research path.
+After an explicitly approved Cloudflare validation deployment, run the deployed read-only API smoke test:
 
-A future explicitly approved Cloudflare deployment should validate a small fixture through the same API/storage contracts before any larger production workflow is enabled.
+```bash
+npm run cloudflare:smoke -- --base-url=https://<deployment-host>
+```
+
+or:
+
+```bash
+FUTUREVIEW_API_BASE_URL=https://<deployment-host> npm run cloudflare:smoke
+```
+
+The deployed smoke test verifies:
+
+```text
+/api/health             → Cloudflare Worker runtime, R2 binding, D1 binding
+/api/universe/status    → R2-backed API read contract
+/api/rankings/history   → D1-backed API read contract
+```
+
+It performs no production writes and invokes no workflows. This is the default post-deploy adapter/API validation before considering any larger production execution.
 
 ## Data contract
 
