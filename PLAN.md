@@ -8,15 +8,15 @@ This branch is a clean research restart.
 
 The previous momentum ranking, sector-selection, portfolio-construction, pyramiding, options, frontend, and production workflow logic are intentionally excluded from the initial research scope.
 
-The first objective is much narrower:
+Phase 1 has one question only:
 
-> Using only recent SPY price and volume history, can a small CNN learn a useful forward-looking trend score whose higher values correspond to a higher probability of a successful, persistent bullish trend?
+> Using only recent SPY price and volume history, can a small CNN identify future 3-week to 3-month bullish trends with a materially higher out-of-sample successful rate than the unconditional SPY baseline?
 
-This branch should stay minimal until that question is answered empirically.
+If SPY itself cannot produce a useful and stable out-of-sample trend signal, do not expand to QQQ, sector ETFs, individual stocks, portfolio construction, or options.
 
 ## 2. Technical Baseline
 
-Primary implementation language:
+Primary language:
 
 ```text
 Python
@@ -28,57 +28,44 @@ Primary ML framework:
 PyTorch
 ```
 
-Primary local acceleration stack:
+Local research environment:
 
 ```text
-NVIDIA CUDA ecosystem
-CUDA toolkit: up to 12.9
-cuDNN: 9.x
-GPU: Tesla P100
+CPU first
+GPU only when repeated experiments justify it
+Tesla P100 available
+CUDA ecosystem available up to CUDA 12.9
+cuDNN 9.x
 ```
 
-Research should be local-first. Cloud deployment, Cloudflare workers, frontend code, and production orchestration are not part of the initial CNN research path.
+The initial SPY dataset and CNNs are small enough that CPU execution is the default. GPU acceleration is optional and should be enabled only if walk-forward, repeated seeds, or hyperparameter experiments become materially slow.
 
-Use the PyTorch CUDA ecosystem as the standard implementation path for model definition, training, checkpointing, mixed CPU/GPU data flow, and batched inference.
+Use standard PyTorch modules first. Do not write custom CUDA kernels during Phase 1.
 
-For the first SPY daily-data experiments, the dataset is small enough that CPU preprocessing is acceptable. GPU acceleration is primarily useful for repeated walk-forward CNN training, hyperparameter experiments, and later multi-instrument expansion.
+## 3. Core Research Rules
 
-Environment policy:
-
-- use an isolated Python environment for the research stack
-- pin Python, PyTorch, CUDA-compatible dependencies, and experiment configuration
-- verify PyTorch sees the Tesla P100 before training
-- record `torch`, CUDA runtime, cuDNN, GPU, and driver information with each experiment
-- prefer official PyTorch-supported CUDA builds rather than custom CUDA kernels unless a demonstrated bottleneck later justifies them
-
-## 3. Core Research Principles
-
-1. Start with SPY only.
-2. Use price and volume only.
-3. Use a CNN implemented in PyTorch as the primary predictive model.
-4. Do not assume older market data is equally representative of the current market.
-5. Test training-history length empirically instead of fixing it by intuition.
-6. Use strict chronological / walk-forward validation. Never random-shuffle overlapping time-series samples.
-7. The model should estimate trend quality, not simply next-day direction.
-8. Optimize for useful out-of-sample trend discrimination, not training accuracy.
-9. Keep the first model small enough to match the available sample size.
-10. Add QQQ, sector ETFs, and individual stocks only after the SPY experiment demonstrates genuine out-of-sample value.
+1. SPY only in Phase 1.
+2. Price and volume only.
+3. Pure technical-analysis research: no fundamentals, news, macro, sentiment, options, breadth, analyst data, or alternative data.
+4. PyTorch CNN is the primary predictive model.
+5. The primary target is future trend quality, not next-day direction.
+6. The intended trading horizon is 3 weeks to 3 months, approximately 15-60 trading sessions.
+7. Evaluate multiple forward horizons: 15, 30, 45, and 60 sessions.
+8. Use strict chronological, purged walk-forward validation. Never randomly shuffle overlapping time-series samples.
+9. Do not assume older market data is equally useful. Test recent-history length empirically.
+10. Optimize for out-of-sample trend discrimination and successful rate, not training accuracy.
+11. Keep the first models deliberately small.
+12. QQQ, sectors, and stocks are deferred until SPY succeeds.
 
 ## 4. Data Scope
 
-### Instrument
-
-Initial research instrument:
+Initial instrument:
 
 ```text
 SPY only
 ```
 
-SPY is treated as a broad U.S. large-cap market proxy, not literally an equal-weight average of all stocks.
-
-### Data fields
-
-Allowed model information:
+Allowed raw model information:
 
 ```text
 Open
@@ -88,22 +75,31 @@ Close
 Volume
 ```
 
-Derived transformations that use only price and volume are allowed, including normalized returns, relative price levels, moving averages, volume averages, volatility-like quantities derived from price, and future-path quantities used only for labels/evaluation.
+Derived transformations are allowed only when they are produced entirely from historical price and volume available at or before the prediction date.
 
-No fundamentals, news, macro data, sentiment, options data, breadth data, or external technical indicators in the initial experiment.
+Examples:
+
+```text
+returns
+relative OHLC geometry
+moving averages
+volume averages
+range measures
+price/volume normalization
+```
+
+Future-path quantities may be used only to construct labels and evaluation metrics.
 
 ### Data sources
 
-Preferred research history:
+Preferred history:
 
 ```text
-Yahoo Finance or another reliable source: up to ~5 years of daily SPY OHLCV
+Yahoo Finance or another reliable source: up to ~5 recent years of SPY daily OHLCV
 Massive: recent ~2 years for cross-checking and/or current updates
 ```
 
-The model must not be constrained to two years merely because Massive currently exposes only that span.
-
-Before combining or comparing sources, verify:
+Before reconciling sources, verify:
 
 ```text
 trading dates
@@ -114,15 +110,11 @@ missing sessions
 corporate-action treatment
 ```
 
-A single canonical series should be produced before training.
+Produce one canonical SPY daily series before training.
 
-## 5. Recency Hypothesis
+## 5. Recency Research
 
-The central data hypothesis is:
-
-> More history is not automatically better. Older market regimes may reduce relevance to current conditions.
-
-Therefore training-history length is a research variable.
+Older market regimes may not represent the current market well, so training-history length is itself a research variable.
 
 Primary comparison:
 
@@ -131,36 +123,18 @@ Primary comparison:
 2-year rolling history
 3-year rolling history
 5-year rolling history
-```
-
-Optional comparison:
-
-```text
 5-year history with recency-weighted loss
 ```
 
-Example recency weighting:
-
-```text
-recent observations receive the highest weight
-older observations decay exponentially
-```
-
-The exact decay rate must be treated as a tunable research parameter and evaluated only through walk-forward out-of-sample results.
+All variants must use identical test dates, preprocessing, target definitions, architecture, optimizer, and evaluation logic. Only training-history treatment should differ.
 
 ## 6. Input Representation
 
-### Lookback window
-
-Initial baseline:
+Initial lookback:
 
 ```text
 50 trading sessions
 ```
-
-Each sample uses only information available through day t.
-
-### Raw input
 
 Baseline tensor:
 
@@ -168,11 +142,9 @@ Baseline tensor:
 50 x 5
 ```
 
-representing transformed OHLCV.
-
 Do not feed absolute SPY price levels directly without normalization.
 
-Candidate normalized price channels:
+Candidate causal price channels:
 
 ```text
 Open / previous Close - 1
@@ -181,322 +153,421 @@ Low / previous Close - 1
 Close / previous Close - 1
 ```
 
-or equivalent log-return forms.
+or equivalent log-return representations.
 
 Candidate volume normalization:
 
 ```text
 log(volume)
-relative / standardized volume using only trailing history
+relative volume using trailing history
+causal z-score using trailing history
 ```
 
-All normalization parameters must be computed from information available at or before the sample date.
+No normalization may use future information.
 
-## 7. CNN Architecture Hypothesis
+## 7. Phase-1 Models
 
-The first model should be deliberately small.
+Two CNN models must be implemented together and evaluated under identical conditions.
 
-Primary architecture concept:
+### Model A — Joint OHLCV CNN
+
+Purpose: establish the cleanest CNN baseline.
 
 ```text
-50-day OHLCV input
-        |
-  -------------------
-  |        |        |
-CNN-5    CNN-10   CNN-20
-  |        |        |
-  -------------------
-        |
-   fusion / gating
-        |
- global pooling
-        |
- small dense layer
-        |
-   Trend Score
+Input: past 50 sessions OHLCV
+
+            -> Conv1D kernel 5  -\
+            -> Conv1D kernel 10 -- concat -> fusion -> pooling -> dense -> trend outputs
+            -> Conv1D kernel 20 -/
 ```
 
-The 5-, 10-, and 20-session receptive fields are intended to represent short, intermediate, and swing-trend structures.
+Price and volume are treated as channels in one shared representation.
 
-The network should learn their relative importance rather than receiving fixed manual weights.
+### Model B — Separate Price / Volume CNN
 
-Implementation should use standard PyTorch modules first, such as `torch.nn.Conv1d`, pooling, normalization, activation, and small fully connected layers. Avoid custom CUDA kernels in the initial research stage.
-
-### Explicit moving-average ablation
-
-A second model variant should expose explicit price and volume averages:
+Purpose: test whether modeling price structure and volume structure separately improves future-trend detection.
 
 ```text
-Price MA5
-Price MA10
-Price MA20
-Volume MA5
-Volume MA10
-Volume MA20
+Price branch: OHLC
+    -> multi-scale Conv1D 5/10/20
+
+Volume branch: Volume
+    -> multi-scale Conv1D 5/10/20
+
+Price features + Volume features
+    -> fusion
+    -> pooling
+    -> dense
+    -> trend outputs
 ```
 
-These features should enter a separate branch or fusion layer rather than replacing the raw OHLCV branch.
-
-Required comparison:
+The key Phase-1 comparison is:
 
 ```text
-Model A: raw OHLCV CNN only
-Model B: raw OHLCV CNN + explicit MA branch
+Model A: joint OHLCV representation
+vs
+Model B: separate price and volume representations
 ```
 
-This tests whether explicit smoothing improves generalization or whether the CNN can learn equivalent filters itself.
+Do not add extra architecture complexity unless this comparison has been completed.
 
-## 8. What the Model Should Predict
+## 8. Prediction Horizons
 
-Do not begin with next-day up/down classification.
+Because the intended trading strategy holds approximately 3 weeks to 3 months, the CNN should not optimize only for a 20-day future.
 
-The target is a forward trend-quality concept over a fixed future horizon.
-
-Initial horizon:
+The model should produce horizon-specific future trend estimates:
 
 ```text
-20 trading sessions
+Trend15
+Trend30
+Trend45
+Trend60
 ```
-
-The model should estimate whether the future path is not only positive, but persistent and risk-efficient.
-
-## 9. Trend Ground Truth
-
-Defining trend quality is the most important part of the project.
-
-A good bullish trend should combine:
-
-```text
-positive forward return
-high path efficiency / persistence
-limited adverse excursion
-reasonable directional consistency
-```
-
-Candidate forward quantities:
-
-```text
-ForwardReturn20
-MAE20
-MFE20
-TrendEfficiency20
-linear slope
-R-squared / path fit quality
-```
-
-One useful path-efficiency definition is:
-
-```text
-Efficiency20 =
-    (Close[t+20] - Close[t])
-    /
-    sum(abs(Close[i] - Close[i-1])) over the forward 20-session path
-```
-
-A smooth directional move should have higher efficiency than a noisy path ending at the same return.
-
-### Preferred first target
-
-Use a continuous future Trend Quality target rather than only a binary label.
 
 Conceptually:
 
 ```text
-FutureTrendQuality
+Past 50D OHLCV
+      -> CNN
+      -> Trend15
+      -> Trend30
+      -> Trend45
+      -> Trend60
+```
+
+Do not immediately collapse these four outputs into one weighted score. First evaluate each horizon independently.
+
+This allows the model to distinguish, for example:
+
+```text
+short-lived acceleration
+medium-duration swing trend
+persistent multi-month trend
+```
+
+## 9. Trend Ground Truth
+
+Defining realized trend quality is the most important modeling decision.
+
+A successful bullish trend should not mean only that the final price is higher.
+
+A high-quality trend should generally combine:
+
+```text
+positive forward return
+persistent directional movement
+limited adverse excursion
+reasonable path efficiency
+```
+
+For each horizon h in {15, 30, 45, 60}, calculate at least:
+
+```text
+ForwardReturn_h
+MAE_h
+MFE_h
+TrendEfficiency_h
+```
+
+A useful path-efficiency definition is:
+
+```text
+TrendEfficiency_h =
+    (Close[t+h] - Close[t])
+    /
+    sum(abs(Close[i] - Close[i-1])) over the forward h-session path
+```
+
+A smooth directional rise should score better than a highly erratic path ending at the same final return.
+
+### Continuous trend target
+
+The CNN should primarily predict a continuous realized trend-quality target rather than a next-day binary direction.
+
+Conceptually:
+
+```text
+FutureTrendQuality_h
 = reward(forward return)
 + reward(path efficiency)
-+ reward(direction consistency)
 - penalty(adverse excursion)
 ```
 
-Normalize the final target to a stable range such as:
+The exact formula and coefficients are research hypotheses and must be documented and tested for robustness.
+
+## 10. Successful Trend Definition
+
+Successful rate is an evaluation metric, not the only training target.
+
+For each horizon h, define:
 
 ```text
--1 ... +1
+SuccessfulTrend_h = 1
 ```
 
-or:
-
-```text
-0 ... 1
-```
-
-Exact coefficients must remain research hypotheses rather than permanent constants.
-
-### Binary success metric
-
-A separate binary definition should be retained for evaluation.
-
-For example, a successful bullish trend can require a combination of:
+when the realized future path satisfies a predeclared combination of:
 
 ```text
 minimum forward return
-maximum acceptable adverse excursion
+maximum acceptable MAE
 minimum trend efficiency
 ```
 
-Thresholds must be tested for robustness and should not be optimized solely to maximize headline success rate.
-
-## 10. Trend Score
-
-The model output is:
+Otherwise:
 
 ```text
-TrendScore(t)
+SuccessfulTrend_h = 0
 ```
 
-Interpretation:
+Do not tune these thresholds solely to maximize the headline successful rate.
 
-> Given the previous 50 sessions of SPY price/volume behavior, how strong is the evidence that the next ~20 sessions will form a high-quality bullish trend?
+Use at least two predeclared evaluation definitions, for example a looser and a stricter definition, to test whether model quality is robust to the exact success threshold.
 
-The primary research goal is not simply low prediction error.
+## 11. Successful Rate
 
-The desired empirical property is monotonicity:
+For a selected group of predictions:
 
 ```text
-higher TrendScore
--> higher future trend success rate
--> higher forward return / MFE
--> lower or better-controlled MAE
+Successful Rate
+= number of SuccessfulTrend signals
+  / number of evaluated signals
 ```
 
-## 11. Validation Rules
+The most important comparison is not the raw successful rate by itself, but the improvement over the unconditional SPY baseline for the same horizon and dates.
 
-### No random train/test split
-
-Adjacent 50-day windows overlap heavily.
-
-Therefore this is forbidden:
+Define:
 
 ```text
-random shuffle
-random 80/20 train/test split
+BaselineSuccessRate_h
+= successful future trends across all eligible SPY dates
 ```
 
-### Required validation
+Then evaluate model-selected subsets such as:
 
-Use chronological walk-forward evaluation.
+```text
+top 50% TrendScore
+top 30%
+top 20%
+top 10%
+```
 
-General form:
+The key evidence is:
+
+```text
+SuccessRate(high TrendScore)
+>> BaselineSuccessRate
+```
+
+and this improvement must repeat across walk-forward folds.
+
+A model that produces a tiny number of signals with a superficially high success rate is not automatically useful.
+
+## 12. Primary Phase-1 Goal
+
+The highest-priority empirical property is:
+
+```text
+higher predicted TrendScore
+-> higher realized Successful Rate
+```
+
+Ideally, TrendScore buckets should also show:
+
+```text
+higher realized trend quality
+higher forward return
+better MFE
+controlled MAE
+higher path efficiency
+```
+
+But successful-rate discrimination is the primary Phase-1 gate.
+
+If high TrendScore does not materially and consistently improve successful rate over baseline SPY behavior, the model is not good enough to expand.
+
+## 13. Validation Rules
+
+Random train/test splitting is forbidden because adjacent 50-day windows overlap heavily.
+
+Required method:
 
 ```text
 Train on past data only
-Validate on the next block
+Validate on the next chronological block
+Purge future-label overlap at boundaries
 Test on a later untouched block
 Roll forward
 Repeat
 ```
 
-The future label horizon must also be purged from training/validation boundaries so that no future information overlaps evaluation periods.
+All results must be reported out-of-sample.
 
-### Compare history windows fairly
+The final conclusion must not depend on one favorable market period.
 
-For the 1Y / 2Y / 3Y / 5Y comparison:
+## 14. Model-A vs Model-B Evaluation
+
+A and B must use:
 
 ```text
-same model architecture
-same preprocessing
-same label definition
-same evaluation dates
-same optimization procedure
+same SPY data
+same 50-day lookback
+same 15/30/45/60 horizons
+same targets
+same walk-forward folds
+same optimizer
+same learning rate policy
+same epoch limit
+same early stopping
+same random seeds
+same history-window experiment
 ```
 
-Only the available training-history window should change.
+Only the representation architecture differs.
 
-## 12. Primary Evaluation Metrics
-
-Do not optimize for win rate alone.
-
-Every experiment should report:
+Required comparison for each horizon:
 
 ```text
+baseline successful rate
+Model A top-score successful rate
+Model B top-score successful rate
+success-rate lift over baseline
+sample count / coverage
+fold stability
+```
+
+Prefer the simpler model unless Model B shows reproducible incremental value.
+
+## 15. Initial Training Defaults
+
+First implementation should favor stable defaults over tuning.
+
+Suggested starting point:
+
+```text
+Optimizer: AdamW
+Loss: Huber / SmoothL1 for continuous trend targets
+Batch size: ~32
+Epoch limit: ~100
+Early stopping: validation patience ~10
+Activation: ReLU or GELU
+Dropout: small, approximately 0.1-0.2
+Device: CPU
+```
+
+These are starting defaults, not permanent strategy parameters.
+
+## 16. CPU-First Policy
+
+Initial execution should use:
+
+```text
+device = cpu
+```
+
+Reasons:
+
+```text
+SPY daily dataset is small
+models are intentionally small
+debugging chronology and labels matters more than speed
+CPU improves implementation simplicity during Phase 1
+```
+
+GPU becomes useful when experiment volume grows, for example:
+
+```text
+many walk-forward folds
+x multiple training-history windows
+x Model A/B
+x repeated random seeds
+x multiple label variants
+```
+
+At that point enable the Tesla P100 through PyTorch CUDA without changing the research logic.
+
+## 17. Primary Evaluation Output
+
+Every experiment should report, separately for 15/30/45/60 sessions:
+
+```text
+BaselineSuccessRate
 TrendScore distribution
-TrendScore quantile / decile results
+TrendScore quantiles / deciles
 signal count
 coverage
-success rate
+successful rate by score bucket
+successful-rate lift over baseline
 mean forward return
 median forward return
 MAE
 MFE
-trend efficiency
-calibration / monotonicity
+TrendEfficiency
+walk-forward fold results
 ```
 
-A useful result should look qualitatively like:
+The most important table should resemble:
 
 ```text
-TrendScore increases
--> success rate rises
--> forward return improves
--> adverse excursion is controlled
+Horizon | Score bucket | Signals | Success rate | Baseline | Lift
+15D     | top 20%      | ...     | ...          | ...      | ...
+30D     | top 20%      | ...     | ...          | ...      | ...
+45D     | top 20%      | ...     | ...          | ...      | ...
+60D     | top 20%      | ...     | ...          | ...      | ...
 ```
 
-A model that produces very few signals with a superficially high success rate should not automatically be considered superior.
+## 18. Baseline Models
 
-## 13. Phase 1 Is Prediction Research, Not Yet a Trading Strategy
+The CNN must also outperform simple price/volume baselines.
 
-Do not immediately convert the CNN into entry/exit rules.
-
-First prove that TrendScore contains out-of-sample information.
-
-Primary Phase-1 analysis:
+At minimum compare against:
 
 ```text
-TrendScore decile
-vs
-future 20-session return
-future success rate
-future MAE
-future MFE
-future trend efficiency
+unconditional SPY baseline
+simple recent-return trend score
+simple MA-based price trend score
+small linear model using the same allowed price/volume data
 ```
 
-Only after a stable monotonic relationship is demonstrated should TrendScore be converted into a trading rule.
+This prevents attributing value to CNN complexity when a simpler price trend rule performs equally well.
 
-## 14. Baseline Models
+## 19. Initial Experiment Matrix
 
-A CNN result must be compared with simple baselines.
-
-At minimum:
+### CNN architecture
 
 ```text
-naive constant predictor
-simple recent return / momentum baseline
-simple MA-based trend baseline
-small linear / logistic model using the same allowed price-volume information
+Model A: joint OHLCV CNN
+Model B: separate price / volume CNN
 ```
 
-The CNN must demonstrate incremental out-of-sample value over these simpler alternatives.
-
-## 15. Initial Experiment Matrix
-
-### Data-history experiment
+### Training-history window
 
 ```text
-CNN-1Y
-CNN-2Y
-CNN-3Y
-CNN-5Y
-CNN-5Y-recency-weighted
+1Y
+2Y
+3Y
+5Y
+5Y recency-weighted
 ```
 
-### Feature / architecture ablation
+### Prediction horizons
 
 ```text
-raw OHLCV CNN
-raw OHLCV CNN + explicit MA5/10/20 branch
+15D
+30D
+45D
+60D
 ```
 
-### Initial prediction horizon
+### Device
 
 ```text
-20 sessions
+CPU first
+GPU only if experiment throughput requires it
 ```
 
-Only after the 20-session baseline is understood should alternative horizons such as 10, 30, or 40 sessions be tested.
+Do not broaden the matrix until these experiments are understood.
 
-## 16. Local Python / PyTorch Research Structure
+## 20. Local Python / PyTorch Structure
 
 Suggested initial repository structure:
 
@@ -524,180 +595,131 @@ scripts/
 tests/
 ```
 
-Initial implementation should favor clarity and reproducibility over framework complexity.
-
-Recommended responsibilities:
+Responsibilities:
 
 ```text
-data.py        -> canonical OHLCV loading / source reconciliation
-features.py    -> causal normalization and optional MA features
-labels.py      -> future trend-quality / MAE / MFE / efficiency labels
-datasets.py    -> PyTorch Dataset / 50-session sequence construction
-models.py      -> PyTorch small multi-scale 1D CNN variants
-train.py       -> PyTorch training loop / optimizer / scheduler / checkpoints
+data.py        -> canonical SPY OHLCV loading and source reconciliation
+features.py    -> causal price/volume normalization\labels.py      -> 15/30/45/60 trend-quality, success, MAE, MFE, efficiency labels
+datasets.py    -> PyTorch Dataset and 50-session sequence construction
+models.py      -> Model A and Model B
+train.py       -> PyTorch training loop, seeds, checkpoints
 walkforward.py -> purged chronological fold generation
-evaluate.py    -> decile, calibration, return, MAE/MFE audits
-device.py      -> CUDA/P100 capability and device selection
+evaluate.py    -> successful-rate and trend-quality audits
+device.py      -> CPU default and optional CUDA selection
 ```
 
-Persist raw downloaded data, canonical cleaned data, model artifacts, and experiment results separately. Generated data and model checkpoints should normally remain outside Git unless intentionally versioned.
-
-## 17. PyTorch / CUDA / Reproducibility Policy
-
-PyTorch with CUDA is the canonical neural-network stack for this branch.
-
-Preferred execution pattern:
-
-```text
-CPU: download, cleaning, feature/label construction, fold generation
-GPU: CNN training, validation inference, batched test inference
-```
-
-Use CUDA only where it improves the research workflow. Correct chronology and reproducibility remain more important than maximum GPU utilization.
-
-Core principles:
-
-```text
-correct chronology > GPU speed
-reproducibility > maximum throughput
-small justified model > large GPU-saturating model
-```
+## 21. Reproducibility
 
 Record for every experiment:
 
 ```text
 Python version
 PyTorch version
-torch.version.cuda
-cuDNN version
-NVIDIA driver version
-GPU model
+execution device
+CUDA/cuDNN versions if GPU is used
+GPU model if GPU is used
 random seed
 training date range
 validation date range
 test date range
-history-window length
+training-history length
 model configuration
-label configuration
+target configuration
+success-definition configuration
 ```
 
-At runtime, verify and record at minimum:
+Save configuration, metrics, and predictions with each run.
 
-```python
-torch.cuda.is_available()
-torch.cuda.get_device_name(0)
-torch.version.cuda
-torch.backends.cudnn.version()
-```
+## 22. Expansion Gate
 
-Set deterministic seeds where practical and save configuration plus metrics with every run.
+Do not add QQQ, IWM, sector ETFs, individual stocks, sector weights, or per-stock context weights during Phase 1.
 
-The Tesla P100 has ample compute for the initial small 1D CNN. Do not enlarge the network merely to use the GPU.
+Expansion is allowed only if the SPY CNN demonstrates reproducible out-of-sample value.
 
-Mixed precision should be treated as optional rather than assumed. Use it only if the selected PyTorch/P100 path is stable and demonstrably beneficial for this small model.
-
-## 18. Expansion Path
-
-Do not expand until the SPY model demonstrates reproducible out-of-sample value.
-
-### Stage 1
+The minimum qualitative gate is:
 
 ```text
-SPY
--> broad-market TrendScore
+high TrendScore groups consistently produce materially higher successful rates than unconditional SPY baseline
 ```
 
-### Stage 2
+across multiple walk-forward folds and preferably across multiple 15-60 day horizons.
 
-Add style / market-regime proxies:
+If SPY fails this test:
 
 ```text
-QQQ
-IWM
+do not add more instruments
+revise target definition
+revise input representation
+revise model architecture
+revise training-history assumptions
 ```
 
-These should initially be treated as independent trend models rather than automatically as sector weights.
+Adding QQQ or stocks must not be used to hide a weak SPY trend detector.
 
-### Stage 3
+## 23. Explicitly Deferred
 
-Sector ETFs:
-
-```text
-XLK
-XLF
-XLE
-XLV
-XLI
-...
-```
-
-Each can produce its own SectorTrendScore using the same price-volume-only framework.
-
-### Stage 4
-
-Individual stocks:
+Until the SPY expansion gate is passed, do not implement:
 
 ```text
-MarketTrendScore
-SectorTrendScore
-StockTrendScore
-```
-
-Only at this stage should the project investigate how those scores combine into selection or position-sizing decisions.
-
-## 19. Explicitly Deferred
-
-Do not implement these during the initial SPY research phase:
-
-```text
-individual-stock ranking
-Top-50 selection
-sector ranking
+QQQ weighting
+sector ETF weighting
+stock-specific context weights
+individual-stock CNNs
+stock ranking
 portfolio construction
 pyramiding
 options acceleration
 broker execution
 frontend dashboard
 production workflows
-CNN-controlled dynamic trading rules
 ```
 
-They can be reconsidered only after the basic trend-detection hypothesis is validated.
+These are future phases only.
 
-## 20. First Implementation Milestones
+## 24. First Implementation Milestones
 
-1. Establish a reproducible local Python + PyTorch environment and verify CUDA/cuDNN access to the Tesla P100.
-2. Record the local PyTorch, CUDA, cuDNN, NVIDIA driver, and GPU versions in an environment report.
-3. Build canonical SPY daily OHLCV dataset, preferably up to 5 recent years.
-4. Cross-check recent overlap between Yahoo Finance and Massive where practical.
-5. Implement causal preprocessing and 50-session sample generation.
-6. Implement 20-session future trend-quality labels and evaluation fields.
-7. Implement simple non-CNN baselines.
-8. Implement the PyTorch small multi-scale 1D CNN with 5/10/20-session receptive fields.
-9. Implement the explicit MA branch variant.
-10. Implement strict purged walk-forward training/evaluation.
-11. Run 1Y / 2Y / 3Y / 5Y training-history comparisons.
-12. Run 5Y recency-weighted comparison.
-13. Produce TrendScore quantile/decile audit tables.
-14. Decide empirically whether the CNN contains sufficient out-of-sample trend information to justify Phase 2.
+1. Build the canonical recent SPY daily OHLCV dataset, preferably up to 5 years.
+2. Cross-check Yahoo Finance and Massive overlap where practical.
+3. Implement causal 50-session price/volume preprocessing.
+4. Implement 15/30/45/60 future trend-quality labels.
+5. Implement 15/30/45/60 successful-trend evaluation labels.
+6. Calculate unconditional SPY baseline successful rates for every horizon.
+7. Implement simple non-CNN price/volume baselines.
+8. Implement Model A.
+9. Implement Model B.
+10. Implement strict purged walk-forward evaluation.
+11. Run CPU-based A/B baseline experiments.
+12. Run 1Y/2Y/3Y/5Y training-history comparisons.
+13. Run 5Y recency-weighted comparison.
+14. Produce TrendScore bucket vs Successful Rate reports for 15/30/45/60 days.
+15. Decide whether SPY passes the expansion gate.
+16. Use GPU only if experiment throughput becomes a practical bottleneck.
 
-## 21. Initial Success Criterion
+## 25. Phase-1 Success Criterion
 
 The first milestone is not portfolio return.
 
-The project advances only if out-of-sample results show that TrendScore has stable and useful ordering power across walk-forward folds.
+The central question is:
 
-The strongest evidence would be:
+> Can the CNN reliably identify SPY states whose future 3-week to 3-month trend success probability is materially higher than normal?
+
+A strong result should show:
 
 ```text
-higher TrendScore buckets consistently show
-- higher successful-trend rate
-- better forward return
-- better MFE
-- controlled MAE
-- stronger path efficiency
+TrendScore increases
+-> Successful Rate increases
+-> successful-rate lift over baseline is material
+-> improvement persists across walk-forward folds
+-> result is not caused by a tiny number of signals
 ```
 
-and the CNN performs better than simple price-volume baselines without relying on a tiny number of extreme signals.
+Additional supporting evidence:
 
-If these conditions are not met, revise the label, preprocessing, model capacity, or training-history assumptions before adding more instruments or complexity.
+```text
+better forward return
+better MFE
+controlled MAE
+higher trend efficiency
+```
+
+If these conditions are not met, Phase 1 is not complete and the project should not expand beyond SPY.
