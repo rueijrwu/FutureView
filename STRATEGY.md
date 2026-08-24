@@ -603,6 +603,128 @@ Indicators such as RSI, MACD, and Stochastic may be useful for secondary analysi
 
 ---
 
+## Backtest Audit Priority: Win Rate
+
+The current strategy's win rate is **unknown until measured**. The first backtest objective is therefore to establish the empirical hit rate of the strategy before optimizing weights, leverage, or return.
+
+Win rate must be measured at multiple layers rather than reported as one portfolio-level number.
+
+### 1. Complete-trade win rate
+
+For every completed stock trade:
+
+```text
+win = realized net trade P&L > 0
+loss = realized net trade P&L <= 0
+```
+
+Report the percentage of profitable completed trades.
+
+### 2. Initial-entry win rate
+
+Measure whether the initial stock entry generates positive forward returns over the intended holding horizon.
+
+At minimum, report forward returns at:
+
+```text
+20 sessions
+40 sessions
+60 sessions
+```
+
+This isolates the quality of the original setup from later pyramiding decisions.
+
+### 3. Add-on win rate
+
+Each add is a separate capital decision and must be audited separately:
+
+```text
+Initial entry
+Add #1
+Add #2
+```
+
+For each layer, measure whether the incremental capital added at that point produces a positive realized or forward return.
+
+A pyramiding rule should not be assumed beneficial simply because the final combined position is profitable.
+
+### 4. Option-acceleration win rate
+
+When the first confirmed breakout add uses Call options, the option layer must be evaluated independently from the stock position.
+
+Track at minimum:
+
+- profitable option sequences / total option sequences
+- first-contract exit result
+- remaining-contract exit result
+- full option-layer P&L
+- whether conversion from option profit into stock improved total trade outcome
+
+Option leverage should only remain part of the strategy if the confirmation layer demonstrates a repeatable edge after realistic option execution assumptions are introduced.
+
+### 5. Sector-conditioned win rate
+
+The sector-selection thesis must be tested directly.
+
+Compare:
+
+```text
+Top-3-sector / Top-3-stock selection
+vs
+Top-9 stocks without sector filtering
+vs
+broader Top-50 eligible setups
+```
+
+The key question is whether concentrating in the strongest three sectors materially improves hit rate and/or payoff quality.
+
+### 6. Breakout-confirmation win rate
+
+Compare valid right-side confirmations against simpler trend qualification.
+
+Examples:
+
+```text
+5/10/20 bullish structure only
+vs
+bullish structure + breakout
+vs
+bullish structure + breakout + RVOL confirmation
+```
+
+This determines whether breakout and volume confirmation actually increase the probability of a successful trade.
+
+### Win rate is not sufficient by itself
+
+A high hit rate can still produce a poor strategy if losses are much larger than gains. Every win-rate report must therefore be paired with at least:
+
+```text
+win rate
+average win
+average loss
+median trade return
+payoff ratio = average win / abs(average loss)
+profit factor = gross profits / gross losses
+maximum adverse excursion (MAE)
+maximum favorable excursion (MFE)
+average holding period
+```
+
+The first audit should prioritize **statistical description**, not parameter optimization.
+
+The initial research questions are:
+
+1. Does Top-3-sector selection improve win rate versus simply buying the highest-ranked stocks?
+2. Does breakout + RVOL confirmation improve win rate versus moving-average trend structure alone?
+3. Is Add #1 more reliable than the initial entry?
+4. Does Add #2 continue to add edge, or does it mostly add late-stage risk?
+5. Does the option-acceleration layer improve expected outcome after accounting for its additional risk and execution complexity?
+6. Which predefined exit structures preserve the best combination of hit rate and payoff ratio?
+
+No ranking weight, pyramiding percentage, option rule, or exit threshold should be optimized before this baseline audit is established.
+
+---
+
 ## Offensive Capital Constraint
 
 This strategy describes only the offensive sleeve.
