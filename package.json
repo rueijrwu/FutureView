@@ -4,6 +4,6 @@
   "type": "module",
   "scripts": {
     "test": "node --test tests-js/*.test.js",
-    "check:worker": "node --check worker/index.js && node --check worker/main.js && node --check worker/d1.js && node --check worker/d1-read.js && node --check worker/universe.js && node --check worker/strategy-config.js && node --check worker/strategy-store.js && node --check worker/feature-bootstrap-workflow.js && node --check worker/incremental-workflow.js && node --check worker/production-ranking.js && node --check worker/ranking-core.js && node --check worker/ranking-replay.js && node --check worker/ranking-replay-workflow.js && node --check worker/backtest-core.js && node --check worker/backtest-workflow.js"
+    "check:worker": "node --check worker/index.js && node --check worker/main.js && node --check worker/manual-admin.js && node --check worker/d1.js && node --check worker/d1-read.js && node --check worker/universe.js && node --check worker/strategy-config.js && node --check worker/strategy-store.js && node --check worker/feature-bootstrap-workflow.js && node --check worker/incremental-workflow.js && node --check worker/production-ranking.js && node --check worker/ranking-core.js && node --check worker/ranking-replay.js && node --check worker/ranking-replay-workflow.js && node --check worker/backtest-core.js && node --check worker/backtest-workflow.js"
   }
 }
