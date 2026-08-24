@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from .data import download_spy_daily, validate_ohlcv
+from .data import download_spy_daily, validate_daily_ohlcv
 from .datasets import build_windows
 from .features import make_causal_features
 from .labels import HORIZONS, make_forward_labels
@@ -11,7 +11,7 @@ from .walkforward import purged_three_way_split
 
 def main() -> None:
     df = download_spy_daily(period="3y")
-    validate_ohlcv(df)
+    validate_daily_ohlcv(df)
 
     features = make_causal_features(df)
     labels = make_forward_labels(df)
