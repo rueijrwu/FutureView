@@ -35,3 +35,8 @@ jobs:
         env:
           CUDA_VISIBLE_DEVICES: ''
         run: futureview-data-smoke
+
+      - name: Run feature-label-window pipeline smoke test
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: futureview-pipeline-smoke
