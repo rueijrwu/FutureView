@@ -15,6 +15,19 @@ export const RANKING_CONFIG_V2 = Object.freeze({
   extensionPenaltyMax: 0.12,
 });
 
+// Local-only research experiment. Production ranking keeps RANKING_CONFIG_V2
+// unless this config is explicitly supplied by the caller.
+// The total relative-strength weight remains 45%, but it is split between
+// market-relative (SPY) and closest-sector-ETF-relative strength.
+export const RANKING_CONFIG_SECTOR_RS_EXPERIMENT = Object.freeze({
+  ...RANKING_CONFIG_V2,
+  sectorAwareRelativeStrength: true,
+  marketRs20Weight: 0.10,
+  marketRs60Weight: 0.10,
+  sectorRs20Weight: 0.15,
+  sectorRs60Weight: 0.10,
+});
+
 // Research baseline for the right-side swing strategy. Sector selection and
 // staged adds are intentionally separate follow-on layers; this config only
 // contains rules supported by the current feature set.
