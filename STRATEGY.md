@@ -8,9 +8,7 @@ Core principle:
 
 > Trade with the trend. Do not fight the market.
 
-The strategy does not predict bottoms or tops. A stock must prove strength through trend structure, breakout behavior, volume, and risk quality before capital is committed.
-
-This document describes the offensive trading logic. Defensive capital, reserve capital, and broad allocation policy are separate layers.
+The strategy does not predict bottoms or tops. A stock must prove strength through trend structure, breakout behavior, participation, sector context, and risk quality before capital is committed.
 
 The offensive sleeve must not exceed **60% of total portfolio capital**.
 
@@ -23,9 +21,11 @@ The offensive sleeve must not exceed **60% of total portfolio capital**.
 5. Every entry must have a predefined exit plan.
 6. Risk controls may only tighten after entry.
 7. Let strong trends continue rather than selling simply because price reaches a new high.
-8. Prefer the strongest sectors rather than mechanically spreading capital across weak groups.
+8. Prefer strong sectors, but sector context must be based on auditable classification rather than price-pattern guessing.
 9. Use stock-specific structural/volatility-aware risk when appropriate, but never loosen risk after the fact.
 10. Research quality is determined empirically by backtest evidence, not by intuition or ranking position alone.
+11. Keep stock ranking, sector selection, and portfolio construction as separate layers.
+12. Use point-in-time data only for historical validation.
 
 The ranking model should answer:
 
@@ -52,7 +52,7 @@ Slope(SMA20) > 0
 
 SMA50 should generally be flat-to-rising or positively aligned with the trade.
 
-The strategy should recognize trend stages:
+Trend stages:
 
 ```text
 Emerging
@@ -116,7 +116,7 @@ Avoid vertically extended, chaotic entries even when raw momentum is strong.
 
 The ranking engine should emphasize setup quality rather than recent return alone.
 
-Research hypothesis:
+Longer-term research hypothesis:
 
 ```text
 SetupScore =
@@ -131,7 +131,136 @@ SetupScore =
 
 These weights are hypotheses, not permanent constants.
 
-Relative strength versus SPY and the relevant sector remains supporting evidence, but should not dominate setup quality.
+Relative strength should remain **supporting evidence**, not the dominant scoring component.
+
+## Relative Strength Framework
+
+Use two distinct benchmark questions.
+
+### Broad-market leadership
+
+```text
+MarketRS20 = Return20(stock) - Return20(SPY)
+MarketRS60 = Return60(stock) - Return60(SPY)
+```
+
+Question answered:
+
+> Is this stock outperforming the broad U.S. market?
+
+SPY remains the broad-market benchmark.
+
+### Sector leadership
+
+Once actual point-in-time sector mapping is available:
+
+```text
+SectorRS20 = Return20(stock) - Return20(actual sector ETF)
+SectorRS60 = Return60(stock) - Return60(actual sector ETF)
+```
+
+Question answered:
+
+> Is this stock outperforming its own sector context?
+
+Sector strength itself is a separate measure:
+
+```text
+SectorMarketRS = Return(sector ETF) - Return(SPY)
+```
+
+This distinction must be preserved:
+
+```text
+stock vs SPY        = market leadership
+stock vs sector ETF = stock leadership inside sector
+sector ETF vs SPY   = sector leadership inside market
+```
+
+## Sector Classification Policy
+
+Sector membership must come from an **auditable company classification source**.
+
+Current research path:
+
+```text
+Massive point-in-time ticker overview
+-> SIC code / SIC description
+-> explicit FutureView sector mapping
+-> sector ETF
+```
+
+Do not use trailing price correlation to infer a company's sector.
+
+Do not silently guess sector for missing/ambiguous SIC. Missing classification must remain explicit and be audited.
+
+The intended first ETF mapping is the 11 U.S. sector ETF framework:
+
+```text
+Materials               -> XLB
+Communication Services  -> XLC
+Energy                  -> XLE
+Financials              -> XLF
+Industrials             -> XLI
+Information Technology  -> XLK
+Consumer Staples        -> XLP
+Real Estate             -> XLRE
+Utilities               -> XLU
+Health Care             -> XLV
+Consumer Discretionary  -> XLY
+```
+
+ETF mapping is a research benchmark proxy; robustness against broader sector ETF families can be tested later.
+
+## Rejected Sector-Correlation Experiment
+
+A controlled experiment assigned each stock to the sector ETF with the highest trailing-60-session daily-return correlation and then used that ETF for SectorRS.
+
+Result over the same 126-session test window:
+
+```text
+id: local-sector-rs-correlation-v1-2026-02-23-2026-08-21-126
+trades: 70
+total return: -39.76%
+max drawdown: -45.75%
+win rate: 35.71%
+average return: -6.20%
+profit factor: 0.27
+rank 1-3 profit factor: 0.21
+```
+
+Decision:
+
+```text
+REJECT correlation-based sector assignment.
+```
+
+Interpretation:
+
+- correlation clusters price behavior, not economic sector
+- a stock can correlate most strongly with the wrong ETF for a temporary regime
+- benchmark identity can drift through time
+- the resulting SectorRS loses its intended meaning
+- the experiment materially worsened rank 1-3 quality rather than fixing it
+
+Do not revive this method by tuning its weights.
+
+## Controlled Actual-Sector RS Test
+
+After sector metadata is validated, the first actual-sector RS experiment should change only the RS benchmark structure while leaving entry/exit rules unchanged.
+
+A useful controlled hypothesis is:
+
+```text
+10% MarketRS20
+10% MarketRS60
+15% SectorRS20
+10% SectorRS60
+```
+
+This preserves the prior total 45% RS contribution for the purpose of an isolated A/B test.
+
+However, this **45% RS composition is not the desired final strategy architecture**. If actual-sector RS proves useful, the final setup-quality model should reduce RS to a supporting role consistent with the broader SetupScore philosophy.
 
 ## Top-50 -> Sector -> Final Portfolio
 
@@ -141,7 +270,7 @@ Stock ranking and portfolio selection are separate layers.
 Qualified U.S. common stocks
 -> setup-quality ranking
 -> Top 50 opportunity set
--> group by sector
+-> attach actual sector metadata
 -> rank sector strength
 -> strongest 3 sectors
 -> top 3 qualified stocks per sector
@@ -156,7 +285,7 @@ Potential components:
 
 - Top-50 representation
 - median/aggregate setup quality
-- sector relative strength versus SPY
+- sector ETF relative strength versus SPY
 - breakout breadth
 - volume participation across leaders
 
@@ -166,12 +295,14 @@ Initial research hypothesis:
 SectorScore =
     35% Top-50 Representation
   + 25% Median Setup Quality
-  + 20% Relative Strength vs SPY
+  + 20% Sector ETF Relative Strength vs SPY
   + 10% Breakout Breadth
   + 10% Volume Participation
 ```
 
 These weights must be audited historically.
+
+Sector strength should influence portfolio selection, not substitute for stock-level setup quality.
 
 ## Entry Logic
 
@@ -217,7 +348,7 @@ add_2_trigger
 After entry:
 
 ```text
-allowed: stop 100 -> 105 -> 112
+allowed:   stop 100 -> 105 -> 112
 forbidden: stop 100 -> 95 because the trade is losing
 ```
 
@@ -239,6 +370,8 @@ Penalize or reject:
 - very large gap risk
 - abnormal volatility
 - late parabolic acceleration
+
+The current empirical evidence indicates that entry quality and early loss control matter more than simply increasing the weight of momentum/relative strength.
 
 ## Pyramiding
 
@@ -269,7 +402,7 @@ existing position profitable
 
 Never average down.
 
-Pyramiding is **not** the immediate next implementation priority. Initial-entry quality and risk control must improve first.
+Pyramiding is not the immediate next implementation priority. Initial-entry quality, sector selection, and risk control must improve first.
 
 ## Options Acceleration
 
@@ -312,17 +445,15 @@ Priority indicators:
 
 - ATR / ATR%
 - RVOL
-- relative strength versus SPY / sector
+- relative strength versus SPY and actual sector
 - trend persistence / ADX-type confirmation
 - volatility contraction / base quality
 
 RSI/MACD/Stochastic may be secondary research tools but should not dominate the core engine because they overlap strongly with price momentum already represented elsewhere.
 
-# Current Empirical Baseline: momentum-v2
+# Historical Empirical Baseline
 
-The implemented canonical strategy is still `momentum-v2`. The latest complete local backtest is the empirical baseline against which strategy-v3 should be compared.
-
-Run:
+The stable historical comparison run remains:
 
 ```text
 id: local-2026-02-23-2026-08-21-126
@@ -336,7 +467,7 @@ Portfolio:
 ```text
 initial capital: $100,000
 final equity: $100,930
-total return: 0.93%
+total return: +0.93%
 max drawdown: -24.55%
 ```
 
@@ -346,12 +477,8 @@ Trade quality:
 wins: 39
 losses: 36
 win rate: 52.00%
-95% CI: 40.87% -> 62.93%
-break-even win rate: 50.85%
-win-rate edge: 1.15%
-average return: 0.30%
-median return: 0.82%
-average win: 12.99%
+average return: +0.30%
+average win: +12.99%
 average loss: -13.44%
 payoff ratio: 0.97
 profit factor: 1.02
@@ -361,39 +488,36 @@ median hold: 15 sessions
 
 Interpretation:
 
-- the baseline has almost no economic edge
-- total return is tiny relative to the drawdown
-- average loss is larger than average win
-- win rate is only slightly above observed break-even
-- confidence interval is wide enough that the observed win rate should not be treated as a stable edge
+- baseline has almost no economic edge
+- total return is tiny relative to drawdown
+- average loss is slightly larger than average win
+- ranking quality is not monotonic with rank
+- the baseline is research infrastructure evidence, not a validated strategy
 
 ## Ranking-Bucket Finding
 
 ```text
 rank 1-3
 51 trades
-win rate 50.98%
 avg return -1.99%
 profit factor 0.74
 
 rank 4-6
 19 trades
-win rate 52.63%
 avg return +4.77%
 profit factor 2.74
 
 rank 7-10
 5 trades
-win rate 60.00%
 avg return +6.77%
 profit factor 2.77
 ```
 
 The rank 7-10 sample is too small for a strong conclusion.
 
-The important evidence is that current **rank 1-3 selection quality is poor** despite receiving most of the trades. This suggests the current score may overweight names that are already too hot/extended or otherwise poorly timed for entry.
+The important evidence is that **rank 1-3 selection quality is poor** despite receiving most of the trades. This suggests the score can over-reward hot/extended or poorly timed names.
 
-Do not respond by simply retuning `momentum-v2` weights. The next version should change the selection/entry/risk model more structurally.
+Do not respond by simply retuning legacy ranking weights. Change the entry/selection/risk structure and validate each change independently.
 
 ## Holding-Period Finding
 
@@ -416,9 +540,33 @@ median return +65.79%
 
 Interpretation:
 
-- most early/short-duration trades fail
+- many early/short-duration trades fail
 - positions that survive initial weakness and develop into sustained trends perform much better
-- this supports the intended right-side philosophy: initial risk must be controlled tightly, and larger exposure should be earned by subsequent confirmation
+- initial risk must be controlled tightly
+- larger exposure should be earned by subsequent confirmation
+
+# Current Implementation Status
+
+Current strategy identifier in code:
+
+```text
+rightside-v3
+```
+
+The implementation currently includes part of the v3 entry layer and max-9 portfolio cap, but the full strategy described here is not yet validated.
+
+Still incomplete/not validated:
+
+- actual sector metadata mapping
+- actual-sector RS
+- sector-strength ranking
+- Top-3-sector / Top-3-stock selection
+- initial structural stop model
+- MAE/MFE instrumentation
+- pyramiding
+- option acceleration
+
+Treat `rightside-v3` as an implementation workstream, not proof that all v3 rules are active.
 
 # Backtest Audit Priorities
 
@@ -456,19 +604,18 @@ Not yet instrumented:
 
 Priority comparisons:
 
-1. Top-3-sector / Top-3-stock selection vs Top-9 without sector filtering
-2. 5/10/20 structure only vs structure + breakout vs structure + breakout + RVOL
-3. initial stop/risk model variants
-4. MAE/MFE by setup type and entry rank
-5. Add #1 incremental edge
-6. Add #2 incremental edge
-7. option acceleration only after stock-layer edge exists
+1. SPY-only RS vs actual-sector-aware RS
+2. Top-3-sector / Top-3-stock selection vs Top-9 without sector filtering
+3. 5/10/20 structure only vs structure + breakout vs structure + breakout + RVOL
+4. initial stop/risk model variants
+5. MAE/MFE by setup type and entry rank
+6. Add #1 incremental edge
+7. Add #2 incremental edge
+8. option acceleration only after stock-layer edge exists
 
 No pyramiding percentage, option rule, or detailed ranking weight should be optimized before these baseline comparisons exist.
 
 # Strategy-v3 Implementation Target
-
-The next strategy version should focus on **initial-entry quality and loss control**, not frontend visualization and not options.
 
 Target scope:
 
@@ -478,6 +625,9 @@ strategy-v3
 + 5/10/20 trend alignment / transition logic
 + breakout and volume confirmation
 + extension control
++ point-in-time actual sector metadata
++ market and sector-relative strength
++ sector-strength selection
 + predefined initial stop
 + stop only tightens
 + Top 50 opportunity set
@@ -489,30 +639,34 @@ strategy-v3
 
 Implementation order:
 
-1. initial-entry qualification
-2. initial stop / structural risk model
-3. sector metadata and sector-strength layer
-4. max-9 final selection
-5. MAE/MFE + setup/sector fields in trade ledger
-6. rerun same 126-session period and compare to momentum-v2
-7. add pyramiding only if initial-entry/risk metrics improve
-8. option acceleration after pyramiding evidence
-9. rich frontend visualization last
+1. finish point-in-time SIC metadata collection for research-relevant symbols
+2. measure ranked/Top-50 SIC coverage
+3. build explicit and testable SIC -> 11-sector mapping
+4. audit ambiguous/missing sector mappings
+5. rerun actual-sector-RS ablation against SPY-only baseline
+6. implement sector-strength and Top-3-sector / Top-3-stock selection only if evidence supports it
+7. implement initial stop / structural risk model
+8. add MAE/MFE + setup/sector fields in trade ledger
+9. rerun the same 126-session period
+10. add pyramiding only if initial-entry/risk metrics improve
+11. option acceleration after pyramiding evidence
+12. rich frontend visualization last
 
 ## Initial v3 Success Criteria
 
 Do not optimize for win rate alone.
 
-First targets should emphasize risk-adjusted improvement:
+Primary targets:
 
 ```text
 max drawdown materially below -24.55%
 average loss materially smaller than -13.44%
 profit factor clearly above 1.02
-expectancy clearly above 0.30%/trade
+expectancy clearly above +0.30%/trade
+rank 1-3 profit factor materially above 0.74
 ```
 
-Win rate should remain paired with payoff ratio and drawdown.
+Win rate must always be interpreted together with payoff ratio, expectancy, and drawdown.
 
 # Future Plan
 
@@ -526,30 +680,9 @@ Potential model outputs:
 
 ```text
 1. dynamic ranking weights
-   - Trend Structure weight
-   - Breakout / Pivot weight
-   - Volume Quality weight
-   - Base / Contraction weight
-   - Relative Strength weight
-   - Persistence weight
-
 2. dynamic entry criteria / thresholds
-   - minimum RVOL
-   - maximum allowed ExtensionATR
-   - breakout strictness
-   - minimum base quality
-   - minimum sector strength
-   - minimum SetupScore
-
 3. dynamic add criteria
-   - Add #1 confidence threshold
-   - Add #2 confidence threshold
-   - required RVOL / breakout quality for each add
-   - allowed extension for each add
-
 4. dynamic add sizing
-   - Add #1 size multiplier
-   - Add #2 size multiplier
 ```
 
 Example architecture:
@@ -573,7 +706,7 @@ The model must never override hard strategy constraints, including:
 - point-in-time data only
 ```
 
-The preferred research order is:
+Preferred research order:
 
 ```text
 1. CNN dynamic add criteria / sizing
@@ -583,34 +716,9 @@ The preferred research order is:
 
 Dynamic ranking weights are deliberately last because they create the greatest overfitting risk.
 
-Evaluation must compare deterministic and adaptive variants independently:
+Training and validation must be strictly point-in-time and walk-forward. Random train/test splits are not acceptable for strategy validation.
 
-```text
-strategy-v3-fixed
-vs
-strategy-v3 + CNN dynamic adds
-vs
-strategy-v3 + CNN dynamic criteria
-vs
-strategy-v3 + CNN dynamic weights
-```
-
-Primary evaluation metrics:
-
-```text
-profit factor
-expectancy
-max drawdown
-average loss
-win rate
-turnover
-Add #1 profit factor / expectancy
-Add #2 profit factor / expectancy
-```
-
-Training and validation must be strictly point-in-time and walk-forward. Random train/test splits are not acceptable for strategy validation because they can leak market-regime information across time.
-
-This research should begin only after deterministic strategy-v3 establishes a clean baseline with entry, stop, sector selection, MAE/MFE, and add-event instrumentation.
+This research begins only after deterministic v3 establishes a clean baseline with entry, stop, actual sector selection, MAE/MFE, and add-event instrumentation.
 
 # Offensive Capital Constraint
 
@@ -650,8 +758,10 @@ Find liquid stocks with improving multi-week trend structure
 -> prefer constructive bases and contraction
 -> rank by setup quality
 -> retain Top 50
--> identify strongest 3 sectors
--> select up to 3 qualified stocks per sector
+-> attach auditable point-in-time sector metadata
+-> evaluate market and sector-relative strength
+-> identify strongest sectors only if empirical evidence supports the layer
+-> select up to 3 qualified stocks per selected sector
 -> maximum 9 offensive positions
 -> define complete risk/exit plan before entry
 -> wait for right-side confirmation
@@ -666,4 +776,4 @@ Find liquid stocks with improving multi-week trend structure
 
 Guiding principle:
 
-> **Trade with the trend. Follow the strongest sectors. Define the exit before entry. Add to strength. Never average down. Never loosen risk. Avoid exhaustion. Exit as the trend breaks.**
+> **Trade with the trend. Use auditable sector context. Define the exit before entry. Add to strength. Never average down. Never loosen risk. Avoid exhaustion. Exit as the trend breaks.**
