@@ -1,7 +1,11 @@
+import { latestRankingFromD1 } from "./d1.js";
+import { refreshCommonStockUniverse } from "./universe.js";
+
 const MASSIVE_BASE_URL = "https://api.massive.com";
 const CLOUDFLARE_INGEST_METADATA_KEY = "metadata/latest-cloudflare-ingest.json";
 const FEATURE_STATE_METADATA_KEY = "metadata/latest-feature-state.json";
 const RANKING_STATE_METADATA_KEY = "metadata/latest-ranking-state.json";
+const UNIVERSE_METADATA_KEY = "metadata/latest-common-stock-universe.json";
 
 function newYorkDateFromTimestamp(timestampMs) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -79,7 +83,7 @@ async function writeDailySession(env, tradingDate, scheduledTime = null) {
     const metadata = {
       date: tradingDate,
       source: "massive",
-      producer: "cloudflare-worker",
+      producer: "cloudflare-js",
       storage_format: "json",
       data_key: dataKey,
       status: "already_exists",
@@ -102,7 +106,7 @@ async function writeDailySession(env, tradingDate, scheduledTime = null) {
     date: tradingDate,
     adjusted: true,
     source: "massive",
-    producer: "cloudflare-worker",
+    producer: "cloudflare-js",
     count: bars.length,
     bars,
   };
@@ -114,7 +118,7 @@ async function writeDailySession(env, tradingDate, scheduledTime = null) {
   const metadata = {
     date: tradingDate,
     source: "massive",
-    producer: "cloudflare-worker",
+    producer: "cloudflare-js",
     storage_format: "json",
     data_key: dataKey,
     count: bars.length,
@@ -164,6 +168,30 @@ async function r2JsonResponse(env, key, unavailableMessage) {
   });
 }
 
+async function latestRankingResponse(env) {
+  try {
+    const payload = await latestRankingFromD1(env.DB);
+    if (payload?.rankings?.length) {
+      const universe = await env.RESEARCH.get(UNIVERSE_METADATA_KEY);
+      if (universe) {
+        const metadata = await universe.json();
+        payload.universe_count = metadata.count ?? payload.universe_count;
+      }
+      return Response.json(payload, {
+        headers: { "cache-control": "no-store" },
+      });
+    }
+  } catch (error) {
+    console.error("D1 ranking query failed; falling back to R2", error);
+  }
+
+  return r2JsonResponse(
+    env,
+    "dashboard/latest.json",
+    "latest ranking is not available",
+  );
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -172,15 +200,13 @@ export default {
       return Response.json({
         service: "futureview-api",
         status: "ok",
+        database: env.DB ? "d1-bound" : "unbound",
+        storage: "r2",
       });
     }
 
     if (url.pathname === "/api/rankings/latest") {
-      return r2JsonResponse(
-        env,
-        "dashboard/latest.json",
-        "latest ranking is not available",
-      );
+      return latestRankingResponse(env);
     }
 
     if (url.pathname === "/api/ingest/status") {
@@ -188,6 +214,14 @@ export default {
         env,
         CLOUDFLARE_INGEST_METADATA_KEY,
         "Cloudflare ingestion has not completed yet",
+      );
+    }
+
+    if (url.pathname === "/api/universe/status") {
+      return r2JsonResponse(
+        env,
+        UNIVERSE_METADATA_KEY,
+        "common-stock universe has not been published yet",
       );
     }
 
@@ -213,6 +247,10 @@ export default {
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(
       (async () => {
+        const targetDate = newYorkDateFromTimestamp(controller.scheduledTime);
+        const universe = await refreshCommonStockUniverse(env, targetDate);
+        console.log(`Common-stock universe ready for ${universe.as_of}: ${universe.count}`);
+
         const ingest = await ingestLatestAvailableSession(env, controller.scheduledTime);
         const instance = await env.INCREMENTAL_FEATURES.create({
           params: {
