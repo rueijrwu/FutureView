@@ -10,6 +10,7 @@ import { BACKTEST_CONFIG_V1, STRATEGY_VERSION } from "../../worker/strategy-conf
 const WRANGLER_VERSION = "4.125.0";
 const LOCAL_CONFIG = ".wrangler.local.json";
 const LOCAL_STATE_DIR = ".local-state";
+const SYNC_DIR = ".local-sync";
 const CACHE_DIR = ".local-backtest";
 const BAR_DIR = `${CACHE_DIR}/bars`;
 const SESSION_DIR = `${CACHE_DIR}/sessions`;
@@ -58,6 +59,10 @@ function wranglerArgs(...args) {
   return ["--yes", `wrangler@${WRANGLER_VERSION}`, ...args];
 }
 
+function syncCachePathForKey(key) {
+  return `${SYNC_DIR}/${key.replace(/[^A-Za-z0-9._-]/g, "__")}`;
+}
+
 function localR2Get(key) {
   const file = `${TMP_DIR}/get-${createHash("sha1").update(key).digest("hex")}.json`;
   const result = run("npx", wranglerArgs(
@@ -66,8 +71,16 @@ function localR2Get(key) {
     "--local", "--persist-to", LOCAL_STATE_DIR,
     "--config", LOCAL_CONFIG,
   ), { allowFailure: true });
-  if (result.status !== 0) return null;
-  return JSON.parse(readFileSync(file, "utf8"));
+  if (result.status === 0 && existsSync(file)) {
+    return JSON.parse(readFileSync(file, "utf8"));
+  }
+
+  const synced = syncCachePathForKey(key);
+  if (existsSync(synced)) {
+    console.log(`[local:backtest] using synced cache for ${key}`);
+    return JSON.parse(readFileSync(synced, "utf8"));
+  }
+  return null;
 }
 
 function localR2Put(key, payload) {
