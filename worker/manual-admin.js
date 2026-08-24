@@ -92,7 +92,6 @@ async function handleRunDaily(url, env) {
     return Response.json({ error: "date query parameter is required as YYYY-MM-DD" }, { status: 400 });
   }
 
-  const ingest = await writeDailySession(env, targetDate);
   const featureState = await requireCanonicalFeatureState(env);
   if (targetDate <= featureState.as_of) {
     return Response.json({
@@ -100,13 +99,13 @@ async function handleRunDaily(url, env) {
       action: "run-daily",
       target_date: targetDate,
       reason: "target date is not newer than canonical feature state",
-      ingest,
       feature_state_as_of: featureState.as_of,
     }, {
       headers: { "cache-control": "no-store" },
     });
   }
 
+  const ingest = await writeDailySession(env, targetDate);
   const instance = await env.INCREMENTAL_FEATURES.create({
     params: {
       mode: "production",
