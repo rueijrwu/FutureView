@@ -24,13 +24,29 @@ const MANIFEST_FILE = `${SYNC_DIR}/manifest.json`;
 const R2_BUCKET = "futureview-data";
 const D1_DATABASE = "futureview";
 const R2_PAGE_SIZE = 1000;
-const R2_CONCURRENCY = 8;
+const R2_CONCURRENCY = 2;
+const R2_MAX_RETRIES = 8;
 const FULL_SYNC = process.argv.includes("--full");
 const store = createFilesystemJsonStore();
 
 function fail(message) {
   console.error(`\n[local:sync] ERROR: ${message}`);
   process.exit(1);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(response, attempt) {
+  const retryAfter = response.headers.get("retry-after");
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.max(1000, seconds * 1000);
+    const at = Date.parse(retryAfter);
+    if (Number.isFinite(at)) return Math.max(1000, at - Date.now());
+  }
+  return Math.min(60_000, 5_000 * (2 ** attempt));
 }
 
 function requireCloudflareEnv() {
@@ -134,18 +150,32 @@ async function downloadR2Object(meta) {
   const bucket = encodeURIComponent(R2_BUCKET);
   const key = encodeURIComponent(String(meta.key));
   const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/r2/buckets/${bucket}/objects/${key}`;
-  const response = await fetch(url, { headers: cloudflareHeaders() });
-  if (!response.ok) {
-    throw new Error(`R2 GET ${meta.key} failed with HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+
+  for (let attempt = 0; attempt <= R2_MAX_RETRIES; attempt += 1) {
+    const response = await fetch(url, { headers: cloudflareHeaders() });
+    if (response.ok) {
+      const body = Buffer.from(await response.arrayBuffer());
+      if (Number.isFinite(Number(meta.size)) && body.length !== Number(meta.size)) {
+        throw new Error(`R2 size mismatch for ${meta.key}: expected ${meta.size}, got ${body.length}`);
+      }
+      const file = objectPath(meta.key);
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, body);
+      return body.length;
+    }
+
+    const retryable = response.status === 429 || response.status >= 500;
+    const detail = (await response.text()).slice(0, 300);
+    if (!retryable || attempt >= R2_MAX_RETRIES) {
+      throw new Error(`R2 GET ${meta.key} failed with HTTP ${response.status}: ${detail}`);
+    }
+
+    const delay = retryDelayMs(response, attempt);
+    console.warn(`[local:sync] R2 GET ${response.status} for ${meta.key}; retry ${attempt + 1}/${R2_MAX_RETRIES} after ${(delay / 1000).toFixed(1)}s`);
+    await sleep(delay);
   }
-  const body = Buffer.from(await response.arrayBuffer());
-  if (Number.isFinite(Number(meta.size)) && body.length !== Number(meta.size)) {
-    throw new Error(`R2 size mismatch for ${meta.key}: expected ${meta.size}, got ${body.length}`);
-  }
-  const file = objectPath(meta.key);
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, body);
-  return body.length;
+
+  throw new Error(`R2 GET ${meta.key} exhausted retries`);
 }
 
 async function mirrorR2(manifest) {
@@ -174,7 +204,7 @@ async function mirrorR2(manifest) {
       };
       updated += 1;
       bytesDownloaded += bytes;
-      if (updated % 25 === 0) {
+      if (updated % 10 === 0) {
         saveManifest(manifest);
         console.log(`[local:sync] mirrored ${updated} changed R2 objects so far`);
       }
@@ -182,6 +212,7 @@ async function mirrorR2(manifest) {
   }
 
   await Promise.all(Array.from({ length: R2_CONCURRENCY }, () => worker()));
+  saveManifest(manifest);
 
   const remoteKeys = new Set(inventory.map((row) => String(row.key)));
   let staleManifestEntries = 0;
