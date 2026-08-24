@@ -16,8 +16,4 @@ export default {
     if (manual) return manual;
     return worker.fetch(request, env, ctx);
   },
-
-  async scheduled(controller, env, ctx) {
-    return worker.scheduled(controller, env, ctx);
-  },
 };
