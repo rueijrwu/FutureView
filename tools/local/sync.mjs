@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -17,15 +16,16 @@ const WRANGLER_VERSION = "4.125.0";
 const REMOTE_CONFIG = "wrangler.jsonc";
 const LOCAL_DATA_ROOT = ".local-data";
 const D1_DIR = `${LOCAL_DATA_ROOT}/d1`;
-const D1_EXPORT_FILE = `${D1_DIR}/futureview.sql`;
+const D1_SCHEMA_FILE = `${D1_DIR}/schema.json`;
+const D1_TABLE_DIR = `${D1_DIR}/tables`;
 const SYNC_DIR = ".local-sync";
-const TMP_DIR = `${SYNC_DIR}/tmp`;
 const MANIFEST_FILE = `${SYNC_DIR}/manifest.json`;
 const R2_BUCKET = "futureview-data";
 const D1_DATABASE = "futureview";
 const R2_PAGE_SIZE = 1000;
 const R2_CONCURRENCY = 2;
 const R2_MAX_RETRIES = 8;
+const D1_PAGE_SIZE = 5000;
 const FULL_SYNC = process.argv.includes("--full");
 const store = createFilesystemJsonStore();
 
@@ -79,18 +79,18 @@ function hashBuffer(buffer) {
 
 function loadManifest() {
   if (FULL_SYNC || !existsSync(MANIFEST_FILE)) {
-    return { version: 4, r2: {}, d1: {} };
+    return { version: 5, r2: {}, d1: {} };
   }
   try {
     const raw = JSON.parse(readFileSync(MANIFEST_FILE, "utf8"));
     return {
-      version: 4,
+      version: 5,
       r2: raw.r2 ?? raw.objects ?? {},
       d1: raw.d1 ?? {},
     };
   } catch (error) {
     console.warn(`[local:sync] Ignoring unreadable manifest: ${error.message}`);
-    return { version: 4, r2: {}, d1: {} };
+    return { version: 5, r2: {}, d1: {} };
   }
 }
 
@@ -232,47 +232,114 @@ async function mirrorR2(manifest) {
   };
 }
 
-function exportD1(manifest) {
-  mkdirSync(D1_DIR, { recursive: true });
-  mkdirSync(TMP_DIR, { recursive: true });
-  const tmpExport = `${TMP_DIR}/futureview.sql`;
-  rmSync(tmpExport, { force: true });
+function quoteIdentifier(value) {
+  return `"${String(value).replaceAll('"', '""')}"`;
+}
 
+function safeTableFileName(value) {
+  return `${String(value).replace(/[^A-Za-z0-9._-]/g, "_")}.jsonl`;
+}
+
+function runD1Query(sql) {
   const args = [
     "--yes",
     `wrangler@${WRANGLER_VERSION}`,
     "d1",
-    "export",
+    "execute",
     D1_DATABASE,
     "--remote",
-    "--output",
-    tmpExport,
-    "--skip-confirmation",
+    "--json",
+    "--command",
+    sql,
     "--config",
     REMOTE_CONFIG,
   ];
   const result = spawnSync("npx", args, {
     encoding: "utf8",
     env: cloudflareEnv(),
+    maxBuffer: 64 * 1024 * 1024,
   });
-  if (result.error) fail(result.error.message);
+  if (result.error) throw result.error;
   if (result.status !== 0) {
     const detail = (result.stderr || result.stdout || "").trim();
-    fail(`D1 export failed with code ${result.status}${detail ? `: ${detail}` : ""}`);
+    throw new Error(`D1 read query failed with code ${result.status}${detail ? `: ${detail}` : ""}`);
   }
-  if (!existsSync(tmpExport)) fail("D1 export completed without creating an output file");
 
-  const body = readFileSync(tmpExport);
-  const hash = hashBuffer(body);
+  let payload;
+  try {
+    payload = JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error(`D1 returned unreadable JSON: ${error.message}; output=${result.stdout.slice(0, 500)}`);
+  }
+  const statement = Array.isArray(payload) ? payload[0] : payload;
+  if (statement?.success === false) {
+    throw new Error(`D1 query failed: ${JSON.stringify(statement)}`);
+  }
+  return Array.isArray(statement?.results) ? statement.results : [];
+}
+
+function mirrorD1(manifest) {
+  mkdirSync(D1_DIR, { recursive: true });
+  mkdirSync(D1_TABLE_DIR, { recursive: true });
+
+  const schema = runD1Query(
+    "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END,name",
+  );
+  const schemaBody = Buffer.from(`${JSON.stringify(schema, null, 2)}\n`);
+  writeFileSync(D1_SCHEMA_FILE, schemaBody);
+
+  const tables = schema
+    .filter((row) => row?.type === "table" && row?.name)
+    .map((row) => String(row.name));
+
+  let totalRows = 0;
+  let totalBytes = schemaBody.length;
+  const tableManifest = {};
+
+  for (const table of tables) {
+    const file = `${D1_TABLE_DIR}/${safeTableFileName(table)}`;
+    writeFileSync(file, "");
+    let offset = 0;
+    let rowCount = 0;
+
+    while (true) {
+      const rows = runD1Query(
+        `SELECT * FROM ${quoteIdentifier(table)} LIMIT ${D1_PAGE_SIZE} OFFSET ${offset}`,
+      );
+      if (!rows.length) break;
+      const chunk = rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
+      writeFileSync(file, chunk, { flag: "a" });
+      rowCount += rows.length;
+      offset += rows.length;
+      if (rows.length < D1_PAGE_SIZE) break;
+    }
+
+    const bytes = statSync(file).size;
+    const hash = hashBuffer(readFileSync(file));
+    tableManifest[table] = { rows: rowCount, bytes, hash };
+    totalRows += rowCount;
+    totalBytes += bytes;
+    console.log(`[local:sync] D1 table ${table}: ${rowCount} rows`);
+  }
+
+  const snapshotHash = hashBuffer(Buffer.from(JSON.stringify({ schema, tables: tableManifest })));
   const priorHash = manifest.d1.futureview?.hash ?? null;
-  const same = !FULL_SYNC && priorHash === hash && existsSync(D1_EXPORT_FILE);
-  if (!same) copyFileSync(tmpExport, D1_EXPORT_FILE);
   manifest.d1.futureview = {
-    hash,
-    bytes: body.length,
-    exported_at: new Date().toISOString(),
+    mode: "read-query-snapshot",
+    hash: snapshotHash,
+    tables: tableManifest,
+    rows: totalRows,
+    bytes: totalBytes,
+    mirrored_at: new Date().toISOString(),
   };
-  return { updated: !same, bytes: body.length, hash };
+
+  return {
+    updated: FULL_SYNC || priorHash !== snapshotHash,
+    tables: tables.length,
+    rows: totalRows,
+    bytes: totalBytes,
+    hash: snapshotHash,
+  };
 }
 
 async function readJsonIfPresent(key) {
@@ -287,7 +354,6 @@ if (FULL_SYNC) {
   rmSync(SYNC_DIR, { recursive: true, force: true });
   rmSync(LOCAL_DATA_ROOT, { recursive: true, force: true });
 }
-mkdirSync(TMP_DIR, { recursive: true });
 mkdirSync(D1_DIR, { recursive: true });
 requireCloudflareEnv();
 
@@ -297,8 +363,13 @@ console.log("Remote access is read-only; all local research data is stored under
 const manifest = loadManifest();
 const r2 = await mirrorR2(manifest);
 saveManifest(manifest);
-const d1 = exportD1(manifest);
-saveManifest(manifest);
+let d1;
+try {
+  d1 = mirrorD1(manifest);
+  saveManifest(manifest);
+} catch (error) {
+  fail(`D1 read-only mirror failed: ${error.message}`);
+}
 
 const universe = await readJsonIfPresent("metadata/latest-common-stock-universe.json");
 const featureState = await readJsonIfPresent("metadata/latest-feature-state.json");
@@ -309,9 +380,10 @@ console.log(`[local:sync] R2 downloaded: ${(r2.bytesDownloaded / 1024 / 1024).to
 if (r2.staleManifestEntries) {
   console.log(`[local:sync] R2 removed from manifest: ${r2.staleManifestEntries}`);
 }
-console.log(`[local:sync] D1 export: ${d1.updated ? "updated" : "unchanged"}; ${(d1.bytes / 1024 / 1024).toFixed(1)} MiB`);
+console.log(`[local:sync] D1 snapshot: ${d1.updated ? "updated" : "unchanged"}; ${d1.tables} tables; ${d1.rows} rows; ${(d1.bytes / 1024 / 1024).toFixed(1)} MiB`);
 console.log(`[local:sync] Universe: ${universe?.as_of ?? "unknown"}`);
 console.log(`[local:sync] Feature state: ${featureState?.as_of ?? "unknown"}`);
 console.log(`[local:sync] R2 mirror: ${LOCAL_DATA_ROOT}/objects/`);
-console.log(`[local:sync] D1 mirror: ${D1_EXPORT_FILE}`);
+console.log(`[local:sync] D1 schema: ${D1_SCHEMA_FILE}`);
+console.log(`[local:sync] D1 tables: ${D1_TABLE_DIR}/`);
 console.log("Run npm run local:backtest, then npm run local:dev");
