@@ -152,6 +152,7 @@ const Backtest: React.FC = () => {
   const [audit, setAudit] = useState<Audit | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -169,10 +170,24 @@ const Backtest: React.FC = () => {
 
   const output = useMemo(() => audit ? formatAudit(audit) : '', [audit]);
 
+  const copyLog = async () => {
+    if (!output) return;
+    await navigator.clipboard.writeText(output);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+
   if (loading) return <pre className="backtest-log">[FutureView Backtest]{'\n'}status: loading</pre>;
   if (error || !audit) return <pre className="backtest-log">[FutureView Backtest]{'\n'}status: error{'\n'}error: {error ?? 'audit unavailable'}</pre>;
 
-  return <pre className="backtest-log">{output}</pre>;
+  return (
+    <div className="backtest-log-page">
+      <button className="backtest-copy" type="button" onClick={copyLog}>
+        {copied ? 'Copied' : 'Copy log'}
+      </button>
+      <pre className="backtest-log">{output}</pre>
+    </div>
+  );
 };
 
 export default Backtest;
