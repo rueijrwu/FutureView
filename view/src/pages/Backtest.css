@@ -26,11 +26,13 @@
 
 .audit-subtitle,
 .audit-meta span,
+.audit-meta small,
 .metric-card small,
 .panel dt,
 .audit-notes,
 .legend,
-.scope-item span {
+.scope-item span,
+.empty-copy {
   color: rgba(255, 255, 255, 0.58);
 }
 
@@ -52,7 +54,8 @@
 
 .primary-grid,
 .secondary-grid,
-.scope-grid {
+.scope-grid,
+.two-table-grid {
   display: grid;
   gap: 0.9rem;
 }
@@ -63,6 +66,10 @@
 
 .secondary-grid {
   grid-template-columns: 1.4fr 1fr;
+}
+
+.two-table-grid {
+  grid-template-columns: 1fr 1fr;
 }
 
 .metric-card,
@@ -84,6 +91,10 @@
   border-color: rgba(141, 162, 255, 0.5);
 }
 
+.metric-card.positive-card {
+  border-color: rgba(66, 211, 146, 0.4);
+}
+
 .metric-card > span {
   font-size: 0.82rem;
   color: rgba(255, 255, 255, 0.64);
@@ -94,8 +105,26 @@
   letter-spacing: -0.03em;
 }
 
+.metric-card .range-value {
+  font-size: 1.45rem;
+}
+
+.metric-card .sample-value {
+  font-size: 1.45rem;
+  text-transform: capitalize;
+}
+
 .panel {
   padding: 1.2rem;
+}
+
+.conclusion-panel {
+  border-color: rgba(141, 162, 255, 0.28);
+}
+
+.conclusion-panel p:last-child {
+  margin-bottom: 0;
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .distribution-row,
@@ -176,6 +205,7 @@ td {
   padding: 0.8rem 0.65rem;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
   text-align: right;
+  white-space: nowrap;
 }
 
 th:first-child,
@@ -228,6 +258,10 @@ th {
   margin: 0.3rem 0;
 }
 
+.empty-copy {
+  margin-bottom: 0;
+}
+
 .audit-state {
   padding: 2rem;
 }
@@ -246,11 +280,14 @@ th {
 
   .audit-subtitle,
   .audit-meta span,
+  .audit-meta small,
   .metric-card small,
   .panel dt,
   .audit-notes,
   .legend,
-  .scope-item span {
+  .scope-item span,
+  .empty-copy,
+  .conclusion-panel p:last-child {
     color: rgba(0, 0, 0, 0.55);
   }
 
@@ -270,7 +307,8 @@ th {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .secondary-grid {
+  .secondary-grid,
+  .two-table-grid {
     grid-template-columns: 1fr;
   }
 }
