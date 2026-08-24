@@ -1,10 +1,31 @@
-import { BACKTEST_CONFIG_V1 } from "./strategy-config.js";
+import { BACKTEST_CONFIG_V2 } from "./strategy-config.js";
 
 function finitePositive(value) {
   return value !== null
     && value !== undefined
     && Number.isFinite(Number(value))
     && Number(value) > 0;
+}
+
+function finite(value) {
+  return value !== null
+    && value !== undefined
+    && value !== ""
+    && Number.isFinite(Number(value));
+}
+
+export function passesEntrySetup(row, config = BACKTEST_CONFIG_V2) {
+  if (!row) return false;
+  if (!finite(row.rank) || Number(row.rank) > Number(config.entryRankMax)) return false;
+  if (config.requireBreakout20 && !row.breakout20) return false;
+  if (config.requireCloseAboveSma5 && (!finite(row.close) || !finite(row.sma5) || Number(row.close) <= Number(row.sma5))) return false;
+  if (config.requireCloseAboveSma10 && (!finite(row.close) || !finite(row.sma10) || Number(row.close) <= Number(row.sma10))) return false;
+  if (config.requireCloseAboveSma20 && (!finite(row.close) || !finite(row.sma20) || Number(row.close) <= Number(row.sma20))) return false;
+  if (config.requireSma5AboveSma10 && (!finite(row.sma5) || !finite(row.sma10) || Number(row.sma5) <= Number(row.sma10))) return false;
+  if (config.requireSma10AboveSma20 && (!finite(row.sma10) || !finite(row.sma20) || Number(row.sma10) <= Number(row.sma20))) return false;
+  if (finite(config.minVolumeRatio20) && (!finite(row.volume_ratio20) || Number(row.volume_ratio20) < Number(config.minVolumeRatio20))) return false;
+  if (finite(config.maxEntryExtensionAtr) && (!finite(row.extension_atr) || Number(row.extension_atr) > Number(config.maxEntryExtensionAtr))) return false;
+  return true;
 }
 
 function positionsArray(state) {
@@ -25,7 +46,7 @@ function portfolioValue(state, features, field = "close") {
   return value;
 }
 
-export function createBacktestState(config = BACKTEST_CONFIG_V1) {
+export function createBacktestState(config = BACKTEST_CONFIG_V2) {
   return {
     initialCapital: Number(config.initialCapital),
     cash: Number(config.initialCapital),
@@ -41,7 +62,7 @@ export function createBacktestState(config = BACKTEST_CONFIG_V1) {
 export function advanceBacktest(
   inputState,
   { date, rankings, features },
-  config = BACKTEST_CONFIG_V1,
+  config = BACKTEST_CONFIG_V2,
 ) {
   const state = structuredClone(inputState);
   const featureMap = features instanceof Map
@@ -141,8 +162,7 @@ export function advanceBacktest(
   for (const row of ordered) {
     if (availableSlots <= 0) break;
     const symbol = String(row.symbol);
-    if (Number(row.rank) > Number(config.entryRankMax)) continue;
-    if (config.requireBreakout20 && !row.breakout20) continue;
+    if (!passesEntrySetup(row, config)) continue;
     if (state.positions[symbol] && !projectedExits.has(symbol)) continue;
     if (pendingExitSymbols.has(symbol)) continue;
     nextEntries.push({ symbol, rank: Number(row.rank) });
@@ -172,7 +192,7 @@ function maxDrawdown(equityCurve) {
   return worst;
 }
 
-export function finalizeBacktest(inputState, config = BACKTEST_CONFIG_V1) {
+export function finalizeBacktest(inputState, config = BACKTEST_CONFIG_V2) {
   const state = structuredClone(inputState);
   const finalPoint = state.equityCurve.at(-1) ?? {
     date: null,
