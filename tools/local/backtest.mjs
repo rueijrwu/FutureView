@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 
 import { advanceBacktest, createBacktestState, finalizeBacktest } from "../../worker/backtest-core.js";
 import { trueRange, updateSymbolState } from "../../worker/feature-core.js";
@@ -10,10 +10,9 @@ import {
 } from "./fs-store.mjs";
 
 const CACHE_DIR = ".local-backtest";
-const BAR_DIR = `${CACHE_DIR}/bars`;
 const SESSION_DIR = `${CACHE_DIR}/sessions`;
 const CHECKPOINT_FILE = `${CACHE_DIR}/checkpoint.json`;
-const MASSIVE_BASE_URL = "https://api.massive.com";
+const DAILY_JSON_ROOT = ".local-data/objects/prices/daily-json";
 const WARMUP_SESSIONS = 211;
 const DEFAULT_BACKTEST_SESSIONS = 126;
 const store = createFilesystemJsonStore();
@@ -39,101 +38,64 @@ function parseArgs() {
 }
 
 function ensureDirs() {
-  for (const dir of [CACHE_DIR, BAR_DIR, SESSION_DIR]) mkdirSync(dir, { recursive: true });
+  for (const dir of [CACHE_DIR, SESSION_DIR]) mkdirSync(dir, { recursive: true });
 }
 
-function loadDevVars() {
-  if (!existsSync(".dev.vars")) return {};
-  const out = {};
-  for (const raw of readFileSync(".dev.vars", "utf8").split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const idx = line.indexOf("=");
-    if (idx < 1) continue;
-    let value = line.slice(idx + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-    out[line.slice(0, idx).trim()] = value;
-  }
-  return out;
+function dailyJsonPath(date) {
+  return `${DAILY_JSON_ROOT}/date=${date}/bars.json`;
 }
 
-function apiKey() {
-  return process.env.MASSIVE_API_KEY || loadDevVars().MASSIVE_API_KEY || null;
-}
-
-function shiftDate(iso, days) {
-  const date = new Date(`${iso}T12:00:00Z`);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-function isWeekend(iso) {
-  const day = new Date(`${iso}T12:00:00Z`).getUTCDay();
-  return day === 0 || day === 6;
-}
-
-function barPath(date) { return `${BAR_DIR}/${date}.json`; }
 function sessionPath(date) { return `${SESSION_DIR}/${date}.json`; }
 
-async function groupedDaily(key, date) {
-  const file = barPath(date);
-  if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8"));
+function availableSessionDates(endDate = null) {
+  if (!existsSync(DAILY_JSON_ROOT)) return [];
+  return readdirSync(DAILY_JSON_ROOT, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && /^date=\d{4}-\d{2}-\d{2}$/.test(entry.name))
+    .map((entry) => entry.name.slice(5))
+    .filter((date) => (!endDate || date <= endDate) && existsSync(dailyJsonPath(date)))
+    .filter((date) => {
+      try {
+        const payload = JSON.parse(readFileSync(dailyJsonPath(date), "utf8"));
+        return Array.isArray(payload?.bars) && payload.bars.length > 0;
+      } catch {
+        return false;
+      }
+    })
+    .sort();
+}
 
-  const url = new URL(`/v2/aggs/grouped/locale/us/market/stocks/${date}`, MASSIVE_BASE_URL);
-  url.searchParams.set("adjusted", "true");
-  url.searchParams.set("apiKey", key);
-  const response = await fetch(url, {
-    headers: { Accept: "application/json", "User-Agent": "FutureView-LocalBacktest/2.0" },
-  });
-  if (!response.ok) {
-    throw new Error(`Massive HTTP ${response.status} for ${date}: ${(await response.text()).slice(0, 200)}`);
+function groupedDaily(date) {
+  const file = dailyJsonPath(date);
+  if (!existsSync(file)) {
+    fail(`local daily history is missing ${date}; run npm run local:history before backtesting`);
   }
-  const payload = await response.json();
-  const bars = (Array.isArray(payload.results) ? payload.results : [])
-    .filter((row) => row?.T && row.o != null && row.h != null && row.l != null && row.c != null && row.v != null)
+  const payload = JSON.parse(readFileSync(file, "utf8"));
+  const bars = (Array.isArray(payload?.bars) ? payload.bars : [])
+    .filter((row) => row?.symbol && row.open != null && row.high != null && row.low != null && row.close != null && row.volume != null)
     .map((row) => ({
-      symbol: String(row.T),
-      open: Number(row.o),
-      high: Number(row.h),
-      low: Number(row.l),
-      close: Number(row.c),
-      volume: Number(row.v),
+      symbol: String(row.symbol),
+      open: Number(row.open),
+      high: Number(row.high),
+      low: Number(row.low),
+      close: Number(row.close),
+      volume: Number(row.volume),
     }));
-  const result = { date, bars };
-  writeFileSync(file, JSON.stringify(result));
-  console.log(`[local:backtest] cached bars ${date}: ${bars.length}`);
-  return result;
+  if (!bars.length) fail(`local daily history has no valid bars for ${date}`);
+  return { date, bars };
 }
 
-async function collectBackward(key, endDate, count) {
-  const rows = [];
-  let cursor = endDate;
-  let scanned = 0;
-  while (rows.length < count && scanned < count + 180) {
-    if (isWeekend(cursor)) {
-      cursor = shiftDate(cursor, -1);
-      continue;
-    }
-    const date = cursor;
-    cursor = shiftDate(cursor, -1);
-    scanned += 1;
-    const payload = await groupedDaily(key, date);
-    if (payload.bars.length) rows.push(payload);
+function collectBackward(endDate, count) {
+  const dates = availableSessionDates(endDate);
+  if (dates.length < count) {
+    fail(`found only ${dates.length} local sessions through ${endDate}; need ${count}. Run npm run local:history -- --sessions=${count} --end=${endDate}`);
   }
-  if (rows.length < count) fail(`found only ${rows.length} valid sessions; need ${count}`);
-  return rows.reverse();
+  return dates.slice(-count).map(groupedDaily);
 }
 
-async function collectForward(key, afterDate, endDate) {
-  const rows = [];
-  for (let date = shiftDate(afterDate, 1); date <= endDate; date = shiftDate(date, 1)) {
-    if (isWeekend(date)) continue;
-    const payload = await groupedDaily(key, date);
-    if (payload.bars.length) rows.push(payload);
-  }
-  return rows;
+function collectForward(afterDate, endDate) {
+  return availableSessionDates(endDate)
+    .filter((date) => date > afterDate)
+    .map(groupedDaily);
 }
 
 function mean(values) {
@@ -279,8 +241,6 @@ const options = parseArgs();
 if (options.rebuild) rmSync(CACHE_DIR, { recursive: true, force: true });
 ensureDirs();
 
-const key = apiKey();
-if (!key) fail("MASSIVE_API_KEY is required in the environment or .dev.vars");
 const universe = await loadUniverse();
 const endDate = options.endDate ?? await latestCompletedSession();
 if (!options.endDate) {
@@ -289,11 +249,11 @@ if (!options.endDate) {
 let checkpoint = loadCheckpoint();
 
 if (!checkpoint) {
-  console.log(`[local:backtest] bootstrap ${WARMUP_SESSIONS} warm-up + ${options.sessions} backtest sessions through ${endDate}`);
-  const all = await collectBackward(key, endDate, WARMUP_SESSIONS + options.sessions);
+  console.log(`[local:backtest] bootstrap ${WARMUP_SESSIONS} warm-up + ${options.sessions} backtest sessions through ${endDate} from local history`);
+  const all = collectBackward(endDate, WARMUP_SESSIONS + options.sessions);
   const warmup = all.slice(0, WARMUP_SESSIONS);
   checkpoint = {
-    version: 2,
+    version: 3,
     strategyVersion: STRATEGY_VERSION,
     universeAsOf: universe.asOf,
     asOf: warmup.at(-1).date,
@@ -311,7 +271,7 @@ if (!checkpoint) {
     console.warn(`[local:backtest] universe changed ${checkpoint.universeAsOf} -> ${universe.asOf}; keeping cached history. Use --rebuild for a clean universe-consistent run.`);
   }
   if (endDate > checkpoint.asOf) {
-    const additions = await collectForward(key, checkpoint.asOf, endDate);
+    const additions = collectForward(checkpoint.asOf, endDate);
     for (const session of additions) processSession(checkpoint, session, universe.symbols);
   } else {
     console.log(`[local:backtest] historical features/rankings already cached through ${checkpoint.asOf}; no recomputation`);
