@@ -24,17 +24,7 @@ async function latestUniverseMetadata(env) {
   return object ? object.json() : null;
 }
 
-export async function maybeHandleManualAdmin(request, env) {
-  const url = new URL(request.url);
-  if (url.pathname !== "/api/admin/refresh-universe") return null;
-
-  if (request.method !== "POST") {
-    return Response.json({ error: "method not allowed" }, {
-      status: 405,
-      headers: { allow: "POST" },
-    });
-  }
-
+function authorizeAdmin(request, env) {
   if (!env.ADMIN_TOKEN) {
     return Response.json({ error: "ADMIN_TOKEN Worker secret is not configured" }, { status: 503 });
   }
@@ -44,9 +34,56 @@ export async function maybeHandleManualAdmin(request, env) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
 
+  return null;
+}
+
+function validateDate(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+export async function maybeHandleManualAdmin(request, env) {
+  const url = new URL(request.url);
+  const isUniverseRefresh = url.pathname === "/api/admin/refresh-universe";
+  const isFeatureBootstrap = url.pathname === "/api/admin/bootstrap-features";
+  if (!isUniverseRefresh && !isFeatureBootstrap) return null;
+
+  if (request.method !== "POST") {
+    return Response.json({ error: "method not allowed" }, {
+      status: 405,
+      headers: { allow: "POST" },
+    });
+  }
+
+  const authError = authorizeAdmin(request, env);
+  if (authError) return authError;
+
+  if (isFeatureBootstrap) {
+    const targetDate = url.searchParams.get("date");
+    if (!targetDate || !validateDate(targetDate)) {
+      return Response.json({ error: "date query parameter must be YYYY-MM-DD" }, { status: 400 });
+    }
+    if (!env.FEATURE_BOOTSTRAP) {
+      return Response.json({ error: "FEATURE_BOOTSTRAP Workflow binding is not configured" }, { status: 503 });
+    }
+
+    const instance = await env.FEATURE_BOOTSTRAP.create({
+      params: { target_date: targetDate },
+    });
+
+    return Response.json({
+      status: "started",
+      action: "bootstrap-features",
+      target_date: targetDate,
+      workflow_instance: instance.id,
+    }, {
+      status: 202,
+      headers: { "cache-control": "no-store" },
+    });
+  }
+
   const requestedDate = url.searchParams.get("date");
   const targetDate = requestedDate ?? newYorkDateNow();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+  if (!validateDate(targetDate)) {
     return Response.json({ error: "date must be YYYY-MM-DD" }, { status: 400 });
   }
 
