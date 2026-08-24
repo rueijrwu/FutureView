@@ -1,0 +1,92 @@
+name: Recover Feature State (Full Rebuild)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_date:
+        description: "Trading date to rebuild through (YYYY-MM-DD)"
+        required: true
+        type: string
+      confirm:
+        description: "Type REBUILD to download 211+ sessions and overwrite latest feature-state pointer"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: futureview-feature-state-recovery
+  cancel-in-progress: false
+
+jobs:
+  rebuild:
+    if: ${{ inputs.confirm == 'REBUILD' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      MASSIVE_API_KEY: ${{ secrets.MASSIVE_API_KEY }}
+      BUCKET: futureview-data
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Validate input and required secrets
+        env:
+          TARGET_DATE: ${{ inputs.target_date }}
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "target_date must be YYYY-MM-DD"; exit 1; }
+          [ -n "$MASSIVE_API_KEY" ] || { echo "GitHub secret MASSIVE_API_KEY is required"; exit 1; }
+
+      - name: Download latest common-stock universe from R2
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4.125.0 r2 object get \
+            "${BUCKET}/metadata/latest-common-stock-universe.json" \
+            --file /tmp/universe-metadata.json --remote
+          DATA_KEY=$(jq -r '.data_key // empty' /tmp/universe-metadata.json)
+          [ -n "$DATA_KEY" ] || { echo "latest common-stock universe metadata is missing data_key"; exit 1; }
+          npx --yes wrangler@4.125.0 r2 object get \
+            "${BUCKET}/${DATA_KEY}" --file /tmp/universe.json --remote
+
+      - name: Rebuild rolling state from Massive
+        env:
+          TARGET_DATE: ${{ inputs.target_date }}
+        run: |
+          node tools/recovery/full-rebuild.mjs "$TARGET_DATE" /tmp/universe.json /tmp/rebuilt-state
+
+      - name: Upload rebuilt date-scoped state
+        env:
+          TARGET_DATE: ${{ inputs.target_date }}
+        run: |
+          set -euo pipefail
+          SOURCE_AS_OF=$(jq -r '.source_as_of' /tmp/rebuilt-state/status.json)
+          [ "$SOURCE_AS_OF" = "$TARGET_DATE" ] || { echo "rebuilt state date mismatch"; exit 1; }
+          for i in $(seq -w 0 31); do
+            npx --yes wrangler@4.125.0 r2 object put \
+              "${BUCKET}/state/rolling/v1/date=${SOURCE_AS_OF}/shard=${i}.json" \
+              --file "/tmp/rebuilt-state/shard=${i}.json" \
+              --content-type "application/json" --remote
+          done
+          npx --yes wrangler@4.125.0 r2 object put \
+            "${BUCKET}/state/rolling/v1/date=${SOURCE_AS_OF}/metadata.json" \
+            --file /tmp/rebuilt-state/metadata.json --content-type "application/json" --remote
+
+      - name: Promote latest pointer last
+        run: |
+          set -euo pipefail
+          npx --yes wrangler@4.125.0 r2 object put \
+            "${BUCKET}/metadata/latest-feature-state.json" \
+            --file /tmp/rebuilt-state/metadata.json --content-type "application/json" --remote
+          npx --yes wrangler@4.125.0 r2 object put \
+            "${BUCKET}/metadata/latest-feature-bootstrap.json" \
+            --file /tmp/rebuilt-state/status.json --content-type "application/json" --remote
+
+      - name: Show recovery result
+        run: cat /tmp/rebuilt-state/status.json
