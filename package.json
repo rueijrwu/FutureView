@@ -8,6 +8,7 @@
     "local:check": "npm run check:worker && npm test && npm run lint --prefix view && npm run build --prefix view",
     "local:setup": "node tools/local/setup.mjs",
     "local:sync": "node tools/local/sync.mjs",
+    "local:sync:full": "node tools/local/sync.mjs --full",
     "local:dev": "npx --yes wrangler@4.125.0 dev --local --config .wrangler.local.json"
   }
 }
