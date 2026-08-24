@@ -365,6 +365,21 @@ export class IncrementalFeatureWorkflow extends WorkflowEntrypoint {
       return workflowStatus;
     });
 
-    return final;
+    const replayTrigger = await step.do("trigger JS replay validation", async () => {
+      try {
+        const instance = await this.env.RANKING_REPLAY.create({
+          params: { target_date: tradingDate },
+        });
+        return { id: instance.id };
+      } catch (error) {
+        console.error(`Unable to trigger JS replay validation for ${tradingDate}`, error);
+        return null;
+      }
+    });
+
+    return {
+      ...final,
+      replay_instance: replayTrigger?.id ?? null,
+    };
   }
 }
