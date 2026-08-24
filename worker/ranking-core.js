@@ -1,17 +1,4 @@
-const DEFAULT_CONFIG = Object.freeze({
-  minPrice: 10.0,
-  minAvgDollarVolume20: 50_000_000,
-  maxExtensionAtr: 3.0,
-  rs20Weight: 0.25,
-  rs60Weight: 0.20,
-  trendWeight: 0.20,
-  breakoutWeight: 0.15,
-  volumeWeight: 0.10,
-  persistenceWeight: 0.10,
-  persistenceLookback: 20,
-  extensionPenaltyStartAtr: 1.5,
-  extensionPenaltyMax: 0.12,
-});
+import { RANKING_CONFIG_V2 } from "./strategy-config.js";
 
 const RANKING_KEY_DECIMALS = 12;
 
@@ -136,7 +123,7 @@ export function rankCrossSection({
   priorStates = new Map(),
   priorSessionCount = 0,
   benchmarkSymbol = "SPY",
-  config = DEFAULT_CONFIG,
+  config = RANKING_CONFIG_V2,
 }) {
   const benchmark = features.find((row) => String(row.symbol) === benchmarkSymbol);
   if (!benchmark || !finite(benchmark.return20) || !finite(benchmark.return60)) {
@@ -257,4 +244,4 @@ export function rankCrossSection({
   };
 }
 
-export { DEFAULT_CONFIG as RANKING_CONFIG_V2 };
+export { RANKING_CONFIG_V2 };
