@@ -135,13 +135,36 @@ GitHub Codespaces
   -> local setup / local D1 / local R2 / local Worker
   -> local validation
   -> GitHub commit / CI
-  -> Cloudflare deploy when desired
+  -> Cloudflare deploy only after explicit user approval
 
 Cloudflare production
+  -> final production host/runtime
   -> Worker API
   -> D1 relational/query layer
   -> R2 object/artifact layer
-  -> Cloudflare Workflows available for manual execution
+  -> Cloudflare Workflows available for manual execution after deployment approval
+```
+
+### Deployment approval policy
+
+This is a hard operating rule:
+
+> **Do not deploy to Cloudflare or use Cloudflare production runtime for feature validation unless the user explicitly confirms deployment.**
+
+During the current development/testing phase:
+
+- implementation, testing, frontend review, and runtime validation happen in GitHub + GitHub Codespaces
+- use local Wrangler D1/R2 and the local Worker for test execution
+- code being merged to `master` does **not** authorize deployment
+- do not invoke Cloudflare production workflows simply because a feature is ready locally
+- Cloudflare deployment is a separate explicit action and requires direct user approval
+- read-only `npm run local:sync` access to production D1/R2 is allowed only to copy production-shaped snapshots into local Wrangler state; it is not deployment approval and does not permit production writes or production-runtime testing
+
+The default flow is therefore:
+
+```text
+GitHub / Codespaces = develop, test, validate
+Cloudflare           = deploy only after the user explicitly says to deploy
 ```
 
 Testing-phase policy as of 2026-08-24:
@@ -335,7 +358,7 @@ The intended workflow bindings are:
 - `futureview-ranking-replay`
 - `futureview-backtest`
 
-These remain available but are **not scheduled during testing**.
+These remain available but are **not scheduled during testing** and should not be invoked for feature validation until the user explicitly approves deployment/production execution.
 
 `worker/incremental-workflow.js` performs rolling feature updates and then production ranking. `worker/ranking-replay-workflow.js` validates replay using the canonical JS ranking engine. `worker/backtest-workflow.js` runs the JS backtest.
 
@@ -509,6 +532,8 @@ When continuing this project:
 - use GitHub connector for repository reads/writes
 - do not reintroduce Python
 - do not reintroduce Cloudflare Cron during the testing phase
+- do not deploy to Cloudflare or invoke Cloudflare production runtime unless the user explicitly confirms deployment
+- treat `npm run local:sync` as a read-only data-copy exception, not as deployment permission
 - do not claim CI/deploy/runtime success without logs or tool evidence
 - when user says to execute a clear repository change, do it rather than repeatedly asking for confirmation
 - keep production writes separated from local development; local sync should read production and write local only
