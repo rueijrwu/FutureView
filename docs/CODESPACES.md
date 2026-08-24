@@ -1,61 +1,68 @@
 # FutureView Codespaces
 
-FutureView uses GitHub Codespaces as the preferred cloud development environment.
+FutureView uses GitHub Codespaces as the preferred development environment during the manual testing phase.
 
 ## Start
 
 1. Open the repository on GitHub.
-2. Select **Code → Codespaces → Create codespace on master** (or create one from a feature branch).
-3. Wait for the dev container to finish creating. `npm run local:setup` runs automatically via `postCreateCommand`.
+2. Select **Code → Codespaces → Create codespace on master** (or use a feature branch).
+3. Wait for the dev container to finish. `npm run local:setup` runs automatically through `postCreateCommand`.
 
-## Develop
+## Required Codespaces secrets
 
-Start the local Cloudflare-compatible Worker runtime:
+Use repository/org Codespaces secrets rather than committing credentials:
 
-```bash
-npm run local:dev
-```
+- `MASSIVE_API_KEY`
+- `CLOUDFLARE_API_TOKEN` — restricted development/read-only token
+- `R2_ACCOUNT_ID`
 
-Wrangler listens on port `8787`; Codespaces will offer the forwarded URL automatically.
+Do not place production secrets in tracked files.
 
-For frontend-only development:
+## Local validation
 
-```bash
-npm run dev --prefix view -- --host 0.0.0.0
-```
-
-Vite listens on port `5173` and Codespaces will offer its forwarded URL.
-
-## Sync a production snapshot into local development
-
-If the local D1/R2 state is empty, copy a read-only production snapshot into local Wrangler storage:
-
-```bash
-npm run local:sync
-```
-
-Required Codespaces environment variables/secrets:
-
-```text
-CLOUDFLARE_API_TOKEN
-R2_ACCOUNT_ID
-```
-
-The token should have production **D1 Read** and **R2 Read** access only. `local:sync` never performs a remote write. All writes use Wrangler `--local` storage.
-
-The sync copies the latest production R2 pointers and referenced objects needed for development, including the common-stock universe, canonical feature state, latest ranking/dashboard data when available, ranking state, ingest metadata, replay metadata, and latest backtest result when available.
-
-For D1 it copies a compact development history: the most recent 20 ranking runs, Top50 ranking entries for those runs, and their corresponding universe snapshots. Before importing this D1 snapshot, it clears the **local-only** `ranking_entries`, `ranking_runs`, and `universe_snapshots` tables so repeated syncs form a clean production baseline. Production D1 is never modified.
-
-Recommended workflow:
+Run the complete setup/validation path when needed:
 
 ```bash
 npm run local:setup
+```
+
+This:
+
+- validates Node/npm
+- creates local Wrangler configuration
+- installs frontend dependencies
+- applies local D1 migrations
+- runs Worker/recovery/local script syntax checks
+- runs JS regression tests
+- runs frontend lint/build
+
+Before pushing changes:
+
+```bash
+npm run local:check
+```
+
+## Sync a production snapshot
+
+To develop against current production-shaped data without writing production:
+
+```bash
 npm run local:sync
+```
+
+The sync command reads production R2/D1 through the restricted Cloudflare token and writes only to local Wrangler state. It replaces the local ranking snapshot tables with the selected production snapshot so local API responses are reproducible.
+
+Production writes are intentionally not part of Codespaces development.
+
+## Run the local Worker
+
+```bash
 npm run local:dev
 ```
 
-After starting the Worker, verify:
+Wrangler listens on port `8787`; Codespaces forwards the port automatically.
+
+Useful checks:
 
 ```bash
 curl http://localhost:8787/api/health
@@ -64,32 +71,26 @@ curl http://localhost:8787/api/state/status
 curl http://localhost:8787/api/rankings/latest
 ```
 
-## Validation
-
-Before pushing a branch:
+For frontend-only development:
 
 ```bash
-npm run local:check
+npm run dev --prefix view -- --host 0.0.0.0
 ```
 
-This runs Worker/recovery/local script syntax checks, JS tests, frontend lint, and frontend build.
+Vite listens on port `5173`.
 
-## Secrets
+## Manual testing phase
 
-The local setup creates `.dev.vars` if it does not exist. Do not commit it. Add local-only secrets there when needed, for example:
+Cloudflare Cron and the Worker `scheduled()` entrypoint are disabled. Do not use `/cdn-cgi/local/scheduled` or add scheduled triggers during this phase.
 
-```text
-MASSIVE_API_KEY=...
-```
-
-For Codespaces, prefer repository/org Codespaces secrets when access to real external services is required; do not hard-code secrets in the repository.
+Production updates are explicit/manual until the pipeline is validated and the project deliberately enables automation again.
 
 ## Data contract
 
-Local development must keep the same production contracts used by Cloudflare:
+Local development must keep the same contracts as production:
 
 - D1 schema comes from `migrations/`.
-- R2 object keys and JSON contracts match production.
-- Ranking/feature/backtest core logic remains shared JavaScript.
+- R2 object keys and JSON formats match production.
+- Ranking/feature/replay/backtest logic remains shared JavaScript.
 
-Production deployment remains separate from Codespaces development.
+Local convenience code must not create a second strategy implementation.
