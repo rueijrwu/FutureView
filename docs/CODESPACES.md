@@ -39,6 +39,26 @@ Use repository/org Codespaces secrets rather than committing credentials:
 
 Do not place production secrets in tracked files.
 
+## Persistent local state
+
+All local Wrangler bindings used for development are pinned to a workspace-local persistence directory:
+
+```text
+.local-state/
+```
+
+`local:setup`, `local:sync`, and `local:dev` all use the same `--persist-to .local-state` location. This keeps local D1/R2 data stable across terminal restarts and across reconnecting to the same Codespace from a different computer, as long as the Codespace workspace itself still exists.
+
+The incremental sync manifest is stored separately at:
+
+```text
+.local-sync/manifest.json
+```
+
+Both `.local-state/` and `.local-sync/` are ignored by Git and remain local to the Codespace workspace.
+
+This persistence is intentional: historical data already synced or computed locally should be reused rather than downloaded or recomputed on every development session.
+
 ## Local validation
 
 Run the complete setup/validation path when needed:
@@ -52,7 +72,7 @@ This:
 - validates Node/npm
 - creates local Wrangler configuration
 - installs frontend dependencies
-- applies local D1 migrations
+- applies local D1 migrations against `.local-state/`
 - runs Worker/recovery/local script syntax checks
 - runs JS regression tests
 - runs frontend lint/build
@@ -71,7 +91,7 @@ To develop against current production-shaped data without writing production:
 npm run local:sync
 ```
 
-`local:sync` is incremental. It preserves the local Wrangler D1/R2 state in the Codespace and keeps a persistent sync manifest at:
+`local:sync` is incremental. It preserves the local Wrangler D1/R2 state in `.local-state/` and keeps a persistent sync manifest at:
 
 ```text
 .local-sync/manifest.json
@@ -91,13 +111,13 @@ Typical unchanged output should therefore look more like:
 
 Wrangler subprocess output for every local R2 write is intentionally suppressed; the sync script prints concise FutureView progress messages instead.
 
-Use a full rebuild only when local state is missing/corrupt, the Codespace was rebuilt, or the local snapshot must deliberately be replaced:
+Use a full rebuild only when local state is missing/corrupt, the Codespace was replaced, or the local snapshot must deliberately be rebuilt from scratch:
 
 ```bash
 npm run local:sync:full
 ```
 
-Full sync clears the sync manifest/cache, rewrites the referenced local R2 snapshot, and replaces the local ranking snapshot tables.
+Full sync clears both `.local-sync/` and `.local-state/`, then rebuilds the referenced local R2 snapshot and local D1 ranking snapshot from production read-only sources.
 
 The sync command reads production R2/D1 through the restricted Cloudflare token and writes only to local Wrangler state. Production writes are intentionally not part of Codespaces development.
 
@@ -111,7 +131,7 @@ The sync also copies the latest backtest metadata/result when present so the loc
 npm run local:dev
 ```
 
-Wrangler listens on port `8787`; Codespaces forwards the port automatically.
+Wrangler listens on port `8787`; Codespaces forwards the port automatically. The Worker reads the same persistent `.local-state/` used by setup and sync.
 
 Useful checks:
 
