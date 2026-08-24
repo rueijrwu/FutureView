@@ -96,6 +96,11 @@ function passesHardFilters(row, config) {
     && finite(row.extension_atr)
     && finite(row.rs20)
     && finite(row.rs60)
+    && (!config.sectorAwareRelativeStrength || (
+      finite(row.sector_rs20)
+      && finite(row.sector_rs60)
+      && row.sector_benchmark_symbol
+    ))
     && Number(row.close) >= config.minPrice
     && Number(row.avg_dollar_volume20) >= config.minAvgDollarVolume20
     && Number(row.extension_atr) <= config.maxExtensionAtr
@@ -116,6 +121,11 @@ function extensionPenalty(extensionAtr, config) {
   return config.extensionPenaltyMax * scaled ** 2;
 }
 
+function mappedBenchmark(sectorBenchmarkBySymbol, symbol) {
+  if (!sectorBenchmarkBySymbol) return null;
+  return sectorBenchmarkBySymbol?.get?.(symbol) ?? sectorBenchmarkBySymbol?.[symbol] ?? null;
+}
+
 export function rankCrossSection({
   features,
   tradingDate,
@@ -123,9 +133,11 @@ export function rankCrossSection({
   priorStates = new Map(),
   priorSessionCount = 0,
   benchmarkSymbol = "SPY",
+  sectorBenchmarkBySymbol = null,
   config = RANKING_CONFIG_V2,
 }) {
-  const benchmark = features.find((row) => String(row.symbol) === benchmarkSymbol);
+  const featureBySymbol = new Map(features.map((row) => [String(row.symbol), row]));
+  const benchmark = featureBySymbol.get(benchmarkSymbol);
   if (!benchmark || !finite(benchmark.return20) || !finite(benchmark.return60)) {
     throw new Error(`benchmark ${benchmarkSymbol} is missing valid return20/return60`);
   }
@@ -136,12 +148,31 @@ export function rankCrossSection({
 
   const candidates = features
     .filter((row) => eligible.has(String(row.symbol)))
-    .map((row, index) => ({
-      ...row,
-      __inputOrder: index,
-      rs20: Number(row.return20) - benchmarkReturn20,
-      rs60: Number(row.return60) - benchmarkReturn60,
-    }))
+    .map((row, index) => {
+      const symbol = String(row.symbol);
+      const sectorBenchmarkSymbol = mappedBenchmark(sectorBenchmarkBySymbol, symbol);
+      const sectorBenchmark = sectorBenchmarkSymbol
+        ? featureBySymbol.get(String(sectorBenchmarkSymbol))
+        : null;
+      const rs20 = Number(row.return20) - benchmarkReturn20;
+      const rs60 = Number(row.return60) - benchmarkReturn60;
+      return {
+        ...row,
+        __inputOrder: index,
+        // Compatibility fields remain the market-relative SPY values.
+        rs20,
+        rs60,
+        market_rs20: rs20,
+        market_rs60: rs60,
+        sector_benchmark_symbol: sectorBenchmarkSymbol == null ? null : String(sectorBenchmarkSymbol),
+        sector_rs20: sectorBenchmark && finite(sectorBenchmark.return20)
+          ? Number(row.return20) - Number(sectorBenchmark.return20)
+          : null,
+        sector_rs60: sectorBenchmark && finite(sectorBenchmark.return60)
+          ? Number(row.return60) - Number(sectorBenchmark.return60)
+          : null,
+      };
+    })
     .filter((row) => passesHardFilters(row, config));
 
   if (!candidates.length) {
@@ -150,6 +181,12 @@ export function rankCrossSection({
 
   const rs20Ranks = averagePercentileRanks(candidates, "rs20");
   const rs60Ranks = averagePercentileRanks(candidates, "rs60");
+  const sectorRs20Ranks = config.sectorAwareRelativeStrength
+    ? averagePercentileRanks(candidates, "sector_rs20")
+    : null;
+  const sectorRs60Ranks = config.sectorAwareRelativeStrength
+    ? averagePercentileRanks(candidates, "sector_rs60")
+    : null;
   const volumeRanks = averagePercentileRanks(candidates, "volume_ratio20");
 
   const scored = candidates.map((row, index) => {
@@ -164,9 +201,19 @@ export function rankCrossSection({
       Math.max(0, 1 + Number(row.distance_from_high20) / 0.05),
     );
     const breakoutScore = row.breakout20 ? 1 : proximity;
+    const relativeStrengthScore = config.sectorAwareRelativeStrength
+      ? (
+        config.marketRs20Weight * rs20Ranks[index]
+        + config.marketRs60Weight * rs60Ranks[index]
+        + config.sectorRs20Weight * sectorRs20Ranks[index]
+        + config.sectorRs60Weight * sectorRs60Ranks[index]
+      )
+      : (
+        config.rs20Weight * rs20Ranks[index]
+        + config.rs60Weight * rs60Ranks[index]
+      );
     const baseScore = (
-      config.rs20Weight * rs20Ranks[index]
-      + config.rs60Weight * rs60Ranks[index]
+      relativeStrengthScore
       + config.trendWeight * trendScore
       + config.breakoutWeight * breakoutScore
       + config.volumeWeight * volumeRanks[index]
@@ -175,6 +222,10 @@ export function rankCrossSection({
       ...row,
       rs20_rank: rs20Ranks[index],
       rs60_rank: rs60Ranks[index],
+      market_rs20_rank: rs20Ranks[index],
+      market_rs60_rank: rs60Ranks[index],
+      sector_rs20_rank: sectorRs20Ranks?.[index] ?? null,
+      sector_rs60_rank: sectorRs60Ranks?.[index] ?? null,
       volume_rank: volumeRanks[index],
       trend_score: trendScore,
       breakout_score: breakoutScore,
