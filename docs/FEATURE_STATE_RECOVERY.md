@@ -1,6 +1,6 @@
 # Feature-state recovery
 
-FutureView keeps recovery out of the daily Cloudflare runtime. Both recovery modes are manual GitHub Actions and only promote `metadata/latest-feature-state.json` after all 32 shards have been prepared successfully.
+FutureView keeps recovery outside the normal Worker runtime. Both recovery modes are manual GitHub Actions and only promote `metadata/latest-feature-state.json` after all 32 shards have been prepared successfully.
 
 ## 1. Recover Feature State (Repair)
 
@@ -46,4 +46,4 @@ Result metadata uses:
 - Both workflows share one recovery concurrency group so they cannot run simultaneously.
 - The latest feature-state pointer is written only after shard creation succeeds.
 - Do not use the retired Cloudflare historical bootstrap workflow; it exceeded Worker invocation limits in production.
-- After recovery, allow the normal weekday Cloudflare cron to resume incremental processing.
+- During the testing phase, any follow-up ingest/incremental processing is started manually after recovery validation.
