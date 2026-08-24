@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 
@@ -63,7 +63,6 @@ function sha256(buffer) {
 
 function recoveredSessions() {
   if (!existsSync(JSON_ROOT)) return [];
-  const { readdirSync } = awaitImportFs();
   return readdirSync(JSON_ROOT, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && /^date=\d{4}-\d{2}-\d{2}$/.test(entry.name))
     .map((entry) => entry.name.slice(5))
@@ -72,20 +71,6 @@ function recoveredSessions() {
       return !existsSync(parquet);
     })
     .sort();
-}
-
-function awaitImportFs() {
-  return { readdirSync: (root, options) => {
-    const fs = requireFs();
-    return fs.readdirSync(root, options);
-  } };
-}
-
-function requireFs() {
-  // Kept local to avoid adding another top-level import in this small recovery utility.
-  return globalThis.__futureviewFs ??= (() => {
-    throw new Error("internal fs loader was not initialized");
-  })();
 }
 
 async function remoteObject(key) {
@@ -151,10 +136,6 @@ async function publishOne(date) {
   }
   console.log(`[history:publish] D1 VERIFIED ${date}: ${r2Key}`);
 }
-
-// ESM-safe synchronous directory reader without runtime dependencies.
-const fsModule = await import("node:fs");
-globalThis.__futureviewFs = fsModule;
 
 const options = parseArgs();
 let sessions = recoveredSessions();
