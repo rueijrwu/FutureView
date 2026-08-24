@@ -1,195 +1,302 @@
 # FutureView Handoff
 
-This file is the concise handoff for continuing FutureView in a new chat. Treat it as the current source of project context unless the repository code or newer runtime logs prove otherwise.
+This is the current handoff for continuing FutureView. Prefer repository code and newer runtime logs if they conflict with this file.
 
-# 1. Trading Strategy
+Last updated: 2026-08-24.
 
-## Objective
+## 1. Project Direction
 
-FutureView is a point-in-time U.S. equity research platform for systematic screening, ranking, portfolio research, and backtesting. The intended holding horizon is roughly **3 weeks to 3 months**. It is a research and decision-support system; automated brokerage order execution is out of scope.
+FutureView is a U.S. equity research and backtesting system for a **right-side trend-following swing strategy** with an intended holding horizon of roughly **15-60 trading sessions / 3 weeks-3 months**.
 
-## Universe
+Current priority is **research-core implementation and empirical validation**. Frontend visualization is intentionally deferred until the strategy and audit layers are mature.
 
-Rank **active U.S. common stocks only** from Massive ticker reference metadata (`type=CS`). ETFs remain available in raw historical data but do not enter the stock Top 50. SPY remains available as the benchmark for relative-strength calculations.
+Production brokerage execution is out of scope.
 
-Core universe filters:
+## 2. Hard Operating Rules
 
-- price > $10
-- 20-session average dollar volume > approximately $50M
-- close > SMA50 > SMA200
-- SMA50 slope > 0
-- usually close > SMA20
-- RS20 > SPY
-- RS60/63 > SPY
-- near or breaking the 20- to 50-session high
-- extension `(close - SMA20) / ATR14 < 3`
-
-## Ranking model
-
-Canonical strategy version: `momentum-v2`.
-
-Configuration source of truth: `worker/strategy-config.js`.
-
-Score v2:
+Development/testing:
 
 ```text
-Score =
-  0.25 * RS20
-+ 0.20 * RS60
-+ 0.20 * Trend
-+ 0.15 * Breakout
-+ 0.10 * Volume
-+ 0.10 * Persistence
-- ExtensionPenalty
+GitHub + Codespaces = primary development environment
+.local-data          = canonical local research store
+Cloudflare R2/D1     = production archive/adapters
+Massive              = ingestion/recovery source
 ```
 
-Extension penalty:
+Production policy:
+
+- merging to `master` is not deployment approval
+- do not deploy or invoke broad production workflows without explicit approval
+- production success must be proven by runtime/log evidence
+- normal Cloudflare credentials should remain read-only
+- temporary R2/D1 write permission may be enabled only for explicit maintenance/smoke work, then returned to read-only
+
+No Cron/scheduled production processing is currently relied on during testing.
+
+## 3. Canonical Local Data Architecture
+
+Canonical market history:
 
 ```text
-scaled = clip((ExtensionATR - 1.5) / 1.5, 0, 1)
-ExtensionPenalty = 0.12 * scaled^2
+.local-data/objects/prices/daily-json/date=YYYY-MM-DD/bars.json
 ```
 
-The 3-ATR ceiling remains a hard eligibility cap.
+Historical bootstrap/recovery and daily operation are separate.
 
-Important ranking behavior:
-
-- ranking is deterministic
-- numeric ranking keys are quantized to 12 decimals
-- exact score ties use symbol-ascending order
-- missing numeric inputs are rejected, not coerced to zero
-- PersistenceScore uses the most recent 20 market sessions
-- missing historical ranks display as `NEW`, not `0`
-
-## Top 50 interpretation
-
-- ranks 1-10: active trade/call candidates
-- ranks 11-25: emerging leaders
-- ranks 26-50: breadth, sector rotation, and rank-trajectory context
-
-Track historical ranks for current, prior session, 5D, 10D, and 20D where available.
-
-Useful qualitative labels:
-
-- `Leader Stable`
-- `Rising`
-
-## Portfolio / capital framework
-
-Capital is conceptually divided into:
-
-1. emergency reserve: 10-30% NAV, with a 10% floor
-2. core/reservoir capital
-3. tactical momentum capital, normally up to about two-thirds of investable capital
-
-Longer-term allocation should eventually use:
+### One-time / disaster recovery
 
 ```text
-allocation = min(regime_cap, setup_opportunity, portfolio_risk_limit)
+npm run recovery:history
 ```
 
-Planned market-regime inputs include SPY, QQQ, IWM, DIA, sector ETFs, TLT, HYG, LQD, GLD, QQQ/SPY, IWM/SPY, XLY/XLP, and HYG/LQD. ETF regime research is not yet the stock-ranking engine.
+Behavior:
 
-## Backtest baseline
+- materializes mirrored R2 Parquet into canonical daily JSON
+- uses Massive only when local/R2 history is insufficient
+- Massive requests are paced at ~13 seconds
+- retries 429/5xx with backoff
+- recovered sessions are written immediately
 
-Canonical config is in `worker/strategy-config.js` under `BACKTEST_CONFIG_V1`.
+Cloudflare recovery publishing:
 
-Current baseline assumptions:
+```text
+npm run recovery:history:publish:smoke
+npm run recovery:history:publish
+```
 
-- initial capital: $100,000
-- maximum positions: 10
+The smoke path was runtime-validated end-to-end:
+
+```text
+local recovery JSON
+-> R2 write
+-> R2 read-back/checksum
+-> D1 market_data_sessions write
+-> D1 read-back
+```
+
+Result: **passed for 1 recovery session**.
+
+### Normal daily local path
+
+```text
+npm run local:update
+```
+
+This mirrors current production data and materializes any new local history. It does **not** rerun historical recovery.
+
+Design principle:
+
+```text
+Massive  = ingestion/recovery source only
+R2       = production archive
+local    = development/research archive
+backtest = pure consumer of canonical local history
+```
+
+## 4. Historical Data Status
+
+Historical bootstrap is complete.
+
+Runtime evidence:
+
+```text
+sessions: 337
+range: 2025-04-21 -> 2026-08-21
+canonical history: .local-data/objects/prices/daily-json/
+Massive recovery requests: 50
+```
+
+The prior production R2 archive contained 289 daily Parquet sessions from 2025-06-30 through 2026-08-21. Recovery filled the older gap needed for the 211-session warmup + 126-session backtest window.
+
+Do not spend more development time restructuring historical ingestion unless a real recovery failure appears.
+
+## 5. Production Snapshot Mirror
+
+```text
+npm run local:sync
+```
+
+Current mirror behavior:
+
+- production R2 is read-only during normal development
+- complete R2 inventory is mirrored incrementally into `.local-data/objects/`
+- D1 application tables are mirrored through read-only queries into `.local-data/d1/`
+- R2 binary objects are copied as raw bytes
+- manifest/checkpoint logic avoids repeat downloads
+
+Runtime-validated snapshot:
+
+```text
+R2 objects: 2605
+D1 application tables: 8
+D1 rows: 10645
+universe as_of: 2026-08-23
+feature state as_of: 2026-08-21
+```
+
+D1 application tables mirrored:
+
+- instruments
+- universe_snapshots
+- universe_membership
+- ranking_runs
+- ranking_entries
+- workflow_runs
+- strategy_versions
+- backtest_runs
+
+Production now also has the `market_data_sessions` migration/index used by recovery publishing and daily ingest.
+
+## 6. Local Backtest Pipeline
+
+```text
+npm run local:backtest -- --rebuild
+```
+
+Backtest now consumes canonical local history only. It does not call Massive.
+
+Feature/ranking replay artifacts are cached under `.local-backtest/`; repeat runs reuse historical computation when possible.
+
+Latest proven run:
+
+```text
+id: local-2026-02-23-2026-08-21-126
+strategy: momentum-v2
+status: complete
+period: 2026-02-23 -> 2026-08-21
+sessions: 126
+result: .local-data/objects/backtests/run=local-2026-02-23-2026-08-21-126/result.json
+```
+
+### Latest empirical baseline
+
+Portfolio:
+
+```text
+initial capital: $100,000
+final equity: $100,930
+total return: 0.93%
+max drawdown: -24.55%
+```
+
+Trades:
+
+```text
+trades: 75
+wins: 39
+losses: 36
+win rate: 52.00%
+95% CI: 40.87% -> 62.93%
+break-even win rate: 50.85%
+win-rate edge: 1.15%
+average return: 0.30%
+average win: 12.99%
+average loss: -13.44%
+payoff ratio: 0.97
+profit factor: 1.02
+average hold: 16.5 sessions
+median hold: 15 sessions
+```
+
+Important ranking observation:
+
+```text
+rank 1-3: 51 trades, avg return -1.99%, PF 0.74
+rank 4-6: 19 trades, avg return +4.77%, PF 2.74
+rank 7-10: 5 trades, avg return +6.77%, PF 2.77
+```
+
+Do not over-interpret ranks 7-10 because sample size is only 5. The stronger conclusion is that current rank 1-3 selection quality is poor and likely overweights overly hot/extended names.
+
+Holding-period observation:
+
+```text
+1-15 sessions: 48 trades, win rate 35.42%, median -3.89%
+16-30 sessions: 25 trades, win rate 80.00%, median +4.25%
+31-45 sessions: 2 trades, win rate 100%, median +65.79%
+```
+
+This baseline has almost no economic edge and unacceptable drawdown. It is infrastructure/research evidence, not a validated production strategy.
+
+## 7. Current Strategy Baseline vs Target
+
+Canonical implemented strategy is still:
+
+```text
+momentum-v2
+```
+
+Current backtest assumptions:
+
+- initial capital $100k
+- max 10 positions
 - entry rank <= 10
 - breakout20 required
-- equal-notional allocation
-- minimum hold: 15 sessions
-- maximum hold: 60 sessions
+- equal notional
+- minimum hold 15 sessions
+- maximum hold 60 sessions
 - exit below SMA10 after minimum hold
-- signals formed at a close execute at the **next session open**
-- remaining open positions are liquidated at the final known close
-- no transaction costs or slippage yet
+- next-session-open execution
+- final-close liquidation
+- no costs/slippage
 
-The next-open rule is critical and prevents same-session look-ahead.
+Target strategy is described in `STRATEGY.md` and should evolve into a new version rather than endlessly tuning v2 weights.
 
-## Strategy principles that should not be changed casually
-
-- one canonical implementation of ranking logic must be reused by live ranking, replay, and backtest
-- JavaScript only; do not reintroduce Python as a comparator, fallback, scanner, replay engine, or backtest implementation
-- keep the stock Top 50 separate from ETF regime analysis
-- maintain point-in-time semantics and avoid look-ahead
-- production success must be proven by logs; do not infer it from code existing on `master`
-
-# 2. Code / System
-
-## Repository and runtime
-
-Repository: `rueijrwu/FutureView`
-
-Default branch: `master`
-
-Canonical language/runtime: **JavaScript / Node only**.
-
-Current architecture:
+Next implementation target:
 
 ```text
-GitHub Codespaces
-  -> local setup / local D1 / local R2 / local Worker
-  -> local validation
-  -> GitHub commit / CI
-  -> Cloudflare deploy only after explicit user approval
-
-Cloudflare production
-  -> final production host/runtime
-  -> Worker API
-  -> D1 relational/query layer
-  -> R2 object/artifact layer
-  -> Cloudflare Workflows available for manual execution after deployment approval
+strategy-v3
+= right-side entry quality
++ initial stop / risk control
++ Top 50 -> strongest 3 sectors -> top 3 stocks/sector
++ max 9 positions
++ MAE/MFE instrumentation
 ```
 
-### Deployment approval policy
+Pyramiding and options should come **after** the initial-entry and risk-control layer is empirically improved.
 
-This is a hard operating rule:
+## 8. Strategy Principles
 
-> **Do not deploy to Cloudflare or use Cloudflare production runtime for feature validation unless the user explicitly confirms deployment.**
+Do not casually change these:
 
-During the current development/testing phase:
+- active U.S. common stocks only for the stock universe
+- SPY remains benchmark for relative strength
+- 15-60 session target horizon
+- right-side confirmation, not bottom fishing
+- prefer 5/10/20 bullish trend structure and rising intermediate averages
+- liquidity and volume confirmation are separate concepts
+- avoid excessive ATR extension
+- Top 50 opportunity set
+- strongest 3 sectors
+- up to 3 qualified stocks per sector
+- maximum 9 offensive stock positions
+- offensive sleeve <= 60% NAV
+- every entry must have predefined exit logic
+- stops/risk controls may only tighten
+- never average down
+- add only to profitable positions after new confirmation
+- calls/options are an acceleration layer at first confirmed add, not part of initial baseline
 
-- implementation, testing, frontend review, and runtime validation happen in GitHub + GitHub Codespaces
-- use local Wrangler D1/R2 and the local Worker for test execution
-- code being merged to `master` does **not** authorize deployment
-- do not invoke Cloudflare production workflows simply because a feature is ready locally
-- Cloudflare deployment is a separate explicit action and requires direct user approval
-- read-only `npm run local:sync` access to production D1/R2 is allowed only to copy production-shaped snapshots into local Wrangler state; it is not deployment approval and does not permit production writes or production-runtime testing
+## 9. Audit Instrumentation Status
 
-The default flow is therefore:
+Validated by current trade ledger:
 
-```text
-GitHub / Codespaces = develop, test, validate
-Cloudflare           = deploy only after the user explicitly says to deploy
-```
+- overall trade win rate
+- initial-entry outcomes
+- entry-rank buckets
+- holding-period buckets
 
-Testing-phase policy as of 2026-08-24:
+Not yet instrumented:
 
-- **no Cloudflare Cron scheduling**
-- **no scheduled Worker handler**
-- all data refresh / processing is manual during testing
-- do not add Cron back unless explicitly decided later
+- Top-3 sector filter
+- Add #1
+- Add #2
+- option acceleration
+- MAE/MFE
 
-The previous weekday and Sunday schedules were intentionally removed because the current testing phase uses manual updates and Cloudflare Free scheduling is not being relied on.
+The first v3 work should add MAE/MFE and selection context before option modeling.
 
-## Codespaces development
-
-Preferred development environment: GitHub Codespaces.
-
-The repository contains `.devcontainer/devcontainer.json` with Node 24 and forwarded ports 8787 and 5173.
-
-Typical flow:
-
-```bash
-git pull
-npm run local:setup
-npm run local:sync
-npm run local:dev
-```
+## 10. Local Development Commands
 
 Validation:
 
@@ -197,344 +304,123 @@ Validation:
 npm run local:check
 ```
 
-`local:setup` currently:
+Latest runtime proof:
 
-- checks Node >= 22 (Node 24 recommended)
-- preserves/creates `.dev.vars`
-- regenerates `.wrangler.local.json` from `wrangler.jsonc`
-- installs frontend dependencies
-- applies local D1 migrations
-- runs syntax/tests/frontend lint/build
-
-Important: after `wrangler.jsonc` changes, rerun `npm run local:setup` so `.wrangler.local.json` is regenerated. This was required after removing Cron triggers.
-
-Validated Codespaces result on 2026-08-24:
-
-- Node 24.18.0
-- npm 11.16.0
-- D1 migrations applied
-- Worker syntax checks passed
-- JS tests: 6/6 passed
-- frontend ESLint passed
+- worker syntax checks passed
+- JS tests: 8/8 passed
+- frontend lint passed
 - frontend production build passed
-- `npm run local:setup` ended with `[local:setup] READY`
-- `npm run local:dev` successfully started local Worker
-- local health endpoint returned:
 
-```json
-{"service":"futureview-api","status":"ok","database":"d1-bound","storage":"r2","runtime":"cloudflare-js"}
-```
-
-Frontend dependency audit currently reports 17 vulnerabilities (2 low, 2 moderate, 12 high, 1 critical). Do not run `npm audit fix --force` casually; audit separately to avoid unnecessary dependency regressions.
-
-## Local production snapshot sync
-
-Command:
+Daily data refresh:
 
 ```bash
-npm run local:sync
+npm run local:update
 ```
 
-Purpose: copy a **read-only production snapshot** into local Wrangler D1/R2 so development can use real data without writing production.
+Backtest:
 
-Design rule:
-
-```text
-production D1/R2 = read only
-local D1/R2      = writable
+```bash
+npm run local:backtest
+npm run local:backtest -- --rebuild
 ```
 
-The script is `tools/local/sync.mjs`.
+Local app:
 
-It syncs the production pointers/artifacts needed for local work, including the current universe, canonical feature state and shards, ranking/dashboard artifacts, and a recent D1 ranking snapshot/history set.
-
-It may reset the corresponding local ranking snapshot tables to produce a clean local baseline. It must not perform production `put`, `update`, or `delete` operations.
-
-Required Codespaces environment variables include:
-
-- `CLOUDFLARE_API_TOKEN`
-- `R2_ACCOUNT_ID`
-- `MASSIVE_API_KEY` when Massive access is needed
-
-Do not paste secrets into chat or commit them. `.dev.vars`, `.wrangler/`, `.wrangler.local.json`, and `.local-sync/` are ignored.
-
-## Cloudflare production storage
-
-D1 migrations:
-
-- `migrations/0001_initial.sql`
-- `migrations/0002_strategy_version.sql`
-
-D1 tables:
-
-- `instruments`
-- `universe_snapshots`
-- `universe_membership`
-- `ranking_runs`
-- `ranking_entries`
-- `workflow_runs`
-- `strategy_versions`
-- `backtest_runs`
-
-D1 is for queryable relational/index data.
-
-R2 is for large reproducible artifacts such as:
-
-```text
-prices/daily-json/date=YYYY-MM-DD/bars.json
-reference/tickers/date=YYYY-MM-DD/common-stocks.json
-state/rolling/v1/date=YYYY-MM-DD/shard=00..31.json
-features/daily/date=YYYY-MM-DD/shard=00..31.json
-rankings/date=YYYY-MM-DD/ranking.json
-rankings/date=YYYY-MM-DD/top50.json
-state/ranking/v1/date=YYYY-MM-DD/shard=00..31.json
-validation/js-replay/date=YYYY-MM-DD/...
-backtests/run=<id>/result.json
-dashboard/latest.json
-metadata/latest-*.json
+```bash
+npm run local:dev
 ```
 
-Current production Worker URL:
+`local:dev` is now one command that starts both:
 
 ```text
-https://futureview.rueijrwu.workers.dev
+API:      localhost:8787
+Frontend: localhost:5173
 ```
 
-Previously validated production health:
+The Vite frontend proxies `/api/*` to the local API.
+
+## 11. `/backtest` UI Policy
+
+Frontend visualization is deferred.
+
+Current `/backtest` is intentionally a **plain-text research log**, not a dashboard.
+
+Features:
+
+- left-aligned terminal/log presentation
+- deterministic formatted audit output
+- `Copy log` button copies the complete text for posting back into chat/issues
+- no cards/charts/tables/rich visualization for now
+
+Keep this simple until strategy-v3 research is stable.
+
+## 12. Key Files
+
+Core strategy/research:
 
 ```text
-service  = futureview-api
-status   = ok
-database = d1-bound
-storage  = r2
-runtime  = cloudflare-js
+worker/feature-core.js
+worker/ranking-core.js
+worker/backtest-core.js
+worker/backtest-audit.js
+worker/strategy-config.js
+tools/local/backtest.mjs
 ```
 
-## Canonical production data already validated
-
-Common-stock universe was manually refreshed and production-validated:
+Local storage/data:
 
 ```text
-as_of    = 2026-08-23
-count    = 5322
-source   = massive
-producer = cloudflare-js
+tools/local/fs-store.mjs
+tools/local/sync.mjs
+tools/local/history.mjs
+tools/local/data-report.mjs
+tools/local/api.mjs
 ```
 
-Canonical feature-state seed was successfully established by legacy-state adoption before the adoption workflow was retired:
+Recovery / Cloudflare validation:
 
 ```text
-version        = 1
-as_of          = 2026-08-21
-shard_count    = 32
-symbol_count   = 10848
-prefix         = state/rolling/v1/date=2026-08-21
-producer       = cloudflare-js-bootstrap
-seed_source    = legacy-state-adoption
-benchmark      = SPY
-```
-
-Historical migration parity evidence also passed for 2026-08-20:
-
-```text
-cloudflare_count      = 10396
-compared_symbol_count = 10396
-missing_symbol_count  = 0
-unexpected_symbol_count = 0
-mismatch_count        = 0
-max_abs_error         = 7.62939453125e-06
-coverage_status       = pass
-parity_status         = pass
-status                = pass
-```
-
-This is migration evidence only, not a Python runtime dependency.
-
-## Cloudflare Workflows still in the runtime
-
-The intended workflow bindings are:
-
-- `futureview-incremental-features`
-- `futureview-ranking-replay`
-- `futureview-backtest`
-
-These remain available but are **not scheduled during testing** and should not be invoked for feature validation until the user explicitly approves deployment/production execution.
-
-`worker/incremental-workflow.js` performs rolling feature updates and then production ranking. `worker/ranking-replay-workflow.js` validates replay using the canonical JS ranking engine. `worker/backtest-workflow.js` runs the JS backtest.
-
-The retired Cloudflare historical bootstrap/adoption runtime was removed. Do not restore it.
-
-Retired/deleted runtime concepts:
-
-- `FeatureBootstrapWorkflow`
-- `StateAdoptionWorkflow`
-- `/api/admin/bootstrap-features`
-- `/api/admin/adopt-feature-state`
-- Cron-based weekday processing
-- Cron-based Sunday backtest
-
-## Recovery paths
-
-Recovery is intentionally separate from normal runtime and lives in manual GitHub Actions.
-
-### State Repair
-
-Tool:
-
-```text
-tools/recovery/state-repair.mjs
-```
-
-Workflow:
-
-```text
-.github/workflows/recover-state-repair.yml
-```
-
-Use when an existing complete rolling state needs validation/re-promotion.
-
-### Full Rebuild
-
-Tool:
-
-```text
+tools/recovery/publish-history.mjs
 tools/recovery/full-rebuild.mjs
+tools/recovery/state-repair.mjs
+migrations/0003_market_data_sessions.sql
 ```
 
-Workflow:
+Frontend research log:
 
 ```text
-.github/workflows/recover-full-rebuild.yml
+view/src/pages/Backtest.tsx
+view/src/pages/Backtest.css
 ```
 
-Uses Massive historical grouped-daily sessions and rebuilds 32 deterministic shards.
-
-Required GitHub secrets are already known to exist:
-
-- `CLOUDFLARE_API_TOKEN`
-- `R2_ACCOUNT_ID`
-- `MASSIVE_API_KEY`
-
-Do not ask again whether `MASSIVE_API_KEY` exists in GitHub/Cloudflare unless an actual tool/runtime error proves otherwise.
-
-Recovery runbook: `docs/FEATURE_STATE_RECOVERY.md`.
-
-## API routes
-
-Current read routes include:
+Operational lifecycle:
 
 ```text
-/api/health
-/api/rankings/latest
-/api/rankings/history
-/api/rankings/date/YYYY-MM-DD
-/api/symbols/:symbol/rankings
-/api/ingest/status
-/api/universe/status
-/api/state/status
-/api/ranking-state/status
-/api/replay/status
-/api/backtests/latest
+docs/LOCAL_DATA_LIFECYCLE.md
 ```
 
-Current manual admin route retained:
+## 13. Next Work
+
+Do not return to frontend visualization yet.
+
+Proceed in this order:
+
+1. implement strategy-v3 initial-entry qualification
+2. implement initial stop / risk control that can only tighten
+3. implement sector metadata + Top-3-sector / Top-3-stock selection
+4. cap offensive portfolio at 9 stocks
+5. record MAE/MFE and setup/sector context in the trade ledger
+6. rerun the same 126-session baseline and compare against momentum-v2
+7. only after initial-entry/risk quality improves, implement Add #1 and Add #2
+8. options acceleration last
+9. rich frontend visualization last
+
+Primary v3 success targets should initially emphasize risk quality, especially:
 
 ```text
-POST /api/admin/refresh-universe
+max drawdown: materially below -24.55%
+average loss: materially smaller than -13.44%
+profit factor / expectancy: clearly above the near-flat v2 baseline
 ```
 
-It uses bearer `ADMIN_TOKEN`.
-
-Important gap for the next chat: after Cron removal, a complete manual command/endpoint for the whole daily path
-
-```text
-ingest -> incremental features -> ranking -> replay
-```
-
-has **not yet been added**. This was deliberately deferred. When work resumes, this is likely the next useful runtime task. Prefer a clear manual admin action or explicit local command rather than reintroducing Cron.
-
-## Frontend
-
-- `site/` is the Worker-served deployed static asset tree and still contains the current static fallback/dashboard assets.
-- `view/` is the React/Vite development frontend.
-- do not remove the static fallback until dynamic API-backed frontend delivery has been validated stable.
-
-## Repository docs after cleanup
-
-Documentation was consolidated on 2026-08-24.
-
-Root `README.md` now contains the stable architecture, strategy, universe, score, backtest, local-development, and testing-phase policy.
-
-Independent runbooks retained:
-
-- `docs/CODESPACES.md`
-- `docs/FEATURE_STATE_RECOVERY.md`
-- `docs/README.md` as a small index
-
-Deleted as redundant/stale after consolidation:
-
-- `docs/future-plan.md`
-- `docs/scoring-v2.md`
-- `docs/screener-universe.md`
-
-The deploy workflow also had its obsolete repeated deletion of already-retired Cloudflare workflows removed.
-
-## Recent important commits
-
-Useful recent commits from this development session:
-
-```text
-e75a1f1fa43e55b321a9dca5637de8c6ddac3665  fix backtest test field name
-3b82ad604543ff8a42d4c505a5f9688bebf5ab4f  local sync/docs state before cleanup
-951db7c508fe059b16708f46ddf27c3ae2d837f4  documentation/dead-code cleanup series endpoint
-```
-
-There were several cleanup commits between `3b82ad...` and `951db7...`; inspect Git history if exact per-file provenance matters.
-
-## Validation scoreboard
-
-Confirmed/validated:
-
-- Codespaces local setup and Worker startup
-- local D1 migrations
-- 6/6 current JS tests
-- frontend lint/build
-- local Worker health
-- production Worker health (previously validated)
-- JS common-stock universe production publication
-- canonical 2026-08-21 rolling feature-state seed
-- historical migration parity evidence
-
-Still requires runtime evidence before claiming success:
-
-- first complete manual daily ingest -> incremental -> ranking -> replay after the new manual-only testing policy
-- D1 ranking writes/current strategy on that new run
-- latest ranking pointer produced by that new run
-- replay result for that new run
-- manual backtest execution after schedule removal
-- runtime success of the newer recovery workflows if no explicit successful run log has been supplied
-
-## Potential technical issues to keep in mind
-
-- incremental workflow may encounter Cloudflare subrequest limits when writing many R2 objects in a single step
-- rolling-state membership drift / new IPO admission still needs a long-term policy
-- instruments absent from the newest universe may remain `active=1`; dated universe membership remains the authoritative point-in-time set
-- D1 universe membership grows by roughly one row per symbol per dated universe snapshot
-- backtest still has no transaction-cost/slippage model
-- static dashboard fallback remains intentionally
-- ETF/regime layer is future work
-
-## Next-chat operating rules
-
-When continuing this project:
-
-- prefer direct repository inspection before assuming code state
-- use GitHub connector for repository reads/writes
-- do not reintroduce Python
-- do not reintroduce Cloudflare Cron during the testing phase
-- do not deploy to Cloudflare or invoke Cloudflare production runtime unless the user explicitly confirms deployment
-- treat `npm run local:sync` as a read-only data-copy exception, not as deployment permission
-- do not claim CI/deploy/runtime success without logs or tool evidence
-- when user says to execute a clear repository change, do it rather than repeatedly asking for confirmation
-- keep production writes separated from local development; local sync should read production and write local only
-- preserve one canonical JavaScript strategy engine across production ranking, replay, and backtest
+Do not optimize for win rate alone.
