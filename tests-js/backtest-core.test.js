@@ -67,7 +67,7 @@ test("exit signals execute on the next session open", () => {
 
   assert.equal(state.positions.AAA, undefined);
   assert.equal(state.trades.length, 1);
-  assert.equal(state.trades[0].exitPrice, 80);
+  assert.equal(state.trades[0].exit_price, 80);
   assert.equal(state.trades[0].exit_date, "2026-08-24");
 });
 
