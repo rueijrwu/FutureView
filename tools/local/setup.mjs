@@ -4,6 +4,7 @@ import process from "node:process";
 
 const WRANGLER_VERSION = "4.125.0";
 const LOCAL_CONFIG = ".wrangler.local.json";
+const LOCAL_STATE_DIR = ".local-state";
 const DEV_VARS = ".dev.vars";
 const DEV_VARS_EXAMPLE = ".dev.vars.example";
 const LOCAL_D1_ID = "00000000-0000-0000-0000-000000000000";
@@ -48,6 +49,7 @@ function ensureDevVars() {
 
 console.log("FutureView local environment setup");
 console.log(`Node ${process.versions.node} on ${process.platform}`);
+console.log(`[local:setup] Persistent Wrangler state: ${LOCAL_STATE_DIR}`);
 
 if (nodeMajor() < 22) fail("Node.js 22+ is required; Node.js 24 is recommended to match CI.");
 
@@ -58,9 +60,9 @@ generateLocalWranglerConfig();
 if (existsSync("view/package-lock.json")) run("npm", ["ci", "--prefix", "view"]);
 else run("npm", ["install", "--prefix", "view"]);
 
-run("npx", ["--yes", `wrangler@${WRANGLER_VERSION}`, "d1", "migrations", "apply", "futureview", "--local", "--config", LOCAL_CONFIG]);
+run("npx", ["--yes", `wrangler@${WRANGLER_VERSION}`, "d1", "migrations", "apply", "futureview", "--local", "--persist-to", LOCAL_STATE_DIR, "--config", LOCAL_CONFIG]);
 run("npm", ["run", "local:check"]);
 
 console.log("\n[local:setup] READY");
 console.log("Start development with: npm run local:dev");
-console.log("Recommended environment: Ubuntu WSL / Linux");
+console.log("Recommended environment: GitHub Codespaces / Linux");
