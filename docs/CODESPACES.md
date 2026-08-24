@@ -26,6 +26,44 @@ npm run dev --prefix view -- --host 0.0.0.0
 
 Vite listens on port `5173` and Codespaces will offer its forwarded URL.
 
+## Sync a production snapshot into local development
+
+If the local D1/R2 state is empty, copy a read-only production snapshot into local Wrangler storage:
+
+```bash
+npm run local:sync
+```
+
+Required Codespaces environment variables/secrets:
+
+```text
+CLOUDFLARE_API_TOKEN
+R2_ACCOUNT_ID
+```
+
+The token should have production **D1 Read** and **R2 Read** access only. `local:sync` never performs a remote write. All writes use Wrangler `--local` storage.
+
+The sync copies the latest production R2 pointers and referenced objects needed for development, including the common-stock universe, canonical feature state, latest ranking/dashboard data when available, ranking state, ingest metadata, replay metadata, and latest backtest result when available.
+
+For D1 it copies a compact development history: the most recent 20 ranking runs, Top50 ranking entries for those runs, and their corresponding universe snapshots. Before importing this D1 snapshot, it clears the **local-only** `ranking_entries`, `ranking_runs`, and `universe_snapshots` tables so repeated syncs form a clean production baseline. Production D1 is never modified.
+
+Recommended workflow:
+
+```bash
+npm run local:setup
+npm run local:sync
+npm run local:dev
+```
+
+After starting the Worker, verify:
+
+```bash
+curl http://localhost:8787/api/health
+curl http://localhost:8787/api/universe/status
+curl http://localhost:8787/api/state/status
+curl http://localhost:8787/api/rankings/latest
+```
+
 ## Validation
 
 Before pushing a branch:
@@ -34,7 +72,7 @@ Before pushing a branch:
 npm run local:check
 ```
 
-This runs Worker/recovery script syntax checks, JS tests, frontend lint, and frontend build.
+This runs Worker/recovery/local script syntax checks, JS tests, frontend lint, and frontend build.
 
 ## Secrets
 
