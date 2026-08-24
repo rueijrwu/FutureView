@@ -2,6 +2,27 @@
 
 FutureView uses GitHub Codespaces as the preferred development environment during the manual testing phase.
 
+## Deployment approval policy
+
+Cloudflare is the **final production host/runtime**, not the default development or testing environment.
+
+During development and testing:
+
+- use GitHub and GitHub Codespaces for implementation, testing, validation, and frontend review
+- use local Wrangler D1/R2 state and the local Worker for runtime checks
+- do **not** deploy to Cloudflare, invoke Cloudflare production workflows, or use Cloudflare production runtime for feature validation unless the user explicitly confirms that deployment should happen
+- code existing on `master` does not imply that it should be deployed
+- a Cloudflare deployment is a separate, explicit step that requires user confirmation
+
+The only normal pre-deployment Cloudflare access is the existing **read-only production snapshot sync** used by `npm run local:sync`. That command may read production D1/R2 data through the restricted token, but all development writes and tests remain local.
+
+In short:
+
+```text
+GitHub / Codespaces = develop and test
+Cloudflare           = deploy only after explicit user approval
+```
+
 ## Start
 
 1. Open the repository on GitHub.
@@ -54,6 +75,8 @@ The sync command reads production R2/D1 through the restricted Cloudflare token 
 
 Production writes are intentionally not part of Codespaces development.
 
+Read-only snapshot sync does **not** constitute deployment approval and must not be treated as permission to run or modify Cloudflare production runtime.
+
 ## Run the local Worker
 
 ```bash
@@ -84,6 +107,8 @@ Vite listens on port `5173`.
 Cloudflare Cron and the Worker `scheduled()` entrypoint are disabled. Do not use `/cdn-cgi/local/scheduled` or add scheduled triggers during this phase.
 
 Production updates are explicit/manual until the pipeline is validated and the project deliberately enables automation again.
+
+No Cloudflare deployment or production-runtime validation should be performed merely because a feature is ready locally. Wait for explicit user confirmation to deploy.
 
 ## Data contract
 
