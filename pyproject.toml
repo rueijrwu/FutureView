@@ -9,6 +9,8 @@ description = "FutureView CNN trend research"
 requires-python = ">=3.11"
 dependencies = [
   "torch>=2.4",
+  "pandas>=2.2",
+  "yfinance>=0.2.54",
 ]
 
 [tool.setuptools.packages.find]
@@ -16,3 +18,4 @@ where = ["src"]
 
 [project.scripts]
 futureview-smoke = "futureview.smoke:main"
+futureview-data-smoke = "futureview.data_smoke:main"
