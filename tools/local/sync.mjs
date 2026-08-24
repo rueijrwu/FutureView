@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -18,6 +19,7 @@ const LOCAL_DATA_ROOT = ".local-data";
 const D1_DIR = `${LOCAL_DATA_ROOT}/d1`;
 const D1_SCHEMA_FILE = `${D1_DIR}/schema.json`;
 const D1_TABLE_DIR = `${D1_DIR}/tables`;
+const MIGRATIONS_DIR = "migrations";
 const SYNC_DIR = ".local-sync";
 const MANIFEST_FILE = `${SYNC_DIR}/manifest.json`;
 const R2_BUCKET = "futureview-data";
@@ -79,18 +81,18 @@ function hashBuffer(buffer) {
 
 function loadManifest() {
   if (FULL_SYNC || !existsSync(MANIFEST_FILE)) {
-    return { version: 5, r2: {}, d1: {} };
+    return { version: 6, r2: {}, d1: {} };
   }
   try {
     const raw = JSON.parse(readFileSync(MANIFEST_FILE, "utf8"));
     return {
-      version: 5,
+      version: 6,
       r2: raw.r2 ?? raw.objects ?? {},
       d1: raw.d1 ?? {},
     };
   } catch (error) {
     console.warn(`[local:sync] Ignoring unreadable manifest: ${error.message}`);
-    return { version: 5, r2: {}, d1: {} };
+    return { version: 6, r2: {}, d1: {} };
   }
 }
 
@@ -240,6 +242,38 @@ function safeTableFileName(value) {
   return `${String(value).replace(/[^A-Za-z0-9._-]/g, "_")}.jsonl`;
 }
 
+function migrationSchema() {
+  if (!existsSync(MIGRATIONS_DIR)) {
+    throw new Error(`migration directory is missing: ${MIGRATIONS_DIR}`);
+  }
+  const files = readdirSync(MIGRATIONS_DIR)
+    .filter((name) => name.endsWith(".sql"))
+    .sort();
+  if (!files.length) throw new Error("no SQL migrations found");
+
+  const migrations = files.map((name) => ({
+    name,
+    sql: readFileSync(path.join(MIGRATIONS_DIR, name), "utf8"),
+  }));
+  const tables = [];
+  const seen = new Set();
+  const createTable = /CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:["`\[])?([A-Za-z_][A-Za-z0-9_]*)(?:["`\]])?/gi;
+
+  for (const migration of migrations) {
+    let match;
+    while ((match = createTable.exec(migration.sql)) !== null) {
+      const table = match[1];
+      if (table.startsWith("sqlite_") || table.startsWith("_cf_")) continue;
+      if (!seen.has(table)) {
+        seen.add(table);
+        tables.push(table);
+      }
+    }
+  }
+  if (!tables.length) throw new Error("no application tables discovered from migrations");
+  return { migrations, tables };
+}
+
 function runD1Query(sql) {
   const args = [
     "--yes",
@@ -282,21 +316,20 @@ function mirrorD1(manifest) {
   mkdirSync(D1_DIR, { recursive: true });
   mkdirSync(D1_TABLE_DIR, { recursive: true });
 
-  const schema = runD1Query(
-    "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END,name",
-  );
-  const schemaBody = Buffer.from(`${JSON.stringify(schema, null, 2)}\n`);
+  const source = migrationSchema();
+  const schemaArtifact = {
+    source: "repo-migrations",
+    migrations: source.migrations,
+    tables: source.tables,
+  };
+  const schemaBody = Buffer.from(`${JSON.stringify(schemaArtifact, null, 2)}\n`);
   writeFileSync(D1_SCHEMA_FILE, schemaBody);
-
-  const tables = schema
-    .filter((row) => row?.type === "table" && row?.name)
-    .map((row) => String(row.name));
 
   let totalRows = 0;
   let totalBytes = schemaBody.length;
   const tableManifest = {};
 
-  for (const table of tables) {
+  for (const table of source.tables) {
     const file = `${D1_TABLE_DIR}/${safeTableFileName(table)}`;
     writeFileSync(file, "");
     let offset = 0;
@@ -322,10 +355,11 @@ function mirrorD1(manifest) {
     console.log(`[local:sync] D1 table ${table}: ${rowCount} rows`);
   }
 
-  const snapshotHash = hashBuffer(Buffer.from(JSON.stringify({ schema, tables: tableManifest })));
+  const snapshotHash = hashBuffer(Buffer.from(JSON.stringify({ schemaArtifact, tables: tableManifest })));
   const priorHash = manifest.d1.futureview?.hash ?? null;
   manifest.d1.futureview = {
     mode: "read-query-snapshot",
+    schema_source: "repo-migrations",
     hash: snapshotHash,
     tables: tableManifest,
     rows: totalRows,
@@ -335,7 +369,7 @@ function mirrorD1(manifest) {
 
   return {
     updated: FULL_SYNC || priorHash !== snapshotHash,
-    tables: tables.length,
+    tables: source.tables.length,
     rows: totalRows,
     bytes: totalBytes,
     hash: snapshotHash,
