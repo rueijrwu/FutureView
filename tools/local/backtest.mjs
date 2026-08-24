@@ -67,7 +67,7 @@ function availableSessionDates(endDate = null) {
 function groupedDaily(date) {
   const file = dailyJsonPath(date);
   if (!existsSync(file)) {
-    fail(`local daily history is missing ${date}; run npm run local:history before backtesting`);
+    fail(`local daily history is missing ${date}; run npm run recovery:history before backtesting`);
   }
   const payload = JSON.parse(readFileSync(file, "utf8"));
   const bars = (Array.isArray(payload?.bars) ? payload.bars : [])
@@ -87,7 +87,7 @@ function groupedDaily(date) {
 function collectBackward(endDate, count) {
   const dates = availableSessionDates(endDate);
   if (dates.length < count) {
-    fail(`found only ${dates.length} local sessions through ${endDate}; need ${count}. Run npm run local:history -- --sessions=${count} --end=${endDate}`);
+    fail(`found only ${dates.length} local sessions through ${endDate}; need ${count}. Run npm run recovery:history -- --sessions=${count} --end=${endDate}`);
   }
   return dates.slice(-count).map(groupedDaily);
 }
