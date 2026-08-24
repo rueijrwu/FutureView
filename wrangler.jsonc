@@ -16,6 +16,11 @@
   ],
   "workflows": [
     {
+      "name": "futureview-feature-bootstrap",
+      "binding": "FEATURE_BOOTSTRAP",
+      "class_name": "FeatureBootstrapWorkflow"
+    },
+    {
       "name": "futureview-incremental-features",
       "binding": "INCREMENTAL_FEATURES",
       "class_name": "IncrementalFeatureWorkflow"
