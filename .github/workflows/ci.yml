@@ -28,9 +28,15 @@ jobs:
 
       - name: Validate D1 migration SQL
         run: |
-          sqlite3 /tmp/futureview.db < migrations/0001_initial.sql
+          set -euo pipefail
+          for migration in migrations/*.sql; do
+            echo "Applying $migration"
+            sqlite3 /tmp/futureview.db < "$migration"
+          done
           sqlite3 /tmp/futureview.db '.schema' > /tmp/schema.txt
-          test -s /tmp/schema.txt
+          grep -q 'CREATE TABLE ranking_runs' /tmp/schema.txt
+          grep -q 'strategy_version' /tmp/schema.txt
+          grep -q 'CREATE TABLE backtest_runs' /tmp/schema.txt
 
       - name: Install frontend dependencies
         run: npm ci --prefix view
