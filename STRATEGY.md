@@ -514,6 +514,104 @@ expectancy clearly above 0.30%/trade
 
 Win rate should remain paired with payoff ratio and drawdown.
 
+# Future Plan
+
+## CNN Meta-Controller Research
+
+A future research layer may use a CNN or related sequence model as a **meta-controller**, not as a replacement for the deterministic trading strategy and not as a direct black-box buy/sell predictor.
+
+The deterministic strategy constitution remains authoritative. The model may only adjust parameters inside predefined safe ranges.
+
+Potential model outputs:
+
+```text
+1. dynamic ranking weights
+   - Trend Structure weight
+   - Breakout / Pivot weight
+   - Volume Quality weight
+   - Base / Contraction weight
+   - Relative Strength weight
+   - Persistence weight
+
+2. dynamic entry criteria / thresholds
+   - minimum RVOL
+   - maximum allowed ExtensionATR
+   - breakout strictness
+   - minimum base quality
+   - minimum sector strength
+   - minimum SetupScore
+
+3. dynamic add criteria
+   - Add #1 confidence threshold
+   - Add #2 confidence threshold
+   - required RVOL / breakout quality for each add
+   - allowed extension for each add
+
+4. dynamic add sizing
+   - Add #1 size multiplier
+   - Add #2 size multiplier
+```
+
+Example architecture:
+
+```text
+deterministic strategy rules
+-> hard safety constraints
+-> CNN / sequence meta-controller
+-> bounded weights / thresholds / add sizing
+-> ranking + portfolio selection
+```
+
+The model must never override hard strategy constraints, including:
+
+```text
+- never average down
+- offensive sleeve <= 60% NAV
+- maximum 9 stocks
+- stops may only tighten
+- next-session execution / no same-session look-ahead
+- point-in-time data only
+```
+
+The preferred research order is:
+
+```text
+1. CNN dynamic add criteria / sizing
+2. CNN dynamic entry thresholds
+3. CNN dynamic ranking weights
+```
+
+Dynamic ranking weights are deliberately last because they create the greatest overfitting risk.
+
+Evaluation must compare deterministic and adaptive variants independently:
+
+```text
+strategy-v3-fixed
+vs
+strategy-v3 + CNN dynamic adds
+vs
+strategy-v3 + CNN dynamic criteria
+vs
+strategy-v3 + CNN dynamic weights
+```
+
+Primary evaluation metrics:
+
+```text
+profit factor
+expectancy
+max drawdown
+average loss
+win rate
+turnover
+Add #1 profit factor / expectancy
+Add #2 profit factor / expectancy
+```
+
+Training and validation must be strictly point-in-time and walk-forward. Random train/test splits are not acceptable for strategy validation because they can leak market-regime information across time.
+
+This research should begin only after deterministic strategy-v3 establishes a clean baseline with entry, stop, sector selection, MAE/MFE, and add-event instrumentation.
+
 # Offensive Capital Constraint
 
 Total offensive allocation:
