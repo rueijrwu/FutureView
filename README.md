@@ -134,11 +134,18 @@ Current Worker read routes:
 - `GET /api/replay/status`
 - `GET /api/backtests/latest`
 
-Current manual admin route:
+Current manual admin routes require bearer `ADMIN_TOKEN`:
 
-- `POST /api/admin/refresh-universe`
+- `POST /api/admin/refresh-universe?date=YYYY-MM-DD`
+- `POST /api/admin/run-daily?date=YYYY-MM-DD`
 
-Additional daily processing remains intentionally manual/deferred during the testing phase rather than being driven by Cron.
+`run-daily` requires an explicit trading date. It ingests the Massive grouped-daily session for that date, verifies that the canonical Cloudflare feature state precedes the requested session, then starts the incremental workflow. That workflow performs:
+
+```text
+ingest -> incremental features -> production ranking -> replay trigger
+```
+
+The explicit date is carried into the workflow instead of relying on a mutable latest-ingest pointer. Cron remains disabled during testing.
 
 ## Codespaces development
 
