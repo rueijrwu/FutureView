@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = ".local-data";
 const OBJECTS_ROOT = path.join(ROOT, "objects");
 const REFERENCE_ROOT = path.join(ROOT, "reference", "ticker-overview");
 const LATEST_UNIVERSE = path.join(OBJECTS_ROOT, "metadata", "latest-common-stock-universe.json");
+const LOCAL_BACKTEST_SESSION_ROOT = path.join(".local-backtest", "sessions");
 const MASSIVE_BASE_URL = "https://api.massive.com";
 const DEFAULT_PACE_MS = 13_000;
 const MAX_RETRIES = 4;
@@ -46,6 +47,7 @@ function parseArgs() {
     paceMs: DEFAULT_PACE_MS,
     refresh: false,
     symbols: null,
+    rankingScope: "all",
   };
   for (const arg of process.argv.slice(2)) {
     if (arg.startsWith("--as-of=")) out.asOf = arg.slice(8);
@@ -53,7 +55,8 @@ function parseArgs() {
     else if (arg.startsWith("--pace-ms=")) out.paceMs = Number(arg.slice(10));
     else if (arg.startsWith("--symbols=")) {
       out.symbols = new Set(arg.slice(10).split(",").map((value) => value.trim()).filter(Boolean));
-    } else if (arg === "--refresh") out.refresh = true;
+    } else if (arg.startsWith("--ranking-scope=")) out.rankingScope = arg.slice(16);
+    else if (arg === "--refresh") out.refresh = true;
     else fail(`unknown argument: ${arg}`);
   }
   if (!out.asOf || !/^\d{4}-\d{2}-\d{2}$/.test(out.asOf)) {
@@ -63,6 +66,9 @@ function parseArgs() {
     fail("--limit must be a positive integer");
   }
   if (!Number.isFinite(out.paceMs) || out.paceMs < 0) fail("--pace-ms must be >= 0");
+  if (!new Set(["all", "ranked", "top50"]).has(out.rankingScope)) {
+    fail("--ranking-scope must be all, ranked, or top50");
+  }
   return out;
 }
 
@@ -93,6 +99,36 @@ function loadUniverse() {
     asOf: payload.as_of ?? pointer.as_of ?? null,
     symbols: payload.symbols.map(String).sort(),
   };
+}
+
+function loadRankingScope(scope) {
+  if (scope === "all") return null;
+  if (!existsSync(LOCAL_BACKTEST_SESSION_ROOT)) {
+    fail(".local-backtest/sessions is missing; run npm run local:backtest -- --rebuild first");
+  }
+  const files = readdirSync(LOCAL_BACKTEST_SESSION_ROOT)
+    .filter((name) => /^\d{4}-\d{2}-\d{2}\.json$/.test(name))
+    .sort();
+  if (!files.length) fail("no local backtest session artifacts found");
+
+  const symbols = new Set();
+  let rankingRows = 0;
+  for (const name of files) {
+    let payload;
+    try {
+      payload = readJson(path.join(LOCAL_BACKTEST_SESSION_ROOT, name));
+    } catch {
+      continue;
+    }
+    for (const row of Array.isArray(payload?.rankings) ? payload.rankings : []) {
+      if (!row?.symbol) continue;
+      if (scope === "top50" && Number(row.rank) > 50) continue;
+      symbols.add(String(row.symbol));
+      rankingRows += 1;
+    }
+  }
+  if (!symbols.size) fail(`ranking scope ${scope} selected no symbols`);
+  return { symbols, sessionCount: files.length, rankingRows };
 }
 
 function safeSymbol(symbol) {
@@ -137,6 +173,9 @@ async function fetchOverview(symbol, asOf, apiKey) {
     const body = await response.text();
     if (response.status === 404 || response.status === 400) {
       return { kind: "unavailable", status: response.status, detail: body.slice(0, 300) };
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new Error(`FATAL_AUTH HTTP ${response.status}: ${body.slice(0, 300)}`);
     }
 
     const retryable = response.status === 429 || response.status >= 500;
@@ -242,13 +281,18 @@ const apiKey = massiveApiKey();
 if (!apiKey) fail("MASSIVE_API_KEY is unavailable in the environment or .dev.vars");
 
 const universe = loadUniverse();
-let symbols = universe.symbols;
+const universeSet = new Set(universe.symbols);
+const rankingScope = loadRankingScope(options.rankingScope);
+let symbols = rankingScope
+  ? [...rankingScope.symbols].filter((symbol) => universeSet.has(symbol)).sort()
+  : universe.symbols;
 if (options.symbols) symbols = symbols.filter((symbol) => options.symbols.has(symbol));
 if (options.limit != null) symbols = symbols.slice(0, options.limit);
 if (!symbols.length) fail("no symbols selected from the current common-stock universe");
 
 console.log(`[local:sector:enrich] point-in-time as-of=${options.asOf}`);
 console.log(`[local:sector:enrich] universe snapshot=${universe.asOf ?? "unknown"}; selected=${symbols.length}`);
+console.log(`[local:sector:enrich] ranking-scope=${options.rankingScope}${rankingScope ? ` sessions=${rankingScope.sessionCount} unique=${rankingScope.symbols.size}` : ""}`);
 console.log(`[local:sector:enrich] pace=${options.paceMs}ms; refresh=${options.refresh ? "yes" : "no"}`);
 
 let fetched = 0;
@@ -269,6 +313,7 @@ for (let index = 0; index < symbols.length; index += 1) {
     fetched += 1;
     console.log(`[local:sector:enrich] ${index + 1}/${symbols.length} ${symbol}: ${record.status}${record.sic_code ? ` SIC=${record.sic_code} ${record.sic_description ?? ""}` : ""}`);
   } catch (error) {
+    if (String(error.message).startsWith("FATAL_AUTH")) fail(`${symbol}: ${error.message}`);
     failed += 1;
     console.error(`[local:sector:enrich] ${index + 1}/${symbols.length} ${symbol}: FAILED ${error.message}`);
   }
@@ -278,8 +323,10 @@ for (let index = 0; index < symbols.length; index += 1) {
 
 const fullSummary = summarize(options.asOf, universe.asOf, universe.symbols);
 writeJson(manifestPath(options.asOf), fullSummary);
+const selectedSummary = summarize(options.asOf, universe.asOf, symbols);
 
 console.log("\n[local:sector:enrich] READY");
 console.log(`[local:sector:enrich] selected=${symbols.length}; fetched=${fetched}; cached-skip=${skipped}; failed=${failed}`);
+console.log(`[local:sector:enrich] selected SIC=${selectedSummary.with_sic_count}/${selectedSummary.cached_count} (${selectedSummary.cached_count ? `${(100 * selectedSummary.with_sic_count / selectedSummary.cached_count).toFixed(2)}%` : "n/a"})`);
 console.log(`[local:sector:enrich] full cache=${fullSummary.cached_count}/${fullSummary.universe_count}; SIC=${fullSummary.with_sic_count}; remaining=${fullSummary.remaining_count}`);
 console.log(`[local:sector:enrich] manifest: ${manifestPath(options.asOf)}`);
