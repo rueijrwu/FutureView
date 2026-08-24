@@ -14,7 +14,35 @@ The first objective is much narrower:
 
 This branch should stay minimal until that question is answered empirically.
 
-## 2. Core Research Principles
+## 2. Technical Baseline
+
+Primary implementation language:
+
+```text
+Python
+```
+
+Primary execution environment:
+
+```text
+local workstation
+Tesla P100 GPU
+CUDA 9.0 environment available
+```
+
+Research should be local-first. Cloud deployment, Cloudflare workers, frontend code, and production orchestration are not part of the initial CNN research path.
+
+The implementation should prefer a Python scientific / ML stack and use GPU acceleration where it materially helps training or batched inference.
+
+Important compatibility rule:
+
+> Do not assume the newest PyTorch / TensorFlow release will support CUDA 9.0 or the local driver stack.
+
+Before locking the ML framework, verify the actual local NVIDIA driver, CUDA runtime/toolkit, Python version, and framework compatibility. If the existing CUDA 9.0 environment is too old for a practical modern framework, prefer upgrading or isolating the ML environment rather than writing custom CUDA kernels prematurely.
+
+For the first SPY daily-data experiments, dataset size is small enough that CPU preprocessing is acceptable. GPU acceleration is mainly useful for repeated walk-forward CNN training and larger later-stage experiments.
+
+## 3. Core Research Principles
 
 1. Start with SPY only.
 2. Use price and volume only.
@@ -27,7 +55,7 @@ This branch should stay minimal until that question is answered empirically.
 9. Keep the first model small enough to match the available sample size.
 10. Add QQQ, sector ETFs, and individual stocks only after the SPY experiment demonstrates genuine out-of-sample value.
 
-## 3. Data Scope
+## 4. Data Scope
 
 ### Instrument
 
@@ -79,7 +107,7 @@ corporate-action treatment
 
 A single canonical series should be produced before training.
 
-## 4. Recency Hypothesis
+## 5. Recency Hypothesis
 
 The central data hypothesis is:
 
@@ -111,7 +139,7 @@ older observations decay exponentially
 
 The exact decay rate must be treated as a tunable research parameter and evaluated only through walk-forward out-of-sample results.
 
-## 5. Input Representation
+## 6. Input Representation
 
 ### Lookback window
 
@@ -155,7 +183,7 @@ relative / standardized volume using only trailing history
 
 All normalization parameters must be computed from information available at or before the sample date.
 
-## 6. CNN Architecture Hypothesis
+## 7. CNN Architecture Hypothesis
 
 The first model should be deliberately small.
 
@@ -207,7 +235,7 @@ Model B: raw OHLCV CNN + explicit MA branch
 
 This tests whether explicit smoothing improves generalization or whether the CNN can learn equivalent filters itself.
 
-## 7. What the Model Should Predict
+## 8. What the Model Should Predict
 
 Do not begin with next-day up/down classification.
 
@@ -221,7 +249,7 @@ Initial horizon:
 
 The model should estimate whether the future path is not only positive, but persistent and risk-efficient.
 
-## 8. Trend Ground Truth
+## 9. Trend Ground Truth
 
 Defining trend quality is the most important part of the project.
 
@@ -298,7 +326,7 @@ minimum trend efficiency
 
 Thresholds must be tested for robustness and should not be optimized solely to maximize headline success rate.
 
-## 9. Trend Score
+## 10. Trend Score
 
 The model output is:
 
@@ -321,7 +349,7 @@ higher TrendScore
 -> lower or better-controlled MAE
 ```
 
-## 10. Validation Rules
+## 11. Validation Rules
 
 ### No random train/test split
 
@@ -364,7 +392,7 @@ same optimization procedure
 
 Only the available training-history window should change.
 
-## 11. Primary Evaluation Metrics
+## 12. Primary Evaluation Metrics
 
 Do not optimize for win rate alone.
 
@@ -395,7 +423,7 @@ TrendScore increases
 
 A model that produces very few signals with a superficially high success rate should not automatically be considered superior.
 
-## 12. Phase 1 Is Prediction Research, Not Yet a Trading Strategy
+## 13. Phase 1 Is Prediction Research, Not Yet a Trading Strategy
 
 Do not immediately convert the CNN into entry/exit rules.
 
@@ -415,7 +443,7 @@ future trend efficiency
 
 Only after a stable monotonic relationship is demonstrated should TrendScore be converted into a trading rule.
 
-## 13. Baseline Models
+## 14. Baseline Models
 
 A CNN result must be compared with simple baselines.
 
@@ -430,7 +458,7 @@ small linear / logistic model using the same allowed price-volume information
 
 The CNN must demonstrate incremental out-of-sample value over these simpler alternatives.
 
-## 14. Initial Experiment Matrix
+## 15. Initial Experiment Matrix
 
 ### Data-history experiment
 
@@ -457,7 +485,83 @@ raw OHLCV CNN + explicit MA5/10/20 branch
 
 Only after the 20-session baseline is understood should alternative horizons such as 10, 30, or 40 sessions be tested.
 
-## 15. Expansion Path
+## 16. Local Python Research Structure
+
+Suggested initial repository structure:
+
+```text
+PLAN.md
+pyproject.toml
+README.md
+src/
+  futureview/
+    data.py
+    features.py
+    labels.py
+    datasets.py
+    models.py
+    train.py
+    walkforward.py
+    evaluate.py
+configs/
+  baseline.yaml
+scripts/
+  download_spy.py
+  train_spy.py
+  evaluate_spy.py
+tests/
+```
+
+Initial implementation should favor clarity and reproducibility over framework complexity.
+
+Recommended responsibilities:
+
+```text
+data.py        -> canonical OHLCV loading / source reconciliation
+features.py    -> causal normalization and optional MA features
+labels.py      -> future trend-quality / MAE / MFE / efficiency labels
+datasets.py    -> 50-session sequence construction
+models.py      -> small multi-scale 1D CNN variants
+train.py       -> deterministic training loop / seeds / checkpoints
+walkforward.py -> purged chronological fold generation
+evaluate.py    -> decile, calibration, return, MAE/MFE audits
+```
+
+Persist raw downloaded data, canonical cleaned data, model artifacts, and experiment results separately. Generated data and model checkpoints should normally remain outside Git unless intentionally versioned.
+
+## 17. GPU / Reproducibility Policy
+
+GPU acceleration is allowed and preferred for neural-network training when supported by the installed framework.
+
+However:
+
+```text
+correct chronology > GPU speed
+reproducibility > maximum throughput
+small justified model > large GPU-saturating model
+```
+
+Record for every experiment:
+
+```text
+Python version
+ML framework version
+CUDA runtime/version
+GPU model
+random seed
+training date range
+validation date range
+test date range
+history-window length
+model configuration
+label configuration
+```
+
+Set deterministic seeds where practical and save configuration plus metrics with every run.
+
+Tesla P100 has ample compute for the initial small 1D CNN. Do not enlarge the network merely to use the GPU.
+
+## 18. Expansion Path
 
 Do not expand until the SPY model demonstrates reproducible out-of-sample value.
 
@@ -506,7 +610,7 @@ StockTrendScore
 
 Only at this stage should the project investigate how those scores combine into selection or position-sizing decisions.
 
-## 16. Explicitly Deferred
+## 19. Explicitly Deferred
 
 Do not implement these during the initial SPY research phase:
 
@@ -525,22 +629,23 @@ CNN-controlled dynamic trading rules
 
 They can be reconsidered only after the basic trend-detection hypothesis is validated.
 
-## 17. First Implementation Milestones
+## 20. First Implementation Milestones
 
-1. Build canonical SPY daily OHLCV dataset, preferably up to 5 recent years.
-2. Cross-check recent overlap between Yahoo Finance and Massive where practical.
-3. Implement causal preprocessing and 50-session sample generation.
-4. Implement 20-session future trend-quality labels and evaluation fields.
-5. Implement simple non-CNN baselines.
-6. Implement the small multi-scale 1D CNN with 5/10/20-session receptive fields.
-7. Implement the explicit MA branch variant.
-8. Implement strict purged walk-forward training/evaluation.
-9. Run 1Y / 2Y / 3Y / 5Y training-history comparisons.
-10. Run 5Y recency-weighted comparison.
-11. Produce TrendScore quantile/decile audit tables.
-12. Decide empirically whether the CNN contains sufficient out-of-sample trend information to justify Phase 2.
+1. Establish a reproducible local Python environment and verify whether the current Tesla P100 / CUDA setup supports the selected ML framework.
+2. Build canonical SPY daily OHLCV dataset, preferably up to 5 recent years.
+3. Cross-check recent overlap between Yahoo Finance and Massive where practical.
+4. Implement causal preprocessing and 50-session sample generation.
+5. Implement 20-session future trend-quality labels and evaluation fields.
+6. Implement simple non-CNN baselines.
+7. Implement the small multi-scale 1D CNN with 5/10/20-session receptive fields.
+8. Implement the explicit MA branch variant.
+9. Implement strict purged walk-forward training/evaluation.
+10. Run 1Y / 2Y / 3Y / 5Y training-history comparisons.
+11. Run 5Y recency-weighted comparison.
+12. Produce TrendScore quantile/decile audit tables.
+13. Decide empirically whether the CNN contains sufficient out-of-sample trend information to justify Phase 2.
 
-## 18. Initial Success Criterion
+## 21. Initial Success Criterion
 
 The first milestone is not portfolio return.
 
