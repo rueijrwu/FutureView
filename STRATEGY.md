@@ -28,6 +28,8 @@ The core rules are:
 6. **Let strong trends continue instead of taking profit simply because a stock reaches a new high.**
 7. **Use stock-specific risk and profit-management levels when volatility or structure requires it.**
 8. **Concentrate offensive capital in the strongest market sectors rather than spreading capital mechanically across weak groups.**
+9. **Every position must have its exit conditions defined at the time of entry. No stock or option position may be opened without a complete exit plan.**
+10. **After entry, risk controls may only be tightened. Stops, moving-average exits, or structural exit thresholds must never be loosened to tolerate a losing trade.**
 
 The ranking model should therefore answer:
 
@@ -314,6 +316,7 @@ An initial entry should normally require:
 - sufficient and stable liquidity
 - acceptable extension from the underlying trend
 - a valid technical trigger
+- a complete pre-defined exit plan recorded before or at execution
 
 Valid triggers can include:
 
@@ -324,6 +327,75 @@ Valid triggers can include:
 5. strong gap-up with meaningful volume confirmation
 
 A gap alone is not a sufficient reason to buy.
+
+No entry is valid unless the exit logic is already known.
+
+---
+
+## Pre-Defined Exit Plan Requirement
+
+Every stock and option position must have its exit plan defined **before or at the moment of entry**.
+
+The purpose is to prevent discretionary drift after a trade moves against the thesis.
+
+A valid plan should define, as applicable:
+
+```text
+entry_price
+position_size
+
+warning_ma
+first_exit_ma
+final_exit_ma
+
+custom_structural_stop
+profit_take_condition
+ath_or_extension_condition
+
+add_1_trigger
+add_2_trigger
+```
+
+For options, the plan should additionally define:
+
+```text
+contracts
+strike
+expiration
+
+first_contract_exit_condition
+remaining_contract_exit_condition
+full_option_exit_condition
+stock_conversion_condition
+```
+
+The plan must be based on observable technical structure available at entry, not on a future discretionary decision.
+
+### Risk controls may only tighten
+
+After a trade is opened, exit conditions may be updated only when the change **reduces risk or locks in additional profit**.
+
+Allowed:
+
+```text
+initial stop = 100
+price advances
+stop -> 105 -> 112
+```
+
+Not allowed:
+
+```text
+initial stop = 100
+price weakens toward 100
+stop -> 95
+```
+
+The same rule applies to moving-average exits and structural stops.
+
+> Stops can move in the direction of reduced risk, never in the direction of increased risk.
+
+A trade must never be given more room merely because the position is losing or because the trader hopes the trend will recover.
 
 ---
 
@@ -403,6 +475,8 @@ existing position profitable
 
 Simply making another daily high is not enough by itself.
 
+Every add is a new capital commitment and must also have its own exit logic defined before execution.
+
 ---
 
 ## New Highs and Profit Taking
@@ -422,6 +496,8 @@ Instead, partial profit-taking at new highs should be conditional on evidence of
 - unusually large gap or range expansion
 - very high RVOL after an already extended run
 - stock-specific resistance or risk conditions
+
+Any such profit-taking rule must already be defined in the trade plan at entry or at the time of a later add.
 
 The guiding principle is:
 
@@ -453,13 +529,15 @@ runner      -> manage with stock-specific structural stop
 
 The exact percentages should be validated by historical testing.
 
-A close below an average should not necessarily be treated identically in every stock. Volume, volatility, price structure, and the location of recent pivots should be considered.
+A close below an average should not necessarily be treated identically in every stock. Volume, volatility, price structure, and the location of recent pivots should be considered **when the exit plan is established**.
+
+These factors may justify different predefined exit lines for different stocks, but they must not be used after the fact to postpone an already-triggered exit.
 
 ---
 
 ## Stock-Specific Trade Plan
 
-Each active position may define its own risk-management levels at entry and update them as the trade evolves.
+Each active position may define its own risk-management levels at entry.
 
 A trade plan may contain:
 
@@ -479,7 +557,9 @@ trailing_stop
 
 This is important because stocks have different volatility profiles. A rule appropriate for a low-volatility large-cap stock may be too tight for a higher-beta momentum stock.
 
-The system should support systematic defaults while still allowing a stock-specific override based on observable technical structure.
+The system should support systematic defaults while still allowing a stock-specific plan based on observable technical structure.
+
+After entry, the plan may only be changed in a direction that reduces risk or locks in gains. It cannot be relaxed to avoid taking a loss.
 
 ---
 
@@ -577,19 +657,23 @@ select up to the Top 3 qualified stocks per sector
         ↓
 maximum 9 offensive stocks
         ↓
+define the complete exit plan before entry
+        ↓
 wait for right-side price and volume confirmation
         ↓
 enter without excessive extension
         ↓
 add only when the position proves itself again
         ↓
+define exit conditions for every additional capital commitment
+        ↓
 let strong trends continue
         ↓
-reduce progressively when 5/10/20-day structure deteriorates
+reduce progressively when predefined 5/10/20-day or structural conditions trigger
         ↓
-use stock-specific structural risk controls for the remainder
+only tighten risk controls as the trade develops
 ```
 
 The strategy should continuously favor confirmed market strength over prediction:
 
-> **Trade with the trend. Follow the strongest sectors. Add to strength. Never average down. Avoid exhaustion. Exit as the trend breaks.**
+> **Trade with the trend. Follow the strongest sectors. Define the exit before entry. Add to strength. Never average down. Never loosen risk. Avoid exhaustion. Exit as the trend breaks.**
