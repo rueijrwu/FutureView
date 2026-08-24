@@ -16,6 +16,27 @@ function median(values) {
   return (ordered[middle - 1] + ordered[middle]) / 2;
 }
 
+function wilsonInterval(wins, total, z = 1.96) {
+  if (!total) return { low: null, high: null };
+  const p = wins / total;
+  const z2 = z * z;
+  const denominator = 1 + z2 / total;
+  const center = (p + z2 / (2 * total)) / denominator;
+  const margin = (z / denominator) * Math.sqrt(
+    (p * (1 - p) / total) + (z2 / (4 * total * total)),
+  );
+  return {
+    low: Math.max(0, center - margin),
+    high: Math.min(1, center + margin),
+  };
+}
+
+function sampleLabel(count) {
+  if (count < 30) return "early";
+  if (count < 100) return "developing";
+  return "stronger";
+}
+
 function summarizeTrades(trades) {
   const normalized = (trades ?? []).map((trade) => ({
     ...trade,
@@ -34,13 +55,26 @@ function summarizeTrades(trades) {
   const grossLoss = Math.abs(losses.reduce((sum, trade) => sum + (trade.pnl ?? 0), 0));
   const avgWin = average(winReturns);
   const avgLoss = average(lossReturns);
+  const winRate = normalized.length ? wins.length / normalized.length : null;
+  const confidence95 = wilsonInterval(wins.length, normalized.length);
+  const lossMagnitude = avgLoss === null ? null : Math.abs(avgLoss);
+  const breakEvenWinRate = avgWin !== null && lossMagnitude !== null && (avgWin + lossMagnitude) > 0
+    ? lossMagnitude / (avgWin + lossMagnitude)
+    : null;
 
   return {
     trade_count: normalized.length,
     wins: wins.length,
     losses: losses.length,
     breakeven: breakeven.length,
-    win_rate: normalized.length ? wins.length / normalized.length : null,
+    win_rate: winRate,
+    win_rate_ci95_low: confidence95.low,
+    win_rate_ci95_high: confidence95.high,
+    break_even_win_rate: breakEvenWinRate,
+    win_rate_edge: winRate !== null && breakEvenWinRate !== null
+      ? winRate - breakEvenWinRate
+      : null,
+    sample_label: sampleLabel(normalized.length),
     average_return: average(returns),
     median_return: median(returns),
     average_win_return: avgWin,
@@ -82,7 +116,16 @@ export function buildBacktestAudit(result) {
     if (rank <= 6) return "4-6";
     if (rank <= 10) return "7-10";
     return "11+";
-  });
+  }).sort((a, b) => ["1-3", "4-6", "7-10", "11+"].indexOf(a.key) - ["1-3", "4-6", "7-10", "11+"].indexOf(b.key));
+  const byHoldPeriod = groupBy(trades, (trade) => {
+    const held = finiteNumber(trade.hold_sessions);
+    if (held === null) return null;
+    if (held <= 15) return "1-15";
+    if (held <= 30) return "16-30";
+    if (held <= 45) return "31-45";
+    if (held <= 60) return "46-60";
+    return "61+";
+  }).sort((a, b) => ["1-15", "16-30", "31-45", "46-60", "61+"].indexOf(a.key) - ["1-15", "16-30", "31-45", "46-60", "61+"].indexOf(b.key));
 
   return {
     id: result?.id ?? null,
@@ -102,10 +145,13 @@ export function buildBacktestAudit(result) {
     breakdowns: {
       by_exit_reason: byExitReason,
       by_entry_rank: byEntryRank,
+      by_hold_period: byHoldPeriod,
     },
     validation_scope: {
       overall_trade_win_rate: true,
       initial_entry_trade_outcomes: true,
+      entry_rank_buckets: byEntryRank.length > 0,
+      hold_period_buckets: byHoldPeriod.length > 0,
       sector_top3_filter: false,
       add_1: false,
       add_2: false,
@@ -113,6 +159,9 @@ export function buildBacktestAudit(result) {
       mae_mfe: false,
     },
     notes: [
+      "The 95% win-rate interval uses the Wilson method; it describes sampling uncertainty, not future guaranteed performance.",
+      "Break-even win rate is derived from the observed average win and average loss, before transaction costs and slippage.",
+      "Sample labels are research heuristics: early <30 trades, developing 30-99, stronger >=100; they are not statistical guarantees.",
       "This audit reflects the currently implemented canonical backtest engine only.",
       "Sector Top-3 selection, staged add-ons, option acceleration, and MAE/MFE are not yet recorded by the current trade ledger and therefore are not presented as validated.",
     ],
