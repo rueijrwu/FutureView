@@ -24,9 +24,17 @@
       "name": "futureview-ranking-replay",
       "binding": "RANKING_REPLAY",
       "class_name": "RankingReplayWorkflow"
+    },
+    {
+      "name": "futureview-backtest",
+      "binding": "BACKTEST",
+      "class_name": "BacktestWorkflow"
     }
   ],
   "triggers": {
-    "crons": ["30 23 * * 1-5"]
+    "crons": [
+      "30 23 * * MON-FRI",
+      "0 14 * * SUN"
+    ]
   }
 }
