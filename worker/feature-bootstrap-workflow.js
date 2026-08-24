@@ -4,6 +4,7 @@ const MASSIVE_BASE_URL = "https://api.massive.com";
 const STATE_VERSION = 1;
 const STATE_SHARDS = 32;
 const REQUIRED_SESSIONS = 211;
+const SESSION_CHUNK_SIZE = 20;
 const LATEST_STATE_KEY = "metadata/latest-feature-state.json";
 const BOOTSTRAP_STATUS_KEY = "metadata/latest-feature-bootstrap.json";
 const LATEST_UNIVERSE_KEY = "metadata/latest-common-stock-universe.json";
@@ -209,6 +210,38 @@ export class FeatureBootstrapWorkflow extends WorkflowEntrypoint {
 
     sessions.sort((a, b) => String(a.date).localeCompare(String(b.date)));
     const sourceAsOf = sessions.at(-1).date;
+    const chunkKeysByShard = Array.from({ length: STATE_SHARDS }, () => []);
+    const chunkCount = Math.ceil(sessions.length / SESSION_CHUNK_SIZE);
+
+    for (let shard = 0; shard < STATE_SHARDS; shard += 1) {
+      for (let chunk = 0; chunk < chunkCount; chunk += 1) {
+        const start = chunk * SESSION_CHUNK_SIZE;
+        const subset = sessions.slice(start, start + SESSION_CHUNK_SIZE);
+        const shardName = String(shard).padStart(2, "0");
+        const chunkName = String(chunk).padStart(2, "0");
+        const chunkKey = `${workRoot}/chunks/shard=${shardName}/chunk=${chunkName}.json`;
+
+        const result = await step.do(
+          `compact bootstrap shard ${shardName} chunk ${chunkName}`,
+          { retries: { limit: 2, delay: "5 seconds" }, timeout: "2 minutes" },
+          async () => {
+            const compacted = [];
+            for (const session of subset) {
+              compacted.push(await readJson(this.env.RESEARCH, session.shardKeys[shard]));
+            }
+            await writeJson(this.env.RESEARCH, chunkKey, {
+              shard,
+              chunk,
+              session_count: compacted.length,
+              sessions: compacted,
+            });
+            return { key: chunkKey };
+          },
+        );
+        chunkKeysByShard[shard].push(result.key);
+      }
+    }
+
     const stateKeys = [];
     let symbolCount = 0;
 
@@ -218,9 +251,11 @@ export class FeatureBootstrapWorkflow extends WorkflowEntrypoint {
         { retries: { limit: 2, delay: "5 seconds" }, timeout: "5 minutes" },
         async () => {
           const payloads = [];
-          for (const session of sessions) {
-            payloads.push(await readJson(this.env.RESEARCH, session.shardKeys[shard]));
+          for (const chunkKey of chunkKeysByShard[shard]) {
+            const chunk = await readJson(this.env.RESEARCH, chunkKey);
+            payloads.push(...(chunk.sessions ?? []));
           }
+          payloads.sort((a, b) => String(a.date).localeCompare(String(b.date)));
           const states = buildStatesFromSessions(payloads, sourceAsOf);
           const shardName = String(shard).padStart(2, "0");
           const key = `state/rolling/v${STATE_VERSION}/date=${sourceAsOf}/shard=${shardName}.json`;
@@ -253,6 +288,7 @@ export class FeatureBootstrapWorkflow extends WorkflowEntrypoint {
         workflow_instance: event.instanceId,
         universe_as_of: universe.asOf,
         bootstrap_session_count: sessions.length,
+        bootstrap_chunk_size: SESSION_CHUNK_SIZE,
         benchmark: "SPY",
         updated_at: now,
       };
@@ -268,6 +304,7 @@ export class FeatureBootstrapWorkflow extends WorkflowEntrypoint {
         source_as_of: sourceAsOf,
         symbol_count: symbolCount,
         session_count: sessions.length,
+        chunk_size: SESSION_CHUNK_SIZE,
         benchmark: "SPY",
         workflow_instance: event.instanceId,
         updated_at: now,
