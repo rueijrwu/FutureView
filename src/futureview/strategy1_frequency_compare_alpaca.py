@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from .alpaca_data import aggregate_rth_two_bars, download_spy_intraday_alpaca
+from .alpaca_data import aggregate_rth_daily, aggregate_rth_two_bars, download_spy_intraday_alpaca
 from .data import download_spy_daily
 from .datasets import build_windows
 from .features import make_causal_features
@@ -34,12 +34,18 @@ from .walkforward import purged_expanding_walk_forward
 
 
 def main() -> None:
-    """Canonical Daily-vs-intraday frequency comparison using Alpaca IEX data."""
+    """Canonical matched-feed Daily-vs-intraday frequency comparison using Alpaca IEX."""
     torch.set_num_threads(2)
 
-    daily = download_spy_daily(period="3y")
-    targets = make_strategy1_targets(daily)
-    daily_features = make_causal_features(daily)
+    oracle_daily = download_spy_daily(period="3y")
+    targets = make_strategy1_targets(oracle_daily)
+
+    start = pd.Timestamp(oracle_daily["date"].min()).date().isoformat()
+    end = pd.Timestamp(oracle_daily["date"].max()).date().isoformat()
+    intraday_raw = download_spy_intraday_alpaca(start, end, timeframe="30Min", feed="iex")
+
+    alpaca_daily = aggregate_rth_daily(intraday_raw)
+    daily_features = make_causal_features(alpaca_daily)
     daily_windows = build_windows(
         daily_features,
         targets,
@@ -47,9 +53,6 @@ def main() -> None:
         target_columns=STRATEGY1_TARGET_COLUMNS,
     )
 
-    start = pd.Timestamp(daily["date"].min()).date().isoformat()
-    end = pd.Timestamp(daily["date"].max()).date().isoformat()
-    intraday_raw = download_spy_intraday_alpaca(start, end, timeframe="30Min", feed="iex")
     intraday_two = aggregate_rth_two_bars(intraday_raw)
     intraday_features = _intraday_features(intraday_two)
     intraday_x, intraday_y, intraday_dates = _build_intraday_windows(intraday_features, targets)
@@ -59,7 +62,7 @@ def main() -> None:
     common_dates = np.asarray(sorted(set(daily_date_map).intersection(intra_date_map)), dtype="datetime64[ns]")
     if len(common_dates) < MIN_EXPANDING_TRAIN + PURGE + TEST_SIZE:
         raise RuntimeError(
-            f"insufficient common Daily/Alpaca-IEX dates: {len(common_dates)}; "
+            f"insufficient common Alpaca-IEX Daily/Intraday dates: {len(common_dates)}; "
             f"need at least {MIN_EXPANDING_TRAIN + PURGE + TEST_SIZE}"
         )
 
@@ -101,7 +104,8 @@ def main() -> None:
         f"S1 FREQUENCY_COMPARE_ALPACA DATA common_windows={len(common_dates)} folds={len(folds)} "
         f"first={pd.Timestamp(common_dates[0]).date()} last={pd.Timestamp(common_dates[-1]).date()} "
         f"horizon={TARGET_HORIZON} train=SLIDING_{SLIDING_TRAIN} epochs={EPOCHS} "
-        f"purge={PURGE} test_size={TEST_SIZE} provider=alpaca feed=iex timeframe=30Min"
+        f"purge={PURGE} test_size={TEST_SIZE} provider=alpaca feed=iex timeframe=30Min "
+        f"matched_input_feed=true oracle_source=daily_strategy1"
     )
     print(
         f"S1 FREQUENCY_COMPARE_ALPACA INPUT daily_bars={DAILY_LOOKBACK} intraday_bars={INTRADAY_LOOKBACK} "
