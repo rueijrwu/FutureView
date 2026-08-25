@@ -148,6 +148,16 @@ Reasons:
 - The free/basic equities feed is IEX; this is acceptable for the current frequency feasibility test.
 - Historical intraday chunks are cached locally under `.cache/futureview/alpaca/` as compressed CSV and are not committed to Git.
 
+For the Alpaca replication, **both input variants are derived from the same Alpaca IEX 30-minute source**:
+
+```text
+Alpaca IEX 30m RTH bars
+  -> aggregate complete regular session -> DAILY_50_K5_10_20 input
+  -> aggregate into 09:30-13:30 / 13:30-16:00 -> RTH2_100 input
+```
+
+This removes a major confound from the Massive prototype: the Daily and Intraday model inputs now share the same source/feed and differ primarily in sampling frequency / observation density. The Oracle labels remain the same frozen daily Strategy 1 labels constructed from the existing daily Oracle pipeline; changing the input provider does not change the target definition.
+
 Required environment variables:
 
 ```bash
@@ -164,12 +174,19 @@ futureview-alpaca-data-smoke
 Canonical frequency comparison:
 
 ```bash
-futureview-strategy1-frequency-compare-alpaca
+futureview-strategy1-frequency-compare
 ```
 
-The canonical Alpaca run should restore the original research standard:
+`futureview-strategy1-frequency-compare` is now the default Alpaca runner. The prior Massive implementation is retained only for reproducibility as:
+
+```bash
+futureview-strategy1-frequency-compare-massive
+```
+
+The canonical Alpaca run restores the original research standard:
 
 ```text
+same input source/feed for Daily and Intraday
 same common OOS dates across Daily and Intraday
 Sliding-260
 purge = 60
