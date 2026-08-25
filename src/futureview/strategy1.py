@@ -126,7 +126,7 @@ def make_strategy1_oracle_labels(
     df: pd.DataFrame,
     horizons: tuple[int, ...] = STRATEGY1_HORIZONS,
 ) -> pd.DataFrame:
-    """Build Strategy 1 Oracle Value labels for each future horizon."""
+    """Build Strategy 1 Oracle Value labels and action metadata for each future horizon."""
     if not horizons:
         raise ValueError("At least one horizon is required")
     if any(h <= 0 for h in horizons):
@@ -134,15 +134,18 @@ def make_strategy1_oracle_labels(
 
     events = add_strategy1_events(df).reset_index(drop=True)
     max_h = max(horizons)
-    rows: list[dict[str, float | int | object]] = []
+    rows: list[dict[str, float | int | bool | object]] = []
 
     for t in range(len(events) - max_h):
-        row: dict[str, float | int | object] = {"date": pd.to_datetime(events.at[t, "date"])}
+        row: dict[str, float | int | bool | object] = {"date": pd.to_datetime(events.at[t, "date"])}
         for h in horizons:
             run = oracle_value_for_window(events, t, t + h)
             row[f"oracle_value_{h}"] = float(run.final_return)
             row[f"oracle_entries_{h}"] = int(run.entries_used)
             row[f"oracle_start_offset_{h}"] = -1 if run.start_index is None else int(run.start_index - t)
+            row[f"oracle_partial_exit_{h}"] = bool(run.partial_exit_used)
+            row[f"oracle_full_exit_{h}"] = bool(run.full_exit_used)
+            row[f"oracle_horizon_exit_{h}"] = bool(run.start_index is not None and not run.full_exit_used)
         rows.append(row)
 
     out = pd.DataFrame(rows)
