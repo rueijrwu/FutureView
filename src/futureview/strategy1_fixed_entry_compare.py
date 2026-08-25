@@ -49,7 +49,7 @@ def main() -> None:
     base._prepare_worker_state(events)
     formal._simulate_path = fast._simulate_path_fast
 
-    close = events["Close"].to_numpy(dtype=float)
+    _, close, _, _, _, _ = base._require_state()
     anchor_count = len(events) - WINDOW + 1
 
     upper_values: list[float] = []
