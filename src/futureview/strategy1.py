@@ -29,7 +29,16 @@ class Strategy1Run:
     horizon_exit_used: bool
     partial_exit_count: int = 0
     full_exit_count: int = 0
+    exposure_days: float = 0.0
+    holding_days: int = 0
     actions: tuple[Strategy1Action, ...] = ()
+
+    @property
+    def return_per_exposure_day(self) -> float:
+        """Campaign return per capital-weighted trading day of market exposure."""
+        if self.exposure_days <= 0.0:
+            return 0.0
+        return float(self.final_return / self.exposure_days)
 
 
 def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
@@ -72,9 +81,17 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
     same Oracle window. Horizon liquidation is mandatory and is exempt from the
     three-session spacing rule because it is the label boundary, not a strategy
     signal.
+
+    Exposure is measured close-to-close. After all actions at close i, the
+    remaining position fraction is the market exposure carried into session
+    i+1. Capital-weighted exposure days sum that fraction across held intervals;
+    holding_days counts intervals with any positive exposure.
     """
     cash = 1.0
     shares = 0.0
+    exposure_fraction = 0.0
+    exposure_days = 0.0
+    holding_days = 0
     entries_used = 0
     partial_exit_used = False
     full_exit_used = False
@@ -84,7 +101,7 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
     actions: list[Strategy1Action] = []
 
     def buy(index: int) -> None:
-        nonlocal cash, shares, entries_used, last_entry_index
+        nonlocal cash, shares, exposure_fraction, entries_used, last_entry_index
         if entries_used >= len(ENTRY_WEIGHTS):
             raise RuntimeError("Strategy 1 attempted more than three entries")
         amount = ENTRY_WEIGHTS[entries_used]
@@ -93,6 +110,7 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
             raise RuntimeError("Strategy 1 attempted to exceed its fixed capital budget")
         shares += amount / price
         cash -= amount
+        exposure_fraction += amount
         entries_used += 1
         last_entry_index = index
         action = "entry1" if entries_used == 1 else f"addon{entries_used - 1}"
@@ -101,6 +119,13 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
     buy(start)
 
     for i in range(start + 1, end + 1):
+        # Position carried after the previous close was exposed during this
+        # close-to-close interval. This is measured before processing actions
+        # at the current close.
+        if exposure_fraction > 1e-12:
+            holding_days += 1
+            exposure_days += exposure_fraction
+
         price = float(events.at[i, "close"])
         exit_eligible = last_entry_index is None or (i - last_entry_index > COOLDOWN_SESSIONS)
 
@@ -109,6 +134,7 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
         if exit_eligible and bool(events.at[i, "exit10_event"]):
             cash += shares * price
             shares = 0.0
+            exposure_fraction = 0.0
             full_exit_used = True
             actions.append(Strategy1Action(index=i, action="exit10_full", price=price, fraction=1.0))
             break
@@ -122,6 +148,7 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
             sold = 0.5 * shares
             cash += sold * price
             shares -= sold
+            exposure_fraction *= 0.5
             partial_exit_used = True
             last_partial_exit_index = i
             actions.append(Strategy1Action(index=i, action="exit5_half", price=price, fraction=0.5))
@@ -142,6 +169,7 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
         price = float(events.at[end, "close"])
         cash += shares * price
         shares = 0.0
+        exposure_fraction = 0.0
         horizon_exit_used = True
         actions.append(Strategy1Action(index=end, action="horizon_exit", price=price, fraction=1.0))
 
@@ -155,6 +183,8 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
         horizon_exit_used=horizon_exit_used,
         partial_exit_count=int(partial_exit_used),
         full_exit_count=int(full_exit_used),
+        exposure_days=float(exposure_days),
+        holding_days=int(holding_days),
         actions=tuple(actions),
     )
 
@@ -183,7 +213,7 @@ def make_strategy1_oracle_labels(
     df: pd.DataFrame,
     horizons: tuple[int, ...] = STRATEGY1_HORIZONS,
 ) -> pd.DataFrame:
-    """Build Strategy 1 Oracle Value labels and action metadata for each future horizon."""
+    """Build Strategy 1 Oracle Value labels and action/exposure metadata."""
     if not horizons:
         raise ValueError("At least one horizon is required")
     if any(h <= 0 for h in horizons):
@@ -198,6 +228,9 @@ def make_strategy1_oracle_labels(
         for h in horizons:
             run = oracle_value_for_window(events, t, t + h)
             row[f"oracle_value_{h}"] = float(run.final_return)
+            row[f"oracle_exposure_days_{h}"] = float(run.exposure_days)
+            row[f"oracle_holding_days_{h}"] = int(run.holding_days)
+            row[f"oracle_return_per_exposure_day_{h}"] = float(run.return_per_exposure_day)
             row[f"oracle_entries_{h}"] = int(run.entries_used)
             row[f"oracle_campaigns_{h}"] = int(run.campaigns_used)
             row[f"oracle_start_offset_{h}"] = -1 if run.start_index is None else int(run.start_index - t)
@@ -210,8 +243,12 @@ def make_strategy1_oracle_labels(
 
     out = pd.DataFrame(rows)
     value_columns = [f"oracle_value_{h}" for h in horizons]
-    if not np.isfinite(out[value_columns].to_numpy(dtype=float)).all():
-        raise ValueError("Non-finite Strategy 1 Oracle Value found")
+    exposure_columns = [f"oracle_exposure_days_{h}" for h in horizons]
+    efficiency_columns = [f"oracle_return_per_exposure_day_{h}" for h in horizons]
+    if not np.isfinite(out[value_columns + exposure_columns + efficiency_columns].to_numpy(dtype=float)).all():
+        raise ValueError("Non-finite Strategy 1 Oracle metric found")
     if (out[value_columns] < -1e-12).any().any():
         raise ValueError("Strategy 1 Oracle Value must be non-negative because no-trade is allowed")
+    if (out[exposure_columns] < -1e-12).any().any():
+        raise ValueError("Strategy 1 exposure days must be non-negative")
     return out
