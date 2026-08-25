@@ -33,6 +33,9 @@ from .strategy1_targets import STRATEGY1_TARGET_COLUMNS, make_strategy1_targets
 from .walkforward import purged_expanding_walk_forward
 
 
+DILATED_MODEL_NAME = "RTH2_100_K5_10_20_DILATION2"
+
+
 def main() -> None:
     """Canonical matched-feed Daily-vs-intraday frequency comparison using Alpaca IEX."""
     torch.set_num_threads(2)
@@ -89,13 +92,23 @@ def main() -> None:
     model_factories = {
         "DAILY_50_K5_10_20": lambda: TrendCNNJoint().cpu(),
         "RTH2_100_K5_10_20": lambda: TrendCNNJointVariable((5, 10, 20)).cpu(),
+        DILATED_MODEL_NAME: lambda: TrendCNNJointVariable((5, 10, 20), dilation=2).cpu(),
         "RTH2_100_K10_20_40": lambda: TrendCNNJointVariable((10, 20, 40)).cpu(),
     }
     x_by_model = {
         "DAILY_50_K5_10_20": daily_x,
         "RTH2_100_K5_10_20": intra_x,
+        DILATED_MODEL_NAME: intra_x,
         "RTH2_100_K10_20_40": intra_x,
     }
+
+    baseline_params = count_parameters(model_factories["DAILY_50_K5_10_20"]())
+    dilated_params = count_parameters(model_factories[DILATED_MODEL_NAME]())
+    if dilated_params != baseline_params:
+        raise RuntimeError(
+            f"dilation control changed parameter count: baseline={baseline_params} dilated={dilated_params}"
+        )
+
     results: dict[str, dict[int, list[dict[str, float]]]] = {
         name: {seed: [] for seed in SEEDS} for name in model_factories
     }
@@ -111,6 +124,11 @@ def main() -> None:
         f"S1 FREQUENCY_COMPARE_ALPACA INPUT daily_bars={DAILY_LOOKBACK} intraday_bars={INTRADAY_LOOKBACK} "
         f"sessions={DAILY_LOOKBACK} intraday_per_session=2 rth_bar1=09:30-13:30 "
         f"rth_bar2=13:30-16:00 intraday_volume_window={INTRADAY_VOLUME_WINDOW}"
+    )
+    print(
+        "S1 FREQUENCY_COMPARE_ALPACA DILATION_CONTROL "
+        "kernels=5,10,20 dilation=2 effective_intraday_widths=9,19,39 "
+        "approx_session_widths=4.5,9.5,19.5 parameter_matched=true"
     )
     for name, factory in model_factories.items():
         print(f"S1 FREQUENCY_COMPARE_ALPACA MODEL name={name} params={count_parameters(factory())}")
