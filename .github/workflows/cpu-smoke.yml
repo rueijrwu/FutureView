@@ -45,3 +45,8 @@ jobs:
         env:
           CUDA_VISIBLE_DEVICES: ''
         run: futureview-training-smoke
+
+      - name: Run Strategy 1 Oracle smoke test
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: futureview-strategy1-smoke
