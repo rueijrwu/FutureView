@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ticker: [SPY, QQQ]
+        ticker: [SPY, QQQ, SMH]
     env:
       FUTUREVIEW_TICKER: ${{ matrix.ticker }}
 
