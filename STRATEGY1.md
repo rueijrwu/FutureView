@@ -231,3 +231,220 @@ The following are deliberately excluded until the basic Oracle-value hypothesis 
 - strategy-specific stop losses beyond MA exits
 
 Each future modification should be treated as a new strategy version so its effect can be measured rather than hidden inside the baseline.
+
+## 9. Current research status
+
+This section records experimental conclusions only. It does not change the frozen Strategy 1 mechanics above.
+
+### 9.1 Oracle horizon statistics
+
+On the current 3-year SPY sample, the mean Oracle Value increases with horizon because longer windows contain more opportunities to find and complete a legal Strategy 1 campaign:
+
+```text
+15D mean Oracle Value = 0.004218
+30D mean Oracle Value = 0.009038
+45D mean Oracle Value = 0.012736
+60D mean Oracle Value = 0.015308
+```
+
+The corresponding positive/traded frequencies are approximately:
+
+```text
+15D = 47.5%
+30D = 64.1%
+45D = 75.0%
+60D = 83.8%
+```
+
+This means the higher 60D Oracle Value should not be interpreted as higher daily capital efficiency.
+
+### 9.2 Exposure efficiency reverses the horizon ordering
+
+For traded Oracle campaigns only, mean return per capital-weighted exposure day is:
+
+```text
+15D = 0.002155  (0.2155% per exposure-day)
+30D = 0.001785  (0.1785% per exposure-day)
+45D = 0.001671  (0.1671% per exposure-day)
+60D = 0.001620  (0.1620% per exposure-day)
+```
+
+Thus:
+
+```text
+Exposure efficiency: 15D > 30D > 45D > 60D
+Opportunity frequency: 60D > 45D > 30D > 15D
+```
+
+The current interpretation is that longer horizons accumulate more total Oracle Value primarily because they provide more opportunity and more exposure time, not because each unit of market exposure is more productive.
+
+### 9.3 Training-history comparison
+
+Using CNN A with identical OOS dates, expanding history and recent sliding histories were compared.
+
+A single seed initially suggested horizon-dependent preferences, but the subsequent five-seed stability test materially changed the conclusion.
+
+The strongest reproducible configuration is currently:
+
+```text
+Target horizon = 30D
+Training history = Sliding-260
+Model = CNN A
+Target = raw Oracle Value
+```
+
+Across five fixed seeds, the 30D Sliding-260 configuration produced:
+
+```text
+mean fold Spearman = 0.233705
+Spearman std across seeds = 0.103928
+positive mean-Spearman seeds = 5/5
+mean top-20% Oracle lift = 0.004189
+positive top-20% lift seeds = 5/5
+```
+
+The earlier apparent 60D advantage did not survive seed testing. 15D, 45D, and 60D are therefore not treated as having established reproducible predictive signal at this stage.
+
+### 9.4 Raw Oracle Value remains the preferred learning target
+
+A direct head-to-head comparison used the same 30D Sliding-260 setup, same CNN A architecture, same OOS folds, and same five seeds for two targets:
+
+```text
+RAW_ORACLE = OracleValue
+EXPOSURE_EFFICIENCY = OracleValue / ExposureDays
+```
+
+Cross-seed results were:
+
+```text
+RAW_ORACLE:
+  mean Spearman = 0.233705
+  Spearman std = 0.103928
+  positive Spearman seeds = 5/5
+  raw Oracle top-20% lift = 0.004189
+  positive raw-lift seeds = 5/5
+  exposure-efficiency lift = 0.000192
+  positive efficiency-lift seeds = 5/5
+
+EXPOSURE_EFFICIENCY:
+  mean Spearman = 0.059946
+  Spearman std = 0.163474
+  positive Spearman seeds = 3/5
+  raw Oracle top-20% lift = 0.002534
+  positive raw-lift seeds = 4/5
+  exposure-efficiency lift = -0.000009
+  positive efficiency-lift seeds = 3/5
+```
+
+Therefore raw Oracle Value remains the primary training target. Exposure-adjusted return is retained as a secondary economic-efficiency evaluation metric rather than replacing the learning target.
+
+This conclusion is conditional on the current fixed optimization setup. The efficiency target is much smaller in scale, so the present experiment does not prove that exposure efficiency is intrinsically unpredictable; it only shows that it does not outperform raw Oracle Value under the frozen comparison.
+
+### 9.5 Low-dimensional causal baseline
+
+A fixed 20-dimensional causal summary ridge baseline was constructed from the same 50-session OHLCV input. For each of 5/10/20/50-session lookbacks it uses:
+
+```text
+close_sum
+close_std
+range_mean
+abs_close_mean
+volume_z_mean
+```
+
+The ridge uses training-fold-only standardization and fixed alpha = 0.01, with no OOS hyperparameter tuning.
+
+For 30D Sliding-260 raw Oracle Value:
+
+```text
+CNN A cross-seed mean Spearman = 0.233705
+CNN A cross-seed Spearman std = 0.103928
+CNN A positive mean-Spearman seeds = 5/5
+CNN A mean top-20% lift = 0.004189
+
+Summary Ridge mean Spearman = 0.020159
+Summary Ridge positive folds = 1/4
+Summary Ridge mean top-20% lift = 0.004975
+```
+
+Fold-level Spearman comparison:
+
+```text
+Fold 1: CNN mean +0.202796 vs Ridge -0.041317
+Fold 2: CNN mean +0.034425 vs Ridge -0.213299
+Fold 3: CNN mean +0.035332 vs Ridge -0.169144
+Fold 4: CNN mean +0.662265 vs Ridge +0.504396
+```
+
+The current conclusion is:
+
+- CNN A passes the low-dimensional baseline gate for **ranking stability**.
+- CNN A has not yet demonstrated a higher average top-quantile Oracle lift than Summary Ridge.
+- The CNN signal therefore appears to contain ranking information beyond these simple momentum/volatility/range/volume summaries, but the economic advantage of that ranking is not yet established.
+
+### 9.6 MAE is secondary
+
+The current experiment continues to show poor CNN point calibration despite useful ranking behavior:
+
+```text
+Constant mean MAE = 0.009914
+Summary Ridge mean MAE = 0.012723
+CNN A cross-seed mean MAE = 0.114506
+```
+
+For this phase, primary evidence is therefore:
+
+```text
+fold-wise Spearman / rank correlation
+cross-seed stability
+top-quantile realized Oracle Value separation
+exposure-adjusted economic efficiency
+```
+
+MAE is retained as a diagnostic but is not the primary model-selection criterion.
+
+### 9.7 Current research conclusion
+
+The strongest claim supported so far is:
+
+> Past 50-session causal OHLCV contains reproducible OOS ranking information for future 30-session Strategy 1 Oracle Value under a Sliding-260 training policy. CNN A ranks the target materially better than a fixed low-dimensional causal summary ridge baseline, but a superior realized portfolio P&L has not yet been demonstrated.
+
+The feasibility question is therefore not yet closed. The predictive-ranking gate has meaningful positive evidence, but the economic-value gate remains open.
+
+### 9.8 Next gate: causal OOS portfolio backtest
+
+The next experiment should stop evaluating only overlapping Oracle-label windows and convert the ranking signal into an actual causal trading decision process.
+
+The planned fixed comparison is:
+
+```text
+1. Strategy 1 always-on
+2. Summary-Ridge-filtered Strategy 1
+3. CNN-filtered Strategy 1
+4. Oracle-selection upper bound
+```
+
+The CNN path should use:
+
+```text
+30D raw Oracle Value
+Sliding-260 training
+CNN A
+five-seed ensemble or another predeclared aggregation rule
+```
+
+A live-like entry threshold must be derived only from the training window, for example a training-prediction percentile. It must not use an OOS fold's future predictions to define a retrospective top-20% cutoff.
+
+The backtest should report at least:
+
+```text
+cumulative return
+annualized return / CAGR
+maximum drawdown
+number of campaigns
+average campaign return
+market exposure
+return per exposure-day
+```
+
+Only this stage can answer whether the observed OOS ranking signal converts into superior realized portfolio economics.
