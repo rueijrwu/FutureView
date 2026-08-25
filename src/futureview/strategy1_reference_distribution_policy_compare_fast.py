@@ -8,13 +8,10 @@ from . import strategy1_reference_distribution_policy_compare as policy
 
 
 def main() -> None:
-    # The fast backend is installed at runtime by replacing base._simulate_cached.
-    # ProcessPoolExecutor child processes re-import modules and do not reliably
-    # inherit that monkeypatch, which can terminate workers abruptly. Keep this
-    # runner single-process while retaining the Numba-JIT hot simulation path.
-    # The fast simulator cache is bounded so policy sweeps cannot grow memory
-    # without limit across thousands of anchors and five policies.
+    # Runtime patching is kept single-process so every policy uses the Numba
+    # simulator and the exact same realized-path signature implementation.
     base._simulate_cached = fast._simulate_cached_fast
+    policy._simulate_policy_path = fast._simulate_cached_fast_path
     previous_workers = os.environ.get("FUTUREVIEW_WORKERS")
     os.environ["FUTUREVIEW_WORKERS"] = "1"
     try:
@@ -22,6 +19,7 @@ def main() -> None:
             "S1 POLICY_COMPARE FAST backend=numba_jit workers=1 "
             "reason=runtime_jit_patch_process_safe "
             f"cache_size={fast.FAST_SIM_CACHE_SIZE} "
+            "distribution_weighting=unique_realized_paths "
             "policies=max1,unrestricted,spacing10,spacing20,spacing30"
         )
         policy.main()
