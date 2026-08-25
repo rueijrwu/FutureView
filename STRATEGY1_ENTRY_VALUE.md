@@ -10,7 +10,7 @@ The model target is intentionally **not yet finalized**.
 
 ## Strategy 1 candidate sets used by Reference Distribution
 
-Reference Distribution is built from candidate sets first, then legal Strategy 1 combinations.
+Reference Distribution is built from candidate sets first, then legal Strategy 1 combinations. The current formal research policy is **max 2 additions with a realized-price Addon2 spacing tolerance of ±20%**.
 
 ### Entry Set
 
@@ -50,10 +50,28 @@ For each Entry candidate inside a fixed Reference Distribution window:
 4. allow every single-Local-Maximum addition-reference configuration,
 5. allow every two-Local-Maximum configuration whose trading-index distance is > 5,
 6. order a two-level configuration by recency: more recent reference first, older reference second,
-7. execute the resulting Addon1 / Addon2 crossings using the existing Strategy 1 transaction rules.
+7. execute Addon1 with the existing Strategy 1 breakout/cooldown mechanics,
+8. allow Addon2 only when its realized execution price satisfies the formal equal-price-step rule below.
 ```
 
-This makes Addition optional in the Reference Distribution combination universe without yet removing Addition from Strategy 1. It also makes it possible to compare later whether no-addition combinations preserve or improve the reference distribution.
+Formal Addon2 rule:
+
+```text
+first_gap  = Addon1Price - EntryPrice
+second_gap = Addon2Price - Addon1Price
+
+first_gap > 0
+second_gap > 0
+abs(second_gap / first_gap - 1) <= 0.20
+```
+
+Equivalent ratio form:
+
+```text
+0.8 <= (Addon2Price - Addon1Price) / (Addon1Price - EntryPrice) <= 1.2
+```
+
+This is the current formal Strategy 1 research policy. The earlier unrestricted Addon2 behavior remains available only for historical/policy-comparison work.
 
 ### Exit Set
 
@@ -82,7 +100,7 @@ Do not introduce additional conceptual objects until these four are clear.
 
 ### 1. Market Opportunity
 
-To be described using the Reference Bounds and the return distribution of all legal combinations inside a fixed future window. No additional market-opportunity indicator is currently defined.
+To be described using the Reference Bounds and the return distribution of formal legal realized paths inside a fixed future window. No additional market-opportunity indicator is currently defined.
 
 ### 2. Current Entry Quality
 
@@ -99,27 +117,46 @@ Entry Set     = every session satisfying the entry condition
 Local Max Set = confirmed Local Maximum candidates before each Entry
 Exit Set      = sessions satisfying the exit conditions
 Combination   = Entry × legal optional Addition-reference configuration,
+                with max 2 additions and formal Addon2 spacing ±20%,
                 executed with Strategy 1 exit/spacing mechanics
 ```
 
-Let every legal combination produce one realized Strategy 1 return.
+Different legal configurations can collapse to the same actual trading path. The formal Reference Distribution therefore weights **unique realized paths**, not raw configuration multiplicity.
+
+Realized-path key:
 
 ```text
-Lower Bound = minimum realized return over all legal combinations
-Upper Bound = maximum realized return over all legal combinations
+Entry
+actual Addon1 execution
+actual Addon2 execution
+Exit5 execution
+Exit10 execution
+Horizon exit
+```
+
+If multiple legal configurations produce the same realized-path key, that path is counted once in the distribution.
+
+Let every unique formal legal realized path produce one realized Strategy 1 return.
+
+```text
+Lower Bound = minimum realized return over all formal legal realized paths
+Upper Bound = maximum realized return over all formal legal realized paths
 Reference Bounds = [Lower Bound, Upper Bound]
 ```
 
 The earlier terminology `Baseline` / `Oracle` is no longer assumed to be the final representation of the bounds.
 
-Reference Distribution Data initially reports:
+Reference Distribution Data reports:
 
 ```text
 Entry candidate count
 Local Maximum candidate count
 Exit5 candidate count
 Exit10 candidate count
-Legal combination count
+Legal configuration count
+Unique realized-path count
+Dedup ratio
+Addon2 realized-path rate
 
 Return distribution:
 Lower Bound
@@ -160,7 +197,7 @@ Unknown. Do not force Rule Return, Upper Bound, Lower Bound, range, ratio, gap, 
 
 ## Reference Distribution Data
 
-The preferred name for the initial descriptive dataset is **Reference Distribution Data**, not `baseline data`, because it describes the distribution of legal Strategy 1 combinations rather than a baseline model.
+The preferred name for the initial descriptive dataset is **Reference Distribution Data**, not `baseline data`, because it describes the distribution of formal legal Strategy 1 realized paths rather than a baseline model.
 
 The future-window length is a research parameter. Current candidate windows are:
 
@@ -171,11 +208,11 @@ The future-window length is a research parameter. Current candidate windows are:
 90D
 ```
 
-The purpose is to see how the candidate sets, legal combinations, bounds, return distribution, and efficiency distribution behave as the window grows before choosing a window for Current Entry Quality modeling.
+The purpose is to see how the candidate sets, legal combinations, realized paths, bounds, return distribution, and efficiency distribution behave as the window grows before choosing a window for Current Entry Quality modeling.
 
 ## Compatibility guardrail
 
-Legacy Strategy 1 event-conditioned runners retain `entry1_event` and the default nearest-two-local-max execution behavior. The exhaustive candidate-set logic is added specifically for Reference Distribution so earlier evidence is not silently rewritten.
+Legacy Strategy 1 event-conditioned runners retain `entry1_event` and the default nearest-two-local-max execution behavior. Historical unrestricted Addon2/reference-distribution code remains available for reproducibility and policy comparison. The formal Reference Distribution CLI now uses max2 + Addon2 spacing ±20% with unique-realized-path weighting.
 
 ## Current data scope
 
@@ -187,8 +224,8 @@ Before returning to model training:
 
 ```text
 1. audit the expanded Entry / Local Maximum / Exit candidate sets,
-2. calculate legal-combination Reference Distribution Data,
-3. inspect how bounds and efficiency change as the window grows,
-4. compare future no-addition subsets against the full combination universe if needed,
+2. calculate formal max2 + spacing20 Reference Distribution Data,
+3. inspect how bounds, realized-path counts, and efficiency change as the window grows,
+4. use unique realized paths rather than raw configuration multiplicity for distribution statistics,
 5. only then define the mathematical model target.
 ```
