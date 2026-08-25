@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import os
+from concurrent.futures import ProcessPoolExecutor
+
 import numpy as np
+import pandas as pd
 
 from .data import download_spy_daily, validate_daily_ohlcv
 from .strategy1 import LOCAL_MAX_MIN_GAP, _simulate_from_start, add_strategy1_events
 
 DATA_PERIOD = "5y"
 WINDOWS = (30, 45, 60, 90)
+_WORKER_EVENTS: pd.DataFrame | None = None
 
 
 def _window_local_maxima(events, start: int, entry: int) -> tuple[int, ...]:
@@ -28,12 +33,9 @@ def _addon_reference_sets(events, start: int, entry: int) -> tuple[tuple[tuple[i
     levels = [(i, float(events.at[i, "close"])) for i in maxima]
     configs: list[tuple[tuple[int, float], ...]] = [()]
 
-    # Optional one-addon paths.
     for level in levels:
         configs.append((level,))
 
-    # Two-addon paths: first reference is the more recent local maximum; the
-    # second is an earlier local maximum more than LOCAL_MAX_MIN_GAP sessions away.
     for recent_pos in range(len(levels) - 1, -1, -1):
         recent = levels[recent_pos]
         for older_pos in range(recent_pos - 1, -1, -1):
@@ -111,16 +113,67 @@ def _stats(values: np.ndarray) -> dict[str, float]:
     }
 
 
+def _summarize_window(events, start: int, w: int) -> dict[str, object]:
+    end = start + w - 1
+    outcomes = _entry_set_outcomes(events, start, end)
+    returns = outcomes["returns"]
+    efficiencies = outcomes["efficiencies"]
+    exposure_days = outcomes["exposure_days"]
+    assert isinstance(returns, np.ndarray)
+    assert isinstance(efficiencies, np.ndarray)
+    assert isinstance(exposure_days, np.ndarray)
+
+    return_stats = _stats(returns)
+    efficiency_stats = _stats(efficiencies)
+    total_exposure = float(exposure_days.sum())
+    aggregate_efficiency = float(returns.sum() / total_exposure) if total_exposure > 0.0 else 0.0
+    return {
+        "return": return_stats,
+        "efficiency": efficiency_stats,
+        "aggregate_efficiency": aggregate_efficiency,
+        "total_exposure_days": total_exposure,
+        "entry_count": float(outcomes["entry_count"]),
+        "local_max_candidates": float(outcomes["local_max_candidates"]),
+        "exit5_candidates": float(outcomes["exit5_candidates"]),
+        "exit10_candidates": float(outcomes["exit10_candidates"]),
+        "legal_combinations": float(outcomes["legal_combinations"]),
+    }
+
+
+def _init_worker(events: pd.DataFrame) -> None:
+    global _WORKER_EVENTS
+    _WORKER_EVENTS = events
+
+
+def _worker_task(task: tuple[int, int]) -> tuple[int, int, dict[str, object]]:
+    if _WORKER_EVENTS is None:
+        raise RuntimeError("reference-distribution worker was not initialized")
+    start, w = task
+    return start, w, _summarize_window(_WORKER_EVENTS, start, w)
+
+
+def _worker_count() -> int:
+    override = os.environ.get("FUTUREVIEW_WORKERS")
+    if override is not None:
+        workers = int(override)
+        if workers < 1:
+            raise ValueError("FUTUREVIEW_WORKERS must be >= 1")
+        return workers
+    return max(1, os.cpu_count() or 1)
+
+
 def main() -> None:
     df = download_spy_daily(period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
     events = add_strategy1_events(df).reset_index(drop=True)
     max_window = max(WINDOWS)
+    workers = _worker_count()
+    anchor_count = len(events) - max_window + 1
 
     print(
         "S1 REFERENCE_DISTRIBUTION DATA "
         f"period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
-        f"windows={','.join(str(w) for w in WINDOWS)} model=false target=false"
+        f"windows={','.join(str(w) for w in WINDOWS)} model=false target=false workers={workers}"
     )
     print(
         "S1 REFERENCE_DISTRIBUTION RULE "
@@ -136,37 +189,21 @@ def main() -> None:
     )
 
     aggregate: dict[int, list[dict[str, object]]] = {w: [] for w in WINDOWS}
+    tasks = [(start, w) for start in range(anchor_count) for w in WINDOWS]
 
-    # Same anchor dates across all windows for direct comparison.
-    for start in range(0, len(events) - max_window + 1):
-        for w in WINDOWS:
-            end = start + w - 1
-            outcomes = _entry_set_outcomes(events, start, end)
-            returns = outcomes["returns"]
-            efficiencies = outcomes["efficiencies"]
-            exposure_days = outcomes["exposure_days"]
-            assert isinstance(returns, np.ndarray)
-            assert isinstance(efficiencies, np.ndarray)
-            assert isinstance(exposure_days, np.ndarray)
-            return_stats = _stats(returns)
-            efficiency_stats = _stats(efficiencies)
-            total_exposure = float(exposure_days.sum())
-            aggregate_efficiency = (
-                float(returns.sum() / total_exposure) if total_exposure > 0.0 else 0.0
-            )
-            aggregate[w].append(
-                {
-                    "return": return_stats,
-                    "efficiency": efficiency_stats,
-                    "aggregate_efficiency": aggregate_efficiency,
-                    "total_exposure_days": total_exposure,
-                    "entry_count": float(outcomes["entry_count"]),
-                    "local_max_candidates": float(outcomes["local_max_candidates"]),
-                    "exit5_candidates": float(outcomes["exit5_candidates"]),
-                    "exit10_candidates": float(outcomes["exit10_candidates"]),
-                    "legal_combinations": float(outcomes["legal_combinations"]),
-                }
-            )
+    if workers == 1:
+        results = ((start, w, _summarize_window(events, start, w)) for start, w in tasks)
+        for _, w, row in results:
+            aggregate[w].append(row)
+    else:
+        chunksize = max(1, len(tasks) // (workers * 8))
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_init_worker,
+            initargs=(events,),
+        ) as pool:
+            for _, w, row in pool.map(_worker_task, tasks, chunksize=chunksize):
+                aggregate[w].append(row)
 
     for w in WINDOWS:
         rows = aggregate[w]
