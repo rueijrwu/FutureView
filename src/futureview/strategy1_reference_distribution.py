@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from concurrent.futures import ProcessPoolExecutor
+from functools import lru_cache
 
 import numpy as np
 import pandas as pd
@@ -11,30 +12,81 @@ from .strategy1 import LOCAL_MAX_MIN_GAP, _simulate_from_start, add_strategy1_ev
 
 DATA_PERIOD = "5y"
 WINDOWS = (30, 45, 60, 90)
+
 _WORKER_EVENTS: pd.DataFrame | None = None
+_CLOSE: np.ndarray | None = None
+_ENTRY_INDICES: np.ndarray | None = None
+_LOCAL_MAX_INDICES: np.ndarray | None = None
+_EXIT5_PREFIX: np.ndarray | None = None
+_EXIT10_PREFIX: np.ndarray | None = None
 
 
-def _window_local_maxima(events, start: int, entry: int) -> tuple[int, ...]:
-    """Confirmed local maxima inside the fixed window and strictly before entry."""
+def _prepare_worker_state(events: pd.DataFrame) -> None:
+    """Precompute immutable candidate arrays once per process."""
+    global _WORKER_EVENTS, _CLOSE, _ENTRY_INDICES, _LOCAL_MAX_INDICES
+    global _EXIT5_PREFIX, _EXIT10_PREFIX
+
+    _WORKER_EVENTS = events
+    _CLOSE = events["close"].to_numpy(dtype=float)
+    _ENTRY_INDICES = np.flatnonzero(events["entry_candidate"].to_numpy(dtype=bool))
+
+    close = _CLOSE
+    if len(close) >= 3:
+        local_mask = (close[1:-1] > close[:-2]) & (close[1:-1] >= close[2:])
+        _LOCAL_MAX_INDICES = np.flatnonzero(local_mask) + 1
+    else:
+        _LOCAL_MAX_INDICES = np.empty(0, dtype=int)
+
+    exit5 = events["exit5_candidate"].to_numpy(dtype=np.int64)
+    exit10 = events["exit10_candidate"].to_numpy(dtype=np.int64)
+    _EXIT5_PREFIX = np.concatenate(([0], np.cumsum(exit5, dtype=np.int64)))
+    _EXIT10_PREFIX = np.concatenate(([0], np.cumsum(exit10, dtype=np.int64)))
+    _simulate_cached.cache_clear()
+
+
+def _require_state() -> tuple[pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if (
+        _WORKER_EVENTS is None
+        or _CLOSE is None
+        or _ENTRY_INDICES is None
+        or _LOCAL_MAX_INDICES is None
+        or _EXIT5_PREFIX is None
+        or _EXIT10_PREFIX is None
+    ):
+        raise RuntimeError("reference-distribution worker state was not initialized")
+    return (
+        _WORKER_EVENTS,
+        _CLOSE,
+        _ENTRY_INDICES,
+        _LOCAL_MAX_INDICES,
+        _EXIT5_PREFIX,
+        _EXIT10_PREFIX,
+    )
+
+
+def _slice_indices(indices: np.ndarray, lower: int, upper_inclusive: int) -> np.ndarray:
+    """Sorted index slice without rescanning the source series."""
+    left = int(np.searchsorted(indices, lower, side="left"))
+    right = int(np.searchsorted(indices, upper_inclusive, side="right"))
+    return indices[left:right]
+
+
+def _window_local_maxima(start: int, entry: int) -> tuple[int, ...]:
+    """Precomputed confirmed local maxima inside window and before entry."""
+    _, _, _, maxima, _, _ = _require_state()
     if entry - start < 2:
         return ()
-    close = events["close"].to_numpy(dtype=float)
-    maxima: list[int] = []
-    first = max(start + 1, 1)
-    for i in range(first, entry):
-        if close[i] > close[i - 1] and close[i] >= close[i + 1]:
-            maxima.append(i)
-    return tuple(maxima)
+    subset = _slice_indices(maxima, max(start + 1, 1), entry - 1)
+    return tuple(int(i) for i in subset)
 
 
-def _addon_reference_sets(events, start: int, entry: int) -> tuple[tuple[tuple[int, float], ...], ...]:
+def _addon_reference_sets(start: int, entry: int) -> tuple[tuple[tuple[int, float], ...], ...]:
     """All zero/one/two-addon reference configurations legal at this entry."""
-    maxima = _window_local_maxima(events, start, entry)
-    levels = [(i, float(events.at[i, "close"])) for i in maxima]
+    _, close, _, _, _, _ = _require_state()
+    maxima = _window_local_maxima(start, entry)
+    levels = tuple((i, float(close[i])) for i in maxima)
     configs: list[tuple[tuple[int, float], ...]] = [()]
-
-    for level in levels:
-        configs.append((level,))
+    configs.extend((level,) for level in levels)
 
     for recent_pos in range(len(levels) - 1, -1, -1):
         recent = levels[recent_pos]
@@ -46,41 +98,21 @@ def _addon_reference_sets(events, start: int, entry: int) -> tuple[tuple[tuple[i
     return tuple(configs)
 
 
-def _entry_set_outcomes(events, start: int, end: int) -> dict[str, object]:
-    returns: list[float] = []
-    efficiencies: list[float] = []
-    exposure_days: list[float] = []
-    entry_count = 0
-    local_max_candidate_count = 0
-    legal_combinations = 0
+@lru_cache(maxsize=None)
+def _simulate_cached(
+    entry: int,
+    end: int,
+    addon_level_indices: tuple[int, ...],
+) -> tuple[float, float, float]:
+    """Memoize identical Strategy 1 paths encountered across overlapping anchors."""
+    events, close, _, _, _, _ = _require_state()
+    addon_levels = tuple((i, float(close[i])) for i in addon_level_indices)
+    run = _simulate_from_start(events, entry, end, addon_levels=addon_levels)
+    return float(run.final_return), float(run.return_per_exposure_day), float(run.exposure_days)
 
-    for i in range(start, end + 1):
-        if not bool(events.at[i, "entry_candidate"]):
-            continue
-        entry_count += 1
-        maxima = _window_local_maxima(events, start, i)
-        local_max_candidate_count += len(maxima)
-        configs = _addon_reference_sets(events, start, i)
-        legal_combinations += len(configs)
 
-        for addon_levels in configs:
-            run = _simulate_from_start(events, i, end, addon_levels=addon_levels)
-            returns.append(float(run.final_return))
-            efficiencies.append(float(run.return_per_exposure_day))
-            exposure_days.append(float(run.exposure_days))
-
-    exit5_candidates = int(events.loc[start:end, "exit5_candidate"].sum())
-    exit10_candidates = int(events.loc[start:end, "exit10_candidate"].sum())
-    return {
-        "returns": np.asarray(returns, dtype=float),
-        "efficiencies": np.asarray(efficiencies, dtype=float),
-        "exposure_days": np.asarray(exposure_days, dtype=float),
-        "entry_count": entry_count,
-        "local_max_candidates": local_max_candidate_count,
-        "exit5_candidates": exit5_candidates,
-        "exit10_candidates": exit10_candidates,
-        "legal_combinations": legal_combinations,
-    }
+def _candidate_count(prefix: np.ndarray, start: int, end: int) -> int:
+    return int(prefix[end + 1] - prefix[start])
 
 
 def _stats(values: np.ndarray) -> dict[str, float]:
@@ -113,43 +145,89 @@ def _stats(values: np.ndarray) -> dict[str, float]:
     }
 
 
-def _summarize_window(events, start: int, w: int) -> dict[str, object]:
-    end = start + w - 1
-    outcomes = _entry_set_outcomes(events, start, end)
-    returns = outcomes["returns"]
-    efficiencies = outcomes["efficiencies"]
-    exposure_days = outcomes["exposure_days"]
-    assert isinstance(returns, np.ndarray)
-    assert isinstance(efficiencies, np.ndarray)
-    assert isinstance(exposure_days, np.ndarray)
+def _summarize_window(
+    start: int,
+    end: int,
+    entries: np.ndarray,
+    config_cache: dict[int, tuple[tuple[tuple[int, float], ...], ...]],
+    local_max_count_cache: dict[int, int],
+) -> dict[str, object]:
+    _, _, _, _, exit5_prefix, exit10_prefix = _require_state()
 
-    return_stats = _stats(returns)
-    efficiency_stats = _stats(efficiencies)
-    total_exposure = float(exposure_days.sum())
-    aggregate_efficiency = float(returns.sum() / total_exposure) if total_exposure > 0.0 else 0.0
+    returns: list[float] = []
+    efficiencies: list[float] = []
+    exposure_days: list[float] = []
+    legal_combinations = 0
+    local_max_candidate_count = 0
+
+    for raw_entry in entries:
+        entry = int(raw_entry)
+        configs = config_cache[entry]
+        local_max_candidate_count += local_max_count_cache[entry]
+        legal_combinations += len(configs)
+        for addon_levels in configs:
+            level_indices = tuple(level[0] for level in addon_levels)
+            ret, efficiency, exposure = _simulate_cached(entry, end, level_indices)
+            returns.append(ret)
+            efficiencies.append(efficiency)
+            exposure_days.append(exposure)
+
+    returns_a = np.asarray(returns, dtype=float)
+    efficiencies_a = np.asarray(efficiencies, dtype=float)
+    exposure_a = np.asarray(exposure_days, dtype=float)
+    return_stats = _stats(returns_a)
+    efficiency_stats = _stats(efficiencies_a)
+    total_exposure = float(exposure_a.sum())
+    aggregate_efficiency = float(returns_a.sum() / total_exposure) if total_exposure > 0.0 else 0.0
+
     return {
         "return": return_stats,
         "efficiency": efficiency_stats,
         "aggregate_efficiency": aggregate_efficiency,
         "total_exposure_days": total_exposure,
-        "entry_count": float(outcomes["entry_count"]),
-        "local_max_candidates": float(outcomes["local_max_candidates"]),
-        "exit5_candidates": float(outcomes["exit5_candidates"]),
-        "exit10_candidates": float(outcomes["exit10_candidates"]),
-        "legal_combinations": float(outcomes["legal_combinations"]),
+        "entry_count": float(len(entries)),
+        "local_max_candidates": float(local_max_candidate_count),
+        "exit5_candidates": float(_candidate_count(exit5_prefix, start, end)),
+        "exit10_candidates": float(_candidate_count(exit10_prefix, start, end)),
+        "legal_combinations": float(legal_combinations),
     }
 
 
+def _summarize_anchor(start: int) -> tuple[int, dict[int, dict[str, object]]]:
+    """Compute all windows for one anchor while reusing candidate/config scans."""
+    _, _, entry_indices, _, _, _ = _require_state()
+    max_end = start + max(WINDOWS) - 1
+    all_entries = _slice_indices(entry_indices, start, max_end)
+
+    config_cache: dict[int, tuple[tuple[tuple[int, float], ...], ...]] = {}
+    local_max_count_cache: dict[int, int] = {}
+    for raw_entry in all_entries:
+        entry = int(raw_entry)
+        maxima = _window_local_maxima(start, entry)
+        local_max_count_cache[entry] = len(maxima)
+        config_cache[entry] = _addon_reference_sets(start, entry)
+
+    rows: dict[int, dict[str, object]] = {}
+    for w in WINDOWS:
+        end = start + w - 1
+        right = int(np.searchsorted(all_entries, end, side="right"))
+        entries = all_entries[:right]
+        rows[w] = _summarize_window(
+            start,
+            end,
+            entries,
+            config_cache,
+            local_max_count_cache,
+        )
+    return start, rows
+
+
 def _init_worker(events: pd.DataFrame) -> None:
-    global _WORKER_EVENTS
-    _WORKER_EVENTS = events
+    _prepare_worker_state(events)
 
 
-def _worker_task(task: tuple[int, int]) -> tuple[int, int, dict[str, object]]:
-    if _WORKER_EVENTS is None:
-        raise RuntimeError("reference-distribution worker was not initialized")
-    start, w = task
-    return start, w, _summarize_window(_WORKER_EVENTS, start, w)
+def _worker_task(start: int) -> tuple[int, dict[int, dict[str, object]]]:
+    return _summarize_anchor(start)
 
 
 def _worker_count() -> int:
@@ -173,7 +251,8 @@ def main() -> None:
     print(
         "S1 REFERENCE_DISTRIBUTION DATA "
         f"period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
-        f"windows={','.join(str(w) for w in WINDOWS)} model=false target=false workers={workers}"
+        f"windows={','.join(str(w) for w in WINDOWS)} model=false target=false workers={workers} "
+        "precompute=true cache_simulations=true anchor_task=true"
     )
     print(
         "S1 REFERENCE_DISTRIBUTION RULE "
@@ -189,21 +268,24 @@ def main() -> None:
     )
 
     aggregate: dict[int, list[dict[str, object]]] = {w: [] for w in WINDOWS}
-    tasks = [(start, w) for start in range(anchor_count) for w in WINDOWS]
+    starts = list(range(anchor_count))
 
     if workers == 1:
-        results = ((start, w, _summarize_window(events, start, w)) for start, w in tasks)
-        for _, w, row in results:
-            aggregate[w].append(row)
+        _prepare_worker_state(events)
+        results = map(_worker_task, starts)
+        for _, rows_by_window in results:
+            for w in WINDOWS:
+                aggregate[w].append(rows_by_window[w])
     else:
-        chunksize = max(1, len(tasks) // (workers * 8))
+        chunksize = max(1, len(starts) // (workers * 8))
         with ProcessPoolExecutor(
             max_workers=workers,
             initializer=_init_worker,
             initargs=(events,),
         ) as pool:
-            for _, w, row in pool.map(_worker_task, tasks, chunksize=chunksize):
-                aggregate[w].append(row)
+            for _, rows_by_window in pool.map(_worker_task, starts, chunksize=chunksize):
+                for w in WINDOWS:
+                    aggregate[w].append(rows_by_window[w])
 
     for w in WINDOWS:
         rows = aggregate[w]
