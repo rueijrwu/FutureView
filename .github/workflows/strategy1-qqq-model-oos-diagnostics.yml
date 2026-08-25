@@ -1,4 +1,4 @@
-name: Strategy 1 QQQ Model OOS Diagnostics
+name: Strategy 1 QQQ Q Calibration Diagnostics
 
 on:
   push:
@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  qqq-model-oos-diagnostics:
+  qqq-q-calibration-diagnostics:
     runs-on: ubuntu-24.04
     env:
       FUTUREVIEW_TICKER: QQQ
@@ -40,37 +40,39 @@ jobs:
           python -m pip install "torch>=2.4" "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
           python -m pip install -e . --no-deps
 
-      - name: Diagnose QQQ model score quality
+      - name: Diagnose QQQ Entry Path Profitability Rate calibration
         run: |
           set -o pipefail
-          futureview-strategy1-success-model-oos-diagnostics 2>&1 | tee strategy1-qqq-model-oos-diagnostics.log
+          futureview-strategy1-success-model-oos-diagnostics 2>&1 | tee strategy1-qqq-q-calibration.log
 
       - name: Write results to job summary
         if: always()
         run: |
           {
-            echo '## Strategy 1 QQQ Model OOS Diagnostics'
+            echo '## Strategy 1 QQQ Q Calibration Diagnostics'
             echo
             echo 'Branch: `cnn-trend-reset`'
             echo 'Ticker: `QQQ`'
-            echo 'Purpose: `model score quality, not trade frequency`'
+            echo 'Primary target: `Q(e) = Entry Path Profitability Rate`'
+            echo 'Purpose: `OOS probability estimation / calibration`'
             echo 'Selection threshold: `none`'
-            echo 'Diagnostic: `within-fold score quintiles`'
+            echo 'Trade gate: `none`'
+            echo 'Probability bins: `fixed 0.20 width`'
             echo
-            if [[ -f strategy1-qqq-model-oos-diagnostics.log ]]; then
+            if [[ -f strategy1-qqq-q-calibration.log ]]; then
               echo '```text'
-              grep -E '^S1 MODEL_DIAGNOSTICS (DATA|RULE|FOLD|BUCKET|POOLED_BUCKET|SUMMARY|PASS)' strategy1-qqq-model-oos-diagnostics.log || true
+              grep -E '^S1 Q_DIAGNOSTICS (DATA|RULE|FOLD|BIN|POOLED_BIN|SUMMARY|PASS)' strategy1-qqq-q-calibration.log || true
               echo '```'
             else
-              echo 'No model diagnostics log was produced.'
+              echo 'No Q calibration diagnostics log was produced.'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload model diagnostics log
+      - name: Upload Q calibration diagnostics log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: strategy1-qqq-model-oos-diagnostics-${{ github.run_number }}
-          path: strategy1-qqq-model-oos-diagnostics.log
+          name: strategy1-qqq-q-calibration-${{ github.run_number }}
+          path: strategy1-qqq-q-calibration.log
           if-no-files-found: warn
           retention-days: 30
