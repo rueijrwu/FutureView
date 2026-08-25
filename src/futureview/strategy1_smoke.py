@@ -3,7 +3,12 @@ from __future__ import annotations
 import numpy as np
 
 from .data import download_spy_daily, validate_daily_ohlcv
-from .strategy1 import STRATEGY1_HORIZONS, add_strategy1_events, make_strategy1_oracle_labels
+from .strategy1 import (
+    STRATEGY1_HORIZONS,
+    add_strategy1_events,
+    make_strategy1_oracle_labels,
+    oracle_value_for_window,
+)
 
 
 def _group_stats(values: np.ndarray, mask: np.ndarray) -> tuple[int, float, float, float, float]:
@@ -19,10 +24,53 @@ def _group_stats(values: np.ndarray, mask: np.ndarray) -> tuple[int, float, floa
     )
 
 
+def _print_oracle_case(events, t: int, horizon: int, bucket: str) -> None:
+    run = oracle_value_for_window(events, t, t + horizon)
+    window_date = events.at[t, "date"].date()
+    end_date = events.at[t + horizon, "date"].date()
+    print(
+        f"STRATEGY1 CASE {bucket} {horizon}D "
+        f"window_start={window_date} window_end={end_date} "
+        f"value={run.final_return:.6f} entries={run.entries_used}"
+    )
+    if not run.actions:
+        print("STRATEGY1 CASE_ACTION no_trade")
+        return
+    for action in run.actions:
+        date = events.at[action.index, "date"].date()
+        print(
+            f"STRATEGY1 CASE_ACTION date={date} action={action.action} "
+            f"price={action.price:.4f} fraction={action.fraction:.3f}"
+        )
+
+
+def _print_representative_60d_cases(events, labels) -> None:
+    horizon = 60
+    values = labels[f"oracle_value_{horizon}"].to_numpy(dtype=float)
+    traded = values > 0.0
+    traded_indices = np.flatnonzero(traded)
+
+    if len(traded_indices) < 6:
+        raise RuntimeError("Not enough traded 60D cases for representative audit")
+
+    high_indices = traded_indices[np.argsort(values[traded_indices])[-3:]][::-1]
+    traded_median = float(np.median(values[traded_indices]))
+    middle_indices = traded_indices[np.argsort(np.abs(values[traded_indices] - traded_median))[:3]]
+    no_trade_indices = np.flatnonzero(~traded)[:3]
+
+    print(f"STRATEGY1 REPRESENTATIVE_60D traded_median={traded_median:.6f}")
+    for i in high_indices:
+        _print_oracle_case(events, int(i), horizon, "HIGH")
+    for i in middle_indices:
+        _print_oracle_case(events, int(i), horizon, "MID")
+    for i in no_trade_indices:
+        _print_oracle_case(events, int(i), horizon, "NO_TRADE")
+
+
 def main() -> None:
     df = download_spy_daily(period="3y")
     audit = validate_daily_ohlcv(df)
-    events = add_strategy1_events(df)
+    events = add_strategy1_events(df).reset_index(drop=True)
     labels = make_strategy1_oracle_labels(df)
 
     if labels.empty:
@@ -94,6 +142,7 @@ def main() -> None:
                 f"mean={mean:.6f} median={median:.6f} p90={p90:.6f} max={max_value:.6f}"
             )
 
+    _print_representative_60d_cases(events, labels)
     print("STRATEGY1 ORACLE SMOKE PASS")
 
 
