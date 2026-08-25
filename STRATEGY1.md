@@ -168,7 +168,39 @@ max(0, best final capital return among all legal first-entry candidates)
 
 The zero option represents choosing not to trade.
 
-## 6. Phase-1 learning target
+## 6. Exposure-adjusted Oracle efficiency
+
+Oracle Value remains the optimization criterion and learning target. Exposure-adjusted metrics are diagnostic measures for comparing how efficiently the selected Oracle campaign uses market exposure across different horizons.
+
+All actions execute at the daily close. Exposure is therefore measured close-to-close: after actions at close `i`, the remaining position is the exposure carried into the interval ending at close `i+1`.
+
+Define the position fraction relative to initial capital after close `i` as `w_i`. Entry weights add 1/3 each. An MA5 half exit halves the current exposure fraction. A full exit sets it to zero.
+
+Capital-weighted exposure days are:
+
+```text
+ExposureDays = sum(w_i over close-to-close intervals with an open position)
+```
+
+For example, if a campaign carries 1/3 exposure for 3 intervals, 2/3 for 4 intervals, and full exposure for 5 intervals:
+
+```text
+ExposureDays = 3*(1/3) + 4*(2/3) + 5*1 = 8.6667
+```
+
+Holding days are the number of close-to-close intervals with any positive position, regardless of position size.
+
+The exposure-adjusted Oracle efficiency is:
+
+```text
+OracleReturnPerExposureDay = OracleValue / ExposureDays
+```
+
+For no-trade cases, `ExposureDays`, `HoldingDays`, and `OracleReturnPerExposureDay` are all zero.
+
+Important: the Oracle does **not** maximize `OracleReturnPerExposureDay`. It still selects the legal campaign with the highest Oracle Value. The efficiency metric is calculated only after that campaign has been selected.
+
+## 7. Phase-1 learning target
 
 For each prediction date, create:
 
@@ -183,7 +215,7 @@ The next research question is whether causal OHLCV history can predict these val
 
 The old return/MAE/efficiency TrendScore remains only a legacy pipeline smoke target and is not the final Strategy 1 research label.
 
-## 7. Explicit v0 simplifications
+## 8. Explicit v0 simplifications
 
 The following are deliberately excluded until the basic Oracle-value hypothesis is tested:
 
