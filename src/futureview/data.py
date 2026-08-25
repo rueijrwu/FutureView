@@ -26,12 +26,16 @@ def _flatten_single_ticker_columns(frame: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-def download_spy_daily(period: str = "3y", attempts: int = 3) -> pd.DataFrame:
+def download_ticker_daily(symbol: str, period: str = "3y", attempts: int = 3) -> pd.DataFrame:
+    ticker = symbol.strip().upper()
+    if not ticker:
+        raise ValueError("symbol must be non-empty")
+
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
             frame = yf.download(
-                "SPY",
+                ticker,
                 period=period,
                 interval="1d",
                 auto_adjust=False,
@@ -42,12 +46,18 @@ def download_spy_daily(period: str = "3y", attempts: int = 3) -> pd.DataFrame:
             )
             if frame is not None and not frame.empty:
                 return canonicalize_ohlcv(frame)
-            last_error = RuntimeError("Yahoo Finance returned an empty SPY frame")
+            last_error = RuntimeError(f"Yahoo Finance returned an empty {ticker} frame")
         except Exception as exc:  # network/provider errors are retried, then surfaced
             last_error = exc
         if attempt < attempts:
             time.sleep(float(attempt))
-    raise RuntimeError(f"Failed to download SPY daily data after {attempts} attempts") from last_error
+    raise RuntimeError(
+        f"Failed to download {ticker} daily data after {attempts} attempts"
+    ) from last_error
+
+
+def download_spy_daily(period: str = "3y", attempts: int = 3) -> pd.DataFrame:
+    return download_ticker_daily("SPY", period=period, attempts=attempts)
 
 
 def canonicalize_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
@@ -80,7 +90,7 @@ def validate_daily_ohlcv(frame: pd.DataFrame, minimum_rows: int = 650) -> DataAu
     if list(frame.columns) != CANONICAL_COLUMNS:
         raise ValueError(f"Unexpected canonical columns: {list(frame.columns)}")
     if len(frame) < minimum_rows:
-        raise ValueError(f"Too few rows for ~3Y SPY daily data: {len(frame)} < {minimum_rows}")
+        raise ValueError(f"Too few rows for daily data: {len(frame)} < {minimum_rows}")
     if not frame["date"].is_monotonic_increasing:
         raise ValueError("Dates are not strictly chronological")
 
