@@ -30,23 +30,20 @@ def _simulate_numeric(
     addon_count: int,
     addon_level_1: float,
     addon_level_2: float,
-) -> tuple[float, float, float]:
-    """Numeric equivalent of Strategy 1's deterministic campaign simulation."""
+) -> tuple[float, float, float, int]:
     cash = 1.0
     shares = 0.0
     exposure_fraction = 0.0
     exposure_days = 0.0
-    entries_used = 0
+    entries_used = 1
     partial_exit_used = False
     last_entry_index = start
     last_partial_exit_index = -1
 
-    # Entry1: fixed one-third capital tranche.
     amount = 1.0 / 3.0
     shares += amount / close[start]
     cash -= amount
     exposure_fraction += amount
-    entries_used = 1
 
     for i in range(start + 1, end + 1):
         if exposure_fraction > 1e-12:
@@ -88,7 +85,8 @@ def _simulate_numeric(
 
     final_return = cash - 1.0
     efficiency = final_return / exposure_days if exposure_days > 0.0 else 0.0
-    return final_return, efficiency, exposure_days
+    executed_addons = entries_used - 1
+    return final_return, efficiency, exposure_days, executed_addons
 
 
 def _fast_event_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -107,14 +105,14 @@ def _simulate_cached_fast(
     entry: int,
     end: int,
     addon_level_indices: tuple[int, ...],
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, int]:
     close, exit5_event, exit10_event = _fast_event_arrays()
     count = len(addon_level_indices)
     if count > 2:
         raise ValueError("Strategy 1 supports at most two addon levels")
     level1 = float(close[addon_level_indices[0]]) if count >= 1 else 0.0
     level2 = float(close[addon_level_indices[1]]) if count >= 2 else 0.0
-    ret, efficiency, exposure = _simulate_numeric(
+    ret, efficiency, exposure, executed_addons = _simulate_numeric(
         close,
         exit5_event,
         exit10_event,
@@ -124,15 +122,12 @@ def _simulate_cached_fast(
         level1,
         level2,
     )
-    return float(ret), float(efficiency), float(exposure)
+    return float(ret), float(efficiency), float(exposure), int(executed_addons)
 
 
 def main() -> None:
-    # Patch only the hot simulation function. Candidate generation, bounds,
-    # statistics, multiprocessing, and printed research definitions remain the
-    # same as the audited reference-distribution runner.
     base._simulate_cached = _simulate_cached_fast
-    print("S1 REFERENCE_DISTRIBUTION FAST backend=numba_jit semantics=unchanged")
+    print("S1 REFERENCE_DISTRIBUTION FAST backend=numba_jit semantics=unchanged addon_groups=executed")
     base.main()
 
 
