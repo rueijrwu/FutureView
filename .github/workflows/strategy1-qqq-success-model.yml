@@ -1,0 +1,80 @@
+name: Strategy 1 QQQ Success Model
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cnn-trend-reset
+    paths:
+      - 'src/futureview/strategy1_success_training.py'
+      - 'src/futureview/strategy1.py'
+      - 'src/futureview/strategy1_reference_distribution.py'
+      - 'src/futureview/strategy1_reference_distribution_fast.py'
+      - 'src/futureview/features.py'
+      - 'src/futureview/models.py'
+      - 'src/futureview/data.py'
+      - 'pyproject.toml'
+      - '.github/workflows/strategy1-qqq-success-model.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  qqq-success-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FUTUREVIEW_TICKER: QQQ
+
+    steps:
+      - name: Checkout cnn-trend-reset
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "torch>=2.4" "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
+          python -m pip install -e . --no-deps
+
+      - name: Train QQQ Entry Success Probability model
+        shell: bash
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: |
+          set -o pipefail
+          futureview-strategy1-success-model 2>&1 | tee strategy1-qqq-success-model.log
+
+      - name: Write model results to job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Strategy 1 QQQ Entry Success Model'
+            echo
+            echo 'Branch: `cnn-trend-reset`'
+            echo 'Ticker: `QQQ`'
+            echo 'Target: `EntrySuccessProbability`'
+            echo
+            if [[ -f strategy1-qqq-success-model.log ]]; then
+              echo '```text'
+              grep -E '^S1 SUCCESS_MODEL (DATA|TARGET|RULE|MODEL|BASELINE|SUMMARY|PASS)' strategy1-qqq-success-model.log || true
+              echo '```'
+            else
+              echo 'No training log was produced.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload training log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-qqq-success-model-${{ github.run_number }}
+          path: strategy1-qqq-success-model.log
+          if-no-files-found: warn
+          retention-days: 30
