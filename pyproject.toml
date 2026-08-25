@@ -40,6 +40,7 @@ futureview-strategy1-reference-distribution-fast = "futureview.strategy1_referen
 futureview-strategy1-fixed-entry-compare = "futureview.strategy1_fixed_entry_compare:main"
 futureview-strategy1-success-model = "futureview.strategy1_success_training:main"
 futureview-strategy1-success-threshold = "futureview.strategy1_success_threshold:main"
+futureview-strategy1-success-entry-window = "futureview.strategy1_success_entry_window:main"
 futureview-strategy1-oos-portfolio = "futureview.strategy1_oos_portfolio:main"
 futureview-strategy1-oos-portfolio-rank-gate = "futureview.strategy1_oos_portfolio_rank_gate:main"
 futureview-strategy1-oos-portfolio-recent-rank = "futureview.strategy1_oos_portfolio_recent_rank_gate:main"
