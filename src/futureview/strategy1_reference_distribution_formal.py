@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from . import strategy1_reference_distribution as base
-from .data import download_spy_daily, validate_daily_ohlcv
+from .data import download_ticker_daily, validate_daily_ohlcv
 from .strategy1 import _simulate_from_start
 
 DATA_PERIOD = "5y"
@@ -17,6 +17,13 @@ ADDON_GROUPS = (0, 1, 2)
 
 PathSignature = tuple[int, int, int, int, int, int]
 PathResult = tuple[float, float, float, int, PathSignature]
+
+
+def _research_ticker() -> str:
+    ticker = os.environ.get("FUTUREVIEW_TICKER", "SPY").strip().upper()
+    if not ticker:
+        raise ValueError("FUTUREVIEW_TICKER must be non-empty")
+    return ticker
 
 
 def _python_simulate_path(
@@ -190,7 +197,8 @@ def _print_addon_group(window: int, addon_count: int, rows: list[dict[str, objec
 
 
 def main() -> None:
-    df = download_spy_daily(period=DATA_PERIOD)
+    ticker = _research_ticker()
+    df = download_ticker_daily(ticker, period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
     events = base.add_strategy1_events(df).reset_index(drop=True)
     workers = _worker_count()
@@ -198,7 +206,7 @@ def main() -> None:
 
     print(
         "S1 REFERENCE_DISTRIBUTION DATA "
-        f"period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
+        f"ticker={ticker} period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
         f"windows={','.join(str(window) for window in WINDOWS)} model=false target=false workers={workers} "
         "research_version=formal_max2_spacing20 distribution_weighting=unique_realized_paths"
     )
