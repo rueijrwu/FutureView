@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 
 import numpy as np
 
 from . import strategy1_reference_distribution as base
+from . import strategy1_reference_distribution_formal as formal
 from .strategy1 import COOLDOWN_SESSIONS
 
 try:
@@ -200,12 +202,21 @@ def _simulate_cached_fast(
 
 
 def main() -> None:
-    base._simulate_cached = _simulate_cached_fast
-    print(
-        "S1 REFERENCE_DISTRIBUTION FAST backend=numba_jit semantics=unchanged "
-        f"cache_size={FAST_SIM_CACHE_SIZE} addon_groups=executed addon2_spacing=realized_equal_price_step"
-    )
-    base.main()
+    formal._simulate_path = _simulate_cached_fast_path
+    previous_workers = os.environ.get("FUTUREVIEW_WORKERS")
+    os.environ["FUTUREVIEW_WORKERS"] = "1"
+    try:
+        print(
+            "S1 REFERENCE_DISTRIBUTION FAST backend=numba_jit workers=1 "
+            f"cache_size={FAST_SIM_CACHE_SIZE} research_version=formal_max2_spacing20 "
+            "distribution_weighting=unique_realized_paths"
+        )
+        formal.main()
+    finally:
+        if previous_workers is None:
+            os.environ.pop("FUTUREVIEW_WORKERS", None)
+        else:
+            os.environ["FUTUREVIEW_WORKERS"] = previous_workers
 
 
 if __name__ == "__main__":
