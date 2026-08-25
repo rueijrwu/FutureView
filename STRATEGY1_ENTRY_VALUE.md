@@ -9,72 +9,73 @@ research_version=formal_max2_spacing20
 primary_window=60D
 robustness_window=90D
 distribution_weighting=unique_realized_paths
-model_target=not_defined
+model_target=entry_success_probability
 ```
 
-The research framing is now intentionally simple.
-
-We separate two questions:
+The research framing is intentionally simple:
 
 ```text
 Symbol   -> determines expected profit opportunity
 Strategy -> determines success rate / ability to select profitable paths
 ```
 
-The immediate goal is not to add more efficiency, regret, capture, or exposure metrics. The primary research outputs are:
+Primary evaluation outputs:
 
 ```text
-Success Rate
-Net Expected Return
-```
-
-where:
-
-```text
-Success Rate       = P(Return > 0)
+Success Rate        = P(Return > 0)
 Net Expected Return = E[Return]
 ```
 
-Net Expected Return includes both successful profits and failed-path losses and can therefore be negative.
+`Net Expected Return` includes both profitable and losing outcomes and can be negative.
 
-## Research interpretation
+## Reference levels
 
-For a fixed future window, use three reference levels:
+For each fixed future window, the existing formal Strategy 1 legal path space defines the two bounds:
 
 ```text
-Upper Bound  = absolute success: the best legal Strategy 1 path with full future information
-Lower Bound  = random entry: no useful timing/selection information
-Fixed DCA    = structured middle baseline: fixed equal entries without timing intelligence
+Lower Bound = minimum return across all formal legal realized paths
+Upper Bound = maximum return across all formal legal realized paths
+```
+
+The fixed-entry comparator is:
+
+```text
+Fixed DCA = Day 0 / Day 20 / Day 40 equal entries, hold to Day 59
 ```
 
 Conceptually:
 
 ```text
-Random Entry  ->  Fixed DCA  ->  Best Legal Path
-Lower Bound       Middle          Upper Bound
+Lower Bound  ->  Fixed DCA  ->  Upper Bound
+worst legal      simple          best legal
+selection        schedule        selection
 ```
 
-These levels represent increasing selection quality, not three competing trading strategies.
+This ordering is a research interpretation of selection quality, not a requirement that the realized numeric return of DCA must always lie between the two Strategy 1 bounds. Fixed DCA is outside the formal Strategy 1 legal-path space.
 
 ### Upper Bound
 
-Upper Bound answers:
+Upper Bound is the perfect-information best legal Strategy 1 path in the window:
 
-> If future information were perfect and the best legal Strategy 1 path were always selected, what profit opportunity does this symbol provide?
+```text
+UpperBound(W) = max(Return(path))
+```
 
-It represents 100% successful path selection inside the Strategy 1 legal space.
+It is the absolute best selection available under the current Strategy 1 rules. It is not mathematically guaranteed to be positive when every legal path in a window loses money.
 
 ### Lower Bound
 
-Lower Bound is the random-entry reference.
+Lower Bound is the worst formal legal Strategy 1 path in the same window:
 
-It represents entry selection without useful timing information and is the low-information baseline for Strategy success.
+```text
+LowerBound(W) = min(Return(path))
+```
 
-The historical implementation also reports the minimum realized legal path return as a distribution extreme. That statistic remains useful for diagnostics, but it is no longer the conceptual Lower Bound used by the research framing.
+This is the previously computed formal Lower Bound. It is deliberately more relevant than a true random-trading-day entry baseline because it stays inside the same Strategy 1 Entry Set and legal execution space.
 
 ### Fixed DCA
 
-The fixed-entry comparator is deliberately simple:
+The middle reference uses no timing intelligence:
 
 ```text
 60D window
@@ -85,30 +86,163 @@ Entry Day 40
 hold all acquired shares to Day 59
 ```
 
-It is a middle reference: more structured than random entry, but it contains no timing intelligence.
+It provides a simple scheduled-investment reference for the same symbol and horizon.
 
 ## What is being optimized
 
-The working hypothesis is:
+Working decomposition:
 
 ```text
 Expected profit is primarily a property of the symbol.
-Success rate is primarily what the strategy should improve.
+Success rate is primarily what the strategy/model should improve.
 ```
 
-A stronger underlying can provide a larger profit opportunity even with a simple fixed-entry rule. Strategy 1 should therefore not be judged mainly by whether it produces the highest raw return across different symbols.
+Therefore model training should not primarily ask the model to predict the largest raw return across different symbols. The learning problem is to identify Entry candidates that are more likely to produce profitable legal Strategy 1 outcomes.
 
-Instead, within the same symbol, the important question is:
-
-> Can Strategy 1 move success probability away from random entry and toward the Upper Bound?
-
-The ideal research outcome is therefore:
+The desired combination is:
 
 ```text
 high Net Expected Return symbol
 +
-high Success Rate strategy
+high Success Rate strategy/model
 ```
+
+## Model target
+
+### Unit of prediction
+
+One training example is one formal Strategy 1 `Entry candidate` at session `e` in a 60D future window.
+
+The model only receives features observable at or before `e`. No future-derived bound, future return, future local maximum, future exit, or target statistic may be used as an input feature.
+
+### Legal path set for one Entry
+
+Let:
+
+```text
+P(e, W) = all unique formal legal realized Strategy 1 paths
+          that begin at Entry candidate e inside window W
+```
+
+The path set uses the current formal rules:
+
+```text
+max_addons=2
+addon2_spacing_tolerance=0.20
+distribution_weighting=unique_realized_paths
+existing deterministic exit execution
+```
+
+### Primary target: Entry Success Probability
+
+For every Entry candidate:
+
+```text
+EntrySuccessProbability(e, W)
+    = number of paths p in P(e,W) with Return(p) > 0
+      ------------------------------------------------
+      number of unique realized paths in P(e,W)
+```
+
+Equivalent:
+
+```text
+target_success_probability = mean(Return(path) > 0)
+```
+
+Range:
+
+```text
+0.0 = every legal realized path from this Entry loses
+1.0 = every legal realized path from this Entry profits
+```
+
+This is the primary model target.
+
+Why this target:
+
+```text
+1. It directly represents the quantity the strategy is supposed to improve: success probability.
+2. It does not force the model to explain cross-symbol raw-return magnitude.
+3. It uses the already-computed formal legal path set rather than inventing a true-random baseline.
+4. It is a soft target, so two positive Entry candidates can still differ in reliability.
+5. It preserves all legal-path outcomes instead of labeling only the single hindsight-best path.
+```
+
+### Secondary label: Entry Net Expected Return
+
+For diagnostics, compute but do not make the primary learning objective:
+
+```text
+EntryNetExpectedReturn(e, W)
+    = mean(Return(path) for path in P(e,W))
+```
+
+This includes losses and may be negative.
+
+It answers a different question from success probability:
+
+```text
+EntrySuccessProbability -> how reliably this Entry produces profit
+EntryNetExpectedReturn  -> average economic result of this Entry's legal paths
+```
+
+Because raw return magnitude is strongly symbol-dependent, `EntryNetExpectedReturn` is a secondary label/evaluation value rather than the primary target.
+
+### Entry-specific bounds
+
+Also retain:
+
+```text
+EntryLower(e,W) = min(Return(path) for path in P(e,W))
+EntryUpper(e,W) = max(Return(path) for path in P(e,W))
+```
+
+These are future labels/audit values only. They are not model features and are not the primary target.
+
+The window-level formal bounds remain:
+
+```text
+LowerBound(W) = min over all legal realized paths in W
+UpperBound(W) = max over all legal realized paths in W
+```
+
+## Training protocol
+
+The model predicts:
+
+```text
+p_hat = predicted EntrySuccessProbability
+```
+
+Higher `p_hat` means the model believes the current Entry candidate is more reliable.
+
+Training and validation must be chronological / walk-forward. Do not use random train/test splits.
+
+The selection threshold for `p_hat` must be chosen only on training/validation history, never on the future test segment.
+
+A minimum number of selected entries must be required during evaluation so that success rate cannot be made artificially high by selecting only a trivial number of cases. This is an evaluation guardrail, not a new primary KPI.
+
+## Model evaluation
+
+The two primary out-of-sample results remain:
+
+```text
+Success Rate        = profitable selected realized outcomes / selected outcomes
+Net Expected Return = mean realized return of selected outcomes
+```
+
+The model is useful when, on the same symbol and same chronological test period, it increases Success Rate while keeping Net Expected Return positive.
+
+Reference comparisons remain:
+
+```text
+formal Lower Bound
+Fixed DCA
+formal Upper Bound
+```
+
+The Upper Bound is the perfect-information ceiling. The trained model is not expected to reproduce hindsight; it is evaluated by how much reliable profitable selection it can recover using only information available at decision time.
 
 ## Current Strategy 1 mechanics
 
@@ -175,56 +309,52 @@ The three-session trading cooldown and horizon-end liquidation remain unchanged.
 90D  robustness
 ```
 
-60D remains the primary comparison window.
+60D remains the primary training/reference horizon.
 
-## Cross-symbol 60D results
+## Current cross-symbol 60D reference results
 
-Five-year daily samples ending 2026-08-25. Strategy values below are the best legal Strategy 1 path per window; Fixed values use Day 0 / 20 / 40 equal entries.
+Five-year daily samples ending 2026-08-25. The Strategy values below are the formal best legal path per 60D window; Fixed values use Day 0 / 20 / 40 equal entries.
 
-| Symbol | Strategy Success Rate | Strategy Net Expected Return | Fixed DCA Success Rate | Fixed DCA Net Expected Return |
+| Symbol | Upper-path Success Rate | Upper-path Net Expected Return | Fixed DCA Success Rate | Fixed DCA Net Expected Return |
 |---|---:|---:|---:|---:|
 | SPY | 92.1% | +1.34% | 72.2% | +1.86% |
 | QQQ | 89.8% | +2.09% | 67.4% | +2.43% |
 | SMH | 81.7% | +3.72% | 67.5% | +5.73% |
 
-### Current interpretation
-
-The symbols show a clear profit-opportunity gradient:
+Current interpretation:
 
 ```text
-SPY -> lower expected profit opportunity
-QQQ -> medium expected profit opportunity
-SMH -> higher expected profit opportunity
+SPY -> lower profit opportunity, higher best-path success frequency
+QQQ -> middle
+SMH -> higher profit opportunity, lower best-path success frequency
 ```
 
-At the same time, Strategy 1 produces a much higher positive-return frequency than the fixed-entry baseline on all three symbols:
+This supports the working split:
 
 ```text
-SPY: 72.2% -> 92.1%
-QQQ: 67.4% -> 89.8%
-SMH: 67.5% -> 81.7%
+symbol choice -> profit magnitude
+strategy/model -> success reliability
 ```
 
-This supports the current decomposition:
+## Next implementation step
+
+Generate one supervised row per formal Entry candidate with at least:
 
 ```text
-symbol choice drives how much profit is available
-strategy quality drives how reliably profitable paths are selected
+symbol
+date
+window
+observable_features_at_entry
+target_success_probability
+entry_net_expected_return
+entry_lower
+entry_upper
+legal_realized_path_count
 ```
 
-The fact that Fixed DCA can have higher average return than the Strategy Upper result does not invalidate this framing. Fixed DCA is outside the legal Strategy 1 path space and can benefit strongly from the positive drift of the underlying.
+Then train the first model to predict `target_success_probability` using chronological splits only.
 
-## Research direction
-
-Do not add more primary metrics unless they answer a concrete unresolved question.
-
-The next stage should stay focused on:
-
-1. estimating the random-entry Lower Bound consistently for each symbol;
-2. comparing Random Entry, Fixed DCA, and Upper Bound on the same 60D windows;
-3. evaluating future strategy/model candidates mainly by how much they improve Success Rate toward the Upper Bound while preserving positive Net Expected Return.
-
-Do not define a model target until this three-level success framework is operationally measured.
+Do not revive RuleReturn, OracleRegret, random-entry targets, or random train/test splits as the primary learning target.
 
 ## Active data and runners
 
