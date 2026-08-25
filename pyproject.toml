@@ -33,3 +33,4 @@ futureview-strategy1-summary-baseline = "futureview.strategy1_summary_baseline:m
 futureview-strategy1-oos-portfolio = "futureview.strategy1_oos_portfolio:main"
 futureview-strategy1-model-compare = "futureview.strategy1_model_compare:main"
 futureview-strategy1-frequency-compare = "futureview.strategy1_frequency_compare:main"
+futureview-massive-data-smoke = "futureview.massive_data_smoke:main"
