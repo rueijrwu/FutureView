@@ -8,67 +8,73 @@ This document records the current Strategy 1 research framework while the target
 
 The model target is intentionally **not yet finalized**.
 
-## Fixed Strategy 1 mechanics used by this research
+## Strategy 1 candidate sets used by Reference Distribution
 
-Strategy 1 is defined from the perspective of entering on a legal Entry1 date and then following the already-specified campaign rules. The research layer must not redefine these mechanics.
+Reference Distribution is built from candidate sets first, then legal Strategy 1 combinations.
 
-### Entry1
+### Entry Set
 
-The legal Entry1 condition is based on the 5/10/20-day moving-average trend structure already defined by Strategy 1.
+For Reference Distribution, an Entry candidate is **every session that satisfies the Strategy 1 entry condition on that session**.
 
-### Local-maximum set and Addon reference levels
+The existing `entry1_event` transition definition is retained for legacy event-conditioned experiments, but it is not used to define the new Reference Distribution Entry Set.
+
+Current entry condition:
+
+```text
+Close > MA5
+Close > MA10
+Close > MA20
+MA5 > MA10
+MA10 > MA20
+```
+
+Therefore a multi-day run satisfying the entry condition contributes every qualifying session to the Entry Set rather than only the first newly-true day.
+
+### Local-Maximum Set and Addition combinations
 
 Addon1 / Addon2 are **not** rolling previous-20-session highest-close breakouts.
 
-At each legal Entry1 close:
-
-```text
-1. use only price history observable through the Entry1 close,
-2. identify confirmed prior close-price Local Maximum points,
-3. form the prior Local Maximum set,
-4. select the nearest prior Local Maximum,
-5. select the nearest earlier Local Maximum whose trading-date distance
-   from the first is strictly greater than 5 trading sessions,
-6. lock those two Local Maximum prices at Entry1,
-7. use the locked levels for Addon1 / Addon2 according to Strategy 1.
-```
-
-Current implementation defines a confirmed prior close-price Local Maximum at session `i` as:
+A confirmed close-price Local Maximum at session `i` is:
 
 ```text
 Close[i] > Close[i-1]
 Close[i] >= Close[i+1]
 ```
 
-The Entry1 session itself is never a Local Maximum candidate. The definition is causal because every value used to confirm a prior maximum is already known by the Entry1 close.
-
-The two selected reference levels are ordered by recency:
+For each Entry candidate inside a fixed Reference Distribution window:
 
 ```text
-Addon1 reference = nearest prior eligible Local Maximum
-Addon2 reference = next-nearest prior Local Maximum with index gap > 5
+1. scan all confirmed Local Maximum points already inside the fixed window and before the Entry,
+2. build the Local Maximum candidate set,
+3. allow a no-addition configuration,
+4. allow every single-Local-Maximum addition-reference configuration,
+5. allow every two-Local-Maximum configuration whose trading-index distance is > 5,
+6. order a two-level configuration by recency: more recent reference first, older reference second,
+7. execute the resulting Addon1 / Addon2 crossings using the existing Strategy 1 transaction rules.
 ```
 
-Once Entry1 occurs, the selected levels are frozen for that campaign; they are not replaced by future rolling highs.
+This makes Addition optional in the Reference Distribution combination universe without yet removing Addition from Strategy 1. It also makes it possible to compare later whether no-addition combinations preserve or improve the reference distribution.
 
-### Exit
+### Exit Set
 
-The existing Strategy 1 exit rules remain fixed:
+Reference Distribution also scans all sessions satisfying the existing exit conditions:
 
 ```text
-Close < MA5  -> sell 50% of the current position
-Close < MA10 -> exit the remaining position
+Close < MA5  -> Exit5 candidate
+Close < MA10 -> Exit10 candidate
 ```
 
-If both exit conditions become actionable together, the full-exit rule has priority according to the existing Strategy 1 mechanics.
+These full candidate sets are reported for audit. However, a legal combination still executes exits with the existing Strategy 1 event timing, priority, and spacing rules rather than allowing future knowledge to arbitrarily skip an actionable exit.
+
+Current execution priority remains:
+
+```text
+eligible MA10 full exit > eligible MA5 half exit > addon action
+```
 
 ### Trading spacing
 
-The existing three-session trading restriction remains part of Strategy 1. Existing horizon-end forced liquidation behavior also remains unchanged.
-
-### Research guardrail
-
-The Strategy 1 entry/addon/exit/spacing mechanics are fixed infrastructure. Reference-distribution, model-target, and evaluation definitions must be built on top of them and must not silently alter them.
+The existing three-session trading restriction remains part of every simulated combination. Existing horizon-end forced liquidation behavior also remains unchanged.
 
 ## Four definitions currently under discussion
 
@@ -76,30 +82,46 @@ Do not introduce additional conceptual objects until these four are clear.
 
 ### 1. Market Opportunity
 
-To be described using the Reference Bounds and the return distribution of all legal entries inside a fixed future window. No additional market-opportunity indicator is currently defined.
+To be described using the Reference Bounds and the return distribution of all legal combinations inside a fixed future window. No additional market-opportunity indicator is currently defined.
 
 ### 2. Current Entry Quality
 
-This is the conceptual quantity we ultimately want the model to identify: whether the current entry is close to the best achievable entry quality available inside the relevant Reference Bounds.
+This is the conceptual quantity we ultimately want the model to identify: whether the current entry is close to the best achievable legal combination quality available inside the relevant Reference Bounds.
 
 Its mathematical learning target is not yet defined.
 
 ### 3. Reference Bounds
 
-For a fixed future window, construct an `Entry Set` containing every legal Strategy 1 Entry1 inside that window. Run every entry with the same Strategy 1 mechanics.
+For a fixed future window:
 
 ```text
-Lower Bound = worst realized Strategy 1 return in the Entry Set
-Upper Bound = best realized Strategy 1 return in the Entry Set
+Entry Set     = every session satisfying the entry condition
+Local Max Set = confirmed Local Maximum candidates before each Entry
+Exit Set      = sessions satisfying the exit conditions
+Combination   = Entry × legal optional Addition-reference configuration,
+                executed with Strategy 1 exit/spacing mechanics
+```
+
+Let every legal combination produce one realized Strategy 1 return.
+
+```text
+Lower Bound = minimum realized return over all legal combinations
+Upper Bound = maximum realized return over all legal combinations
 Reference Bounds = [Lower Bound, Upper Bound]
 ```
 
 The earlier terminology `Baseline` / `Oracle` is no longer assumed to be the final representation of the bounds.
 
-The return distribution of the Entry Set should initially be described with simple statistics only:
+Reference Distribution Data initially reports:
 
 ```text
-Entry count
+Entry candidate count
+Local Maximum candidate count
+Exit5 candidate count
+Exit10 candidate count
+Legal combination count
+
+Return distribution:
 Lower Bound
 Upper Bound
 Mean
@@ -109,6 +131,25 @@ P25
 P75
 IQR
 Win rate
+
+Efficiency distribution:
+Lower Bound
+Upper Bound
+Mean
+Median
+STD
+P25
+P75
+IQR
+Positive rate
+Aggregate efficiency
+Pooled efficiency
+```
+
+Efficiency remains:
+
+```text
+realized return / capital-weighted exposure days
 ```
 
 These values are descriptive references, not model inputs.
@@ -119,9 +160,9 @@ Unknown. Do not force Rule Return, Upper Bound, Lower Bound, range, ratio, gap, 
 
 ## Reference Distribution Data
 
-The preferred name for the initial descriptive dataset is **Reference Distribution Data**, not `baseline data`, because it describes the distribution of Strategy 1 returns available from the legal Entry Set rather than a baseline model.
+The preferred name for the initial descriptive dataset is **Reference Distribution Data**, not `baseline data`, because it describes the distribution of legal Strategy 1 combinations rather than a baseline model.
 
-The future-window length is currently a research parameter rather than a fixed 30D assumption. Initial candidate windows may include:
+The future-window length is a research parameter. Current candidate windows are:
 
 ```text
 30D
@@ -130,7 +171,11 @@ The future-window length is currently a research parameter rather than a fixed 3
 90D
 ```
 
-The purpose is to see how the Entry Set and its Reference Bounds behave as the window grows before choosing a window for Current Entry Quality modeling.
+The purpose is to see how the candidate sets, legal combinations, bounds, return distribution, and efficiency distribution behave as the window grows before choosing a window for Current Entry Quality modeling.
+
+## Compatibility guardrail
+
+Legacy Strategy 1 event-conditioned runners retain `entry1_event` and the default nearest-two-local-max execution behavior. The exhaustive candidate-set logic is added specifically for Reference Distribution so earlier evidence is not silently rewritten.
 
 ## Current data scope
 
@@ -141,8 +186,9 @@ The historical source period remains capped at five years for the current resear
 Before returning to model training:
 
 ```text
-1. verify the corrected Local Maximum addon implementation,
-2. calculate Reference Distribution Data for candidate future windows,
-3. inspect whether the bounds/distribution stabilize as the window grows,
-4. only then define the mathematical model target.
+1. audit the expanded Entry / Local Maximum / Exit candidate sets,
+2. calculate legal-combination Reference Distribution Data,
+3. inspect how bounds and efficiency change as the window grows,
+4. compare future no-addition subsets against the full combination universe if needed,
+5. only then define the mathematical model target.
 ```
