@@ -22,6 +22,12 @@ jobs:
   reference-distribution:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        ticker: [SPY, QQQ]
+    env:
+      FUTUREVIEW_TICKER: ${{ matrix.ticker }}
 
     steps:
       - name: Checkout cnn-trend-reset
@@ -62,9 +68,10 @@ jobs:
         shell: bash
         run: |
           {
-            echo '## Strategy 1 Reference Distribution'
+            echo "## Strategy 1 Reference Distribution — ${FUTUREVIEW_TICKER}"
             echo
             echo 'Branch: `cnn-trend-reset`'
+            echo "Ticker: \`${FUTUREVIEW_TICKER}\`"
             echo 'Trigger: push or manual dispatch'
             echo
             if [[ -f strategy1-reference-distribution.log ]]; then
@@ -95,7 +102,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: strategy1-reference-distribution-${{ github.run_number }}
+          name: strategy1-reference-distribution-${{ matrix.ticker }}-${{ github.run_number }}
           path: |
             strategy1-reference-distribution.log
             strategy1-fixed-entry-compare.log
