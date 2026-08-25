@@ -34,12 +34,26 @@ INTRADAY_VOLUME_WINDOW = 20 * INTRADAY_BARS_PER_SESSION
 
 
 class MultiScaleBlockVariable(nn.Module):
-    def __init__(self, in_channels: int, kernels: tuple[int, int, int], branch_channels: int = 8) -> None:
+    def __init__(
+        self,
+        in_channels: int,
+        kernels: tuple[int, int, int],
+        branch_channels: int = 8,
+        dilation: int = 1,
+    ) -> None:
         super().__init__()
+        if dilation <= 0:
+            raise ValueError("dilation must be positive")
         self.branches = nn.ModuleList(
             [
                 nn.Sequential(
-                    nn.Conv1d(in_channels, branch_channels, kernel_size=k, padding="same"),
+                    nn.Conv1d(
+                        in_channels,
+                        branch_channels,
+                        kernel_size=k,
+                        padding="same",
+                        dilation=dilation,
+                    ),
                     nn.GELU(),
                 )
                 for k in kernels
@@ -55,11 +69,16 @@ class MultiScaleBlockVariable(nn.Module):
 
 
 class TrendCNNJointVariable(nn.Module):
-    """Model-A topology with configurable temporal kernels."""
+    """Model-A topology with configurable temporal kernels and dilation."""
 
-    def __init__(self, kernels: tuple[int, int, int]) -> None:
+    def __init__(self, kernels: tuple[int, int, int], dilation: int = 1) -> None:
         super().__init__()
-        self.multi = MultiScaleBlockVariable(5, kernels=kernels, branch_channels=8)
+        self.multi = MultiScaleBlockVariable(
+            5,
+            kernels=kernels,
+            branch_channels=8,
+            dilation=dilation,
+        )
         self.fusion = nn.Sequential(
             nn.Conv1d(self.multi.out_channels, 16, kernel_size=3, padding="same"),
             nn.GELU(),
