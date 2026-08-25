@@ -8,6 +8,49 @@ This document records the current event-conditioned Strategy 1 research framewor
 
 The model is not asked to imitate a perfect future pattern and is not trained to predict Oracle directly.
 
+## Fixed Strategy 1 mechanics used by this research
+
+Strategy 1 is defined from the perspective of **entering on the current legal Entry1 date** and then following the already-specified campaign rules. The research layer must not redefine the mechanics.
+
+### Entry1
+
+The legal Entry1 condition is based on the 5/10/20-day moving-average trend structure already defined by Strategy 1.
+
+### Addon reference levels
+
+Addon1 / Addon2 are **not** defined as breakouts of a rolling previous-20-session highest close.
+
+At the Entry1 date:
+
+```text
+1. look backward from the Entry1 date,
+2. identify the two nearest prior Local Maximum reference points,
+3. require the two Local Maximum trading dates to be separated by more than 10 trading days,
+4. lock those two Local Maximum levels at Entry1,
+5. use those fixed structural reference levels for the later Addon1 / Addon2 decisions according to the existing Strategy 1 execution rules.
+```
+
+The addon structure is therefore anchored to market structure known at Entry1, not to a dynamically changing rolling 20-day breakout threshold.
+
+### Exit
+
+The existing Strategy 1 exit rules remain fixed:
+
+```text
+Close < MA5  -> sell 50% of the current position
+Close < MA10 -> exit the remaining position
+```
+
+If both exit conditions become actionable together, the full-exit rule has priority according to the existing Strategy 1 mechanics.
+
+### Trading spacing
+
+After a Strategy 1 transaction, the next three trading sessions are blocked from another strategy transaction; the earliest next eligible strategy transaction is the fourth trading session after the prior action. Existing horizon-end forced liquidation behavior remains unchanged.
+
+### Research guardrail
+
+The Strategy 1 entry/addon/exit/spacing mechanics are treated as fixed infrastructure. Baseline, Oracle, model-target, and evaluation definitions must be built **on top of these rules** and must not silently alter them.
+
 ## Fixed scope for the current main analysis
 
 ```text
@@ -33,12 +76,10 @@ Baseline_t = realized profit from taking the current legal Entry1 at t
 Baseline describes how profitable the entry implied by the current Strategy 1 pattern actually is.
 
 Baseline is **not**:
-- a training target,
-- a label,
 - a model prediction,
 - or an always-on policy benchmark.
 
-It is one side of the profit-quality reference frame.
+Its exact relationship to the model target/label is intentionally left unresolved until the definitions are finalized.
 
 ### 2. Oracle
 
@@ -48,12 +89,10 @@ Oracle_t = future-known best legal Strategy 1 profit available in the same 30D w
 
 Oracle describes the best legal profit that could have been achieved with foreknowledge of the future.
 
-Oracle is also **not**:
-- a training target,
-- a label,
-- or a realizable live-trading objective.
+Oracle is **not**:
+- a realizable live-trading objective.
 
-It is the upper side of the same profit-quality reference frame.
+Its exact role relative to the final target/label definition remains to be finalized.
 
 The current implementation guarantees:
 
@@ -93,19 +132,7 @@ OpportunityGap_t = Oracle_t - Baseline_t
 
 measures the distance between the current entry outcome and the future-known best legal outcome in the same 30D window.
 
-This quantity was previously called OracleRegret in some experiments. In the current conceptual framework, `OpportunityGap` is the clearer name because Baseline and Oracle are reference values, not model decisions.
-
-## Important consequence
-
-A model must not receive Baseline, Oracle, or OpportunityGap as causal inputs or training labels.
-
-They are used only after outcomes are known to characterize the economic quality of an entry and its market context.
-
-The intended scientific question is therefore:
-
-> Can causal market-state information produce a score that separates high-quality current entries, including within market environments that contain similar amounts of future opportunity?
-
-This guards against a trivial model that merely learns "good market ahead" instead of "good entry now."
+The exact naming and role of this difference are also left open until the Baseline / Oracle / target definitions are finalized.
 
 ## Existing 30D / 5y evidence
 
@@ -122,49 +149,21 @@ Baseline / current-entry realized profit
 Oracle
   mean ~ +0.95%
 
-OpportunityGap
+Oracle - Baseline
   mean ~ +0.86%
 ```
 
-CNN A remains the strongest tested causal model in the existing 30D / 5y model comparison, with positive mean entry-return ranking and positive top-score realized-return lift. However, fold-level stability remains incomplete, especially in Fold 2. These model results are retained as prior evidence, not treated as final proof under the clarified reference-frame interpretation.
-
-## Next analysis: Baseline–Oracle structure
-
-Before changing horizon, architecture, thresholds, or data length, the next required step is to understand the 30D / 5y reference frame itself.
-
-The canonical analysis is:
-
-```bash
-futureview-strategy1-baseline-oracle-30d
-```
-
-It reports, with no model involved:
-
-```text
-1. Baseline distribution
-2. Oracle distribution
-3. OpportunityGap distribution
-4. Pearson and Spearman relationship between Baseline and Oracle
-5. relationship between Baseline and OpportunityGap
-6. median-defined Baseline/Oracle quadrants
-7. timing-sensitive cases:
-     Baseline <= 0
-     Oracle > Oracle median
-8. Baseline behavior within low/mid/high Oracle opportunity terciles
-```
-
-Median splits and Oracle terciles are descriptive only. They are not tuned trading thresholds and are not used for model training.
+CNN A remains the strongest tested causal model in the existing 30D / 5y model comparison, with positive mean entry-return ranking and positive top-score realized-return lift. However, fold-level stability remains incomplete, especially in Fold 2. These model results are retained as prior evidence only while the conceptual definitions are being finalized.
 
 ## Current rule
 
-Until this 30D / 5y Baseline–Oracle structure is understood, do not:
+Before adding new experiments, first finalize the definitions of:
 
 ```text
-- switch the main horizon to 15D/45D/60D
-- expand the main dataset beyond the currently chosen scope
-- tune score gates on OOS results
-- reinterpret Oracle as the learning target
-- reinterpret Baseline as the learning target
+1. Market Opportunity
+2. Current Entry Quality
+3. Reference bounds: Baseline and Oracle
+4. Model target
 ```
 
-The next model experiment, if justified by the reference analysis, should test whether CNN A retains entry-quality discrimination **within comparable Oracle-opportunity regimes**, rather than merely across different market-quality regimes.
+Do not introduce additional conceptual objects until these four are clear.
