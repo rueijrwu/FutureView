@@ -7,9 +7,8 @@ The project goal is not to optimize a trading gate, threshold, or portfolio sche
 The core research question is:
 
 ```text
-Can a model identify better Strategy 1 Entry candidates
-and thereby increase Success Rate,
-while preserving positive Net Expected Return?
+Given information observable now,
+what is the success probability of a fixed Strategy 1 setup?
 ```
 
 The intended decomposition is:
@@ -17,17 +16,17 @@ The intended decomposition is:
 ```text
 Symbol   -> primarily determines profit opportunity / return magnitude
 Strategy -> defines the legal trading process
-Model    -> primarily improves Entry selection reliability / Success Rate
+Model    -> estimates Strategy 1 success probability from current information
 ```
 
 Primary outputs remain:
 
 ```text
-Success Rate        = P(Return > 0)
+Success Rate        = probability / frequency that the defined outcome is profitable
 Net Expected Return = E[Return]
 ```
 
-`Net Expected Return` includes losses and may be negative.
+`Net Expected Return` includes losing outcomes and may be negative.
 
 This framing is the main line of research. Threshold engineering, adaptive gates, delayed-entry windows, portfolio state machines, and capital-efficiency studies are secondary implementation diagnostics only.
 
@@ -39,10 +38,8 @@ It can mean:
 
 ```text
 The current observable information is insufficient for the model
-to distinguish a high-reliability Entry from the rest.
+to make a high-confidence estimate or decision.
 ```
-
-In that case, not making a strong decision can be appropriate behavior.
 
 Therefore:
 
@@ -51,137 +48,354 @@ low decision frequency != model failure
 high decision frequency != model success
 ```
 
-The model should be judged first by whether its score contains stable information about Entry quality. Coverage/frequency is a later deployment property.
+The model should first be judged by the quality of its probability estimate. Coverage/frequency is a later planning or deployment property.
 
-The research must distinguish:
+---
+
+## 2. Reference framework: Lower Bound, DCA, Upper Bound
+
+For one fixed future window `W`, define the formal Strategy 1 legal realized-path set as:
 
 ```text
-model information quality
-from
-execution frequency
+S(W) = all unique legal realized Strategy 1 paths available in window W
 ```
 
-A model that only becomes decisive in a small number of information-rich regimes can still be useful if those decisions are reliably better than the underlying Strategy 1 Entry set.
+Every path in `S(W)` must obey the same formal Strategy 1 mechanics.
 
-## 2. Reference framework
-
-For a fixed formal Strategy 1 future window:
+### Lower Bound
 
 ```text
-Lower Bound = minimum return across all formal legal realized Strategy 1 paths
-Upper Bound = maximum return across all formal legal realized Strategy 1 paths
-Fixed DCA   = Day 0 / 20 / 40 equal entries, hold to Day 59
+LowerBound(W)
+= min(Return(p)) for p in S(W)
+```
+
+Interpretation:
+
+```text
+The worst legal realized Strategy 1 outcome available in that window.
+```
+
+It is not Random Entry, and it is not an arbitrary bad trade. It is the minimum return from the same formal legal Strategy 1 search space used to define the Upper Bound.
+
+### Upper Bound
+
+```text
+UpperBound(W)
+= max(Return(p)) for p in S(W)
+```
+
+Interpretation:
+
+```text
+The best legal realized Strategy 1 outcome available in that window,
+assuming perfect hindsight over the legal path set.
+```
+
+Upper Bound does not mean the model can achieve this return. It is a reference ceiling for what was legally achievable under Strategy 1 in that realized window.
+
+### DCA reference
+
+Current fixed DCA comparator:
+
+```text
+Day 0 / Day 20 / Day 40
+three equal entries
+hold to Day 59
 ```
 
 Conceptually:
 
 ```text
-Lower Bound  ->  Fixed DCA  ->  Upper Bound
-worst legal      simple          best legal
-selection        schedule        selection
+Lower Bound  ->  DCA  ->  Upper Bound
+worst legal      simple     best legal
+Strategy 1       schedule   Strategy 1
+selection                   selection
 ```
 
-Formal definitions:
+But this is conceptual only.
+
+DCA is outside the formal Strategy 1 path set `S(W)`, so its realized return is not mathematically required to lie numerically between Lower and Upper.
+
+### Important boundary rule
+
+Lower and Upper must always be computed from the same formal Strategy 1 legal path space.
+
+Do not redefine Lower Bound as Random Entry or any unrelated baseline.
 
 ```text
-LowerBound(W) = min(all legal realized Strategy 1 path returns in W)
-UpperBound(W) = max(all legal realized Strategy 1 path returns in W)
+Lower Bound = worst legal Strategy 1 path
+Upper Bound = best legal Strategy 1 path
 ```
 
-Lower and Upper come from the same formal Strategy 1 path space.
+---
 
-Fixed DCA is outside that path space, so its realized return is not mathematically required to lie between the two bounds.
+## 3. Success Rate: exact definitions
 
-True Random Entry is not used. It is too uninformative for the current objective and does not represent the intended Lower Bound.
+The word `Success Rate` must always specify the observation unit.
 
-## 3. What the model is supposed to learn
+There are two different quantities in the current research, and they should not be mixed.
 
-### Unit of prediction
+### 3.1 Entry-level path success probability
 
-One supervised sample is one formal `entry_candidate` at session `e`.
-
-The model should answer:
+For one formal Entry candidate `e`, let:
 
 ```text
-Given only information observable at Entry e,
-how reliable is this Entry under the formal Strategy 1 path space?
+P(e,60)
+= all unique legal realized Strategy 1 paths beginning from Entry e
+  over the 60-session horizon
 ```
 
-The model is not primarily asked to predict the maximum future return, the Upper Bound, or the best future path.
-
-### Primary target: Entry Success Probability
-
-Let `P(e,60)` be all unique formal legal realized paths beginning from Entry `e` under the current Strategy 1 rules.
+Then:
 
 ```text
 EntrySuccessProbability(e,60)
-    = count(Return(path) > 0) / count(unique legal realized paths)
+= count(Return(path) > 0) / count(P(e,60))
 ```
 
 Equivalent:
 
 ```text
-target_success_probability = mean(Return(path) > 0)
+target_success_probability
+= mean(Return(path) > 0)
 ```
 
-Range:
+Interpretation:
 
 ```text
-0.0 = every legal realized path from this Entry loses
-1.0 = every legal realized path from this Entry profits
+Given this Entry and the formal Strategy 1 path space,
+what fraction of legal realized paths finish profitable?
 ```
 
-This is the primary learning target because it directly measures Entry reliability.
-
-### Secondary labels
-
-Retain for audit and evaluation:
+Examples:
 
 ```text
-EntryNetExpectedReturn = mean(Return(path))
-EntryLower             = min(Return(path))
-EntryUpper             = max(Return(path))
-LegalRealizedPathCount = number of unique realized paths
+0.00 -> every legal path from this Entry loses
+0.50 -> half of the legal paths profit
+1.00 -> every legal path from this Entry profits
 ```
 
-These are not model input features and are not the primary target.
+This is the current soft target used by the first CNN model.
 
-## 4. Causality requirements
+### 3.2 Strategy / reference success rate across windows
 
-For every Entry candidate, model features must be observable at or before Entry.
-
-Current first-model setup:
+When evaluating a specific reference rule across many windows, Success Rate means:
 
 ```text
-symbol=QQQ
-history<=5y
-input_lookback=50 sessions
-future_target_horizon=60 sessions
-addon_reference_lookback=60 prior sessions
+SuccessRate(strategy)
+= count(realized strategy returns > 0)
+  / count(valid evaluation windows)
 ```
 
-Allowed inputs are causal OHLCV-derived features only.
-
-Forbidden as input features:
+For example, `Upper-path Success Rate = 89.8%` for QQQ means:
 
 ```text
-future return
-future Lower / Upper labels
-future exit
-future local maximum
-future target statistic
-future test score distribution
+Across the valid QQQ 60D evaluation windows,
+the best legal Strategy 1 path in 89.8% of those windows had positive return.
 ```
 
-Training and evaluation must remain chronological / walk-forward.
+It does NOT mean:
 
 ```text
-no random train/test split
-purge future-label overlap
-no future test labels in threshold or selection logic
+89.8% of all legal paths were profitable.
 ```
 
-## 5. Current formal Strategy 1 rules
+Those are different statistics.
+
+### 3.3 Lower-bound success rate
+
+The same definition can be applied to Lower Bound:
+
+```text
+LowerBoundSuccessRate
+= count(LowerBound(W) > 0) / count(valid windows)
+```
+
+This asks a very strict question:
+
+```text
+In how many windows was even the worst legal Strategy 1 path profitable?
+```
+
+A low Lower-bound Success Rate does not imply Strategy 1 has no opportunity. It means legal path quality varies substantially within those windows.
+
+### 3.4 Model probability versus empirical Success Rate
+
+The model output should eventually be interpreted as:
+
+```text
+p_hat(e)
+≈ P(Strategy 1 succeeds | information observable at Entry e)
+```
+
+If the model says `p_hat = 0.70`, the desired calibration interpretation is:
+
+```text
+Across many comparable OOS Entries where the model predicts about 70%,
+roughly 70% should satisfy the chosen success definition.
+```
+
+This is a probability-estimation problem first. A threshold or trading decision can be added later.
+
+---
+
+## 4. How Bound and Success Rate relate
+
+For each realized future window `W`, Lower and Upper are return values:
+
+```text
+LowerBound(W) <= UpperBound(W)
+```
+
+Across many windows, they induce two different Success Rates:
+
+```text
+LowerBoundSuccessRate
+= P(LowerBound(W) > 0)
+
+UpperBoundSuccessRate
+= P(UpperBound(W) > 0)
+```
+
+These answer different questions.
+
+### Lower Bound asks
+
+```text
+Was the window so favorable that even the worst legal Strategy 1 path made money?
+```
+
+### Upper Bound asks
+
+```text
+Did the window contain at least one legal Strategy 1 path that made money?
+```
+
+Therefore:
+
+```text
+LowerBoundSuccessRate <= UpperBoundSuccessRate
+```
+
+for the same set of valid windows and the same formal path space.
+
+This gap is useful.
+
+A large gap means:
+
+```text
+The symbol/window contains opportunity,
+but path selection matters a lot.
+```
+
+A small high-level gap near 100% would mean:
+
+```text
+Most legal Strategy 1 paths are robustly profitable.
+```
+
+A small low-level gap would mean:
+
+```text
+The window generally offers poor Strategy 1 opportunity.
+```
+
+This is one reason Bound statistics are useful as reference structure even when the model target is a success probability.
+
+---
+
+## 5. SPY / QQQ / SMH examples
+
+Five-year daily reference samples ending 2026-08-25, using the current 60D formal Strategy 1 research definition:
+
+| Symbol | Upper-path Success Rate | Upper-path Net Expected Return | Fixed DCA Success Rate | Fixed DCA Net Expected Return | Lower-bound Mean Return |
+|---|---:|---:|---:|---:|---:|
+| SPY | 92.1% | +1.34% | 72.2% | +1.86% | -1.95% |
+| QQQ | 89.8% | +2.09% | 67.4% | +2.43% | -2.30% |
+| SMH | 81.7% | +3.72% | 67.5% | +5.73% | -3.89% |
+
+These numbers illustrate why Success Rate and return magnitude should be kept separate.
+
+### SPY example
+
+```text
+Upper-path Success Rate = 92.1%
+Upper-path Net Return   = +1.34%
+DCA Success Rate        = 72.2%
+DCA Net Return          = +1.86%
+Lower-bound mean        = -1.95%
+```
+
+Interpretation:
+
+SPY had a very high frequency of windows containing at least one profitable legal Strategy 1 path. However, the average best-path return was smaller than QQQ and SMH.
+
+This is consistent with the working interpretation:
+
+```text
+SPY -> relatively high reliability / lower return magnitude
+```
+
+The negative Lower-bound mean also shows that good opportunities did not imply every legal Strategy 1 path was good.
+
+### QQQ example
+
+```text
+Upper-path Success Rate = 89.8%
+Upper-path Net Return   = +2.09%
+DCA Success Rate        = 67.4%
+DCA Net Return          = +2.43%
+Lower-bound mean        = -2.30%
+```
+
+Interpretation:
+
+QQQ retained a high frequency of profitable opportunity while offering greater best-path return magnitude than SPY.
+
+It is therefore a useful middle case for model development:
+
+```text
+not as defensive as SPY
+not as high-variance as SMH
+```
+
+The research question for the model is not to reproduce the 89.8% Upper Bound. The model does not have hindsight.
+
+The model should instead estimate, from causal information available now, how likely the current Strategy 1 setup is to succeed.
+
+### SMH example
+
+```text
+Upper-path Success Rate = 81.7%
+Upper-path Net Return   = +3.72%
+DCA Success Rate        = 67.5%
+DCA Net Return          = +5.73%
+Lower-bound mean        = -3.89%
+```
+
+Interpretation:
+
+SMH offered larger return magnitude, but the Upper-path Success Rate was lower and the Lower-bound mean was much worse.
+
+That suggests a wider spread of possible Strategy 1 outcomes:
+
+```text
+more opportunity
++
+more path-selection risk
+```
+
+This is why the working decomposition remains useful:
+
+```text
+symbol choice -> profit opportunity / magnitude
+strategy/model -> reliability / success estimation
+```
+
+It is a research decomposition, not a claim that symbol and strategy effects are perfectly separable.
+
+---
+
+## 6. Current formal Strategy 1 rules
 
 ### Entry Set
 
@@ -240,18 +454,60 @@ eligible MA10 full exit
 
 Three-session cooldown and horizon-end liquidation remain unchanged.
 
-## 6. First model: QQQ Entry Success CNN
+---
 
-The first supervised experiment is intentionally single-symbol.
+## 7. Current model target
+
+One supervised sample is one formal `entry_candidate` at session `e`.
+
+Current first-model setup:
 
 ```text
-QQQ only
-5 years maximum data
-50-session causal OHLCV tensor
-60-session target horizon
-formal max2 + spacing20 path semantics
-unique-realized-path weighting
+symbol=QQQ
+history<=5y
+input_lookback=50 sessions
+future_target_horizon=60 sessions
+addon_reference_lookback=60 prior sessions
 ```
+
+Allowed inputs are causal OHLCV-derived features only.
+
+Forbidden as input features:
+
+```text
+future return
+future Lower / Upper labels
+future exit
+future local maximum
+future target statistic
+future test score distribution
+```
+
+Current primary soft target:
+
+```text
+EntrySuccessProbability(e,60)
+```
+
+Secondary audit labels:
+
+```text
+EntryNetExpectedReturn = mean(Return(path))
+EntryLower             = min(Return(path))
+EntryUpper             = max(Return(path))
+LegalRealizedPathCount = number of unique realized paths
+```
+
+Training and evaluation remain chronological / walk-forward:
+
+```text
+no random train/test split
+purge future-label overlap
+```
+
+---
+
+## 8. First model: QQQ Entry Success CNN
 
 Architecture:
 
@@ -274,165 +530,53 @@ chronological expanding / walk-forward folds
 no random split
 ```
 
-## 7. What has been learned so far
+The current model is still research-grade. Existing OOS diagnostics show some signal but do not yet establish reliable probability calibration across all regimes.
 
-### Model-learning evidence
+---
 
-The QQQ CNN showed that higher predicted Entry scores can identify a subset with better realized Entry quality than the full eligible set.
+## 9. Current research direction
 
-Earlier OOS candidate-level experiments showed positive top-selection lift, and deterministic Strategy 1 execution also showed improvement when model-selected Entries were compared with all eligible Entries.
+The project should now ask very small questions.
 
-This supports the hypothesis that the model contains useful Entry-selection information.
-
-### Expanded OOS comparison
-
-A later expanded walk-forward comparison used the same Strategy 1 execution on both sides:
+Current smallest model question:
 
 ```text
-Ungated baseline:
-    every formal Entry candidate can become a setup signal
-
-Q55 diagnostic gate:
-    model-selected subset only
+Given only information observable now,
+can the model estimate the success probability of Strategy 1?
 ```
 
-Observed expanded OOS results:
-
-| Metric | Ungated Strategy 1 | Q55-selected subset |
-|---|---:|---:|
-| Campaign count | 14 | 5 unique paths |
-| Success Rate | 42.86% | 60.00% |
-| Avg Campaign Return | +0.3526% | +0.9683% |
-
-Diagnostic lift:
+Do not optimize these yet:
 
 ```text
-Success Rate lift        = +17.14 percentage points
-Net Expected Return lift = +0.6157 percentage points per campaign
+threshold
+Q55
+adaptive gate
+trade frequency
+portfolio overlap
+capital efficiency
+position sizing
+symbol allocation
 ```
 
-This is evidence that the model can add Entry-selection value.
+Those are downstream planning problems.
 
-It is not evidence that Q55 is the final policy, and the smaller campaign count should not by itself be interpreted as a defect. The model may simply be more selective when observable information is weak.
+The immediate model problem is probability estimation.
 
-## 8. Important correction to research direction
-
-Recent work explored:
+A useful future result should look like:
 
 ```text
-fixed percentile thresholds
-adaptive rolling thresholds
-hybrid floors
-Q50/Q55/Q60/Q65 sweeps
-+3-session delayed entry
-single non-overlapping live campaigns
-expanded chronological OOS blocks
-ungated portfolio baseline comparison
+When the model predicts approximately 60%,
+OOS realized success is approximately 60%.
+
+When it predicts approximately 80%,
+OOS realized success is approximately 80%.
 ```
 
-These experiments were useful for learning about score calibration and live execution constraints, but they are not the primary research objective.
+Only after this is credible should the probability be used by a planning layer to decide whether, when, or how much to trade.
 
-They should be treated as diagnostics around the model, not as the thing being optimized.
+---
 
-In particular:
-
-```text
-Q55 is not a new research target.
-Q55 is not a final deployable threshold.
-100% historical Success Rate from sparse folds is not a target.
-Maximizing trading frequency is not the current target.
-Capital efficiency is not the current target.
-```
-
-The project should not drift into repeatedly tuning the gate against the same OOS history.
-
-## 9. Current interpretation
-
-The intended research decomposition remains:
-
-```text
-Symbol choice
-    -> primarily controls available return opportunity / magnitude
-
-Strategy 1 mechanics
-    -> define the legal realization process
-
-Model Entry selection
-    -> should improve Success Rate / reliability
-```
-
-Ideal end state:
-
-```text
-high-opportunity symbol
-+
-Entry-selection model with stable OOS Success Rate lift
-+
-positive Net Expected Return
-```
-
-The model does not need to maximize raw return across symbols to be useful.
-
-The model also does not need to make a decision on every Entry candidate. A valid model behavior is to remain non-committal when the available causal information does not support a strong distinction.
-
-## 10. Next research priority
-
-The next step returns directly to model quality:
-
-```text
-Across chronological OOS regimes, does a higher model score
-correspond to higher EntrySuccessProbability and higher realized Entry quality?
-```
-
-This is evaluated without choosing a deployment threshold.
-
-Priority order:
-
-1. Keep Strategy 1 mechanics fixed.
-2. Keep `EntrySuccessProbability` as the primary model target.
-3. Keep QQQ as the first controlled symbol until model behavior is understood.
-4. Evaluate the full OOS score distribution, not only selected trades.
-5. Check whether Entry quality rises from low-score to high-score rank buckets.
-6. Check stability across chronological regimes and seeds.
-7. Use Net Expected Return as a secondary economic check.
-8. Treat low model decisiveness as potentially meaningful abstention, not automatically poor coverage.
-9. Only after stable score-quality structure is established should deployment-specific gate/frequency optimization resume.
-
-A useful model result is therefore not:
-
-```text
-"Q55 made 5 good campaigns."
-```
-
-It is:
-
-```text
-"Across chronological OOS regimes, higher model scores consistently map to
-higher EntrySuccessProbability and better realized Entry outcomes."
-```
-
-That is the original target.
-
-## 11. Current cross-symbol 60D reference context
-
-Five-year daily samples ending 2026-08-25:
-
-| Symbol | Upper-path Success Rate | Upper-path Net Expected Return | Fixed DCA Success Rate | Fixed DCA Net Expected Return |
-|---|---:|---:|---:|---:|
-| SPY | 92.1% | +1.34% | 72.2% | +1.86% |
-| QQQ | 89.8% | +2.09% | 67.4% | +2.43% |
-| SMH | 81.7% | +3.72% | 67.5% | +5.73% |
-
-Working interpretation remains:
-
-```text
-symbol choice -> profit magnitude / opportunity
-strategy/model -> success reliability
-```
-
-These cross-symbol numbers are reference context, not a reason to change the current QQQ learning objective.
-
-## 12. Active research commands
+## 10. Active research commands
 
 Core research:
 
