@@ -11,6 +11,7 @@ on:
       - 'src/futureview/strategy1_reference_distribution_formal.py'
       - 'src/futureview/strategy1_reference_distribution_fast.py'
       - 'src/futureview/strategy1_fixed_entry_compare.py'
+      - 'src/futureview/strategy1_entry_luqmu_audit.py'
       - 'src/futureview/data.py'
       - 'pyproject.toml'
       - '.github/workflows/strategy1-reference-distribution.yml'
@@ -42,7 +43,7 @@ jobs:
       - name: Install research dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
+          python -m pip install "torch>=2.4" "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
           python -m pip install -e . --no-deps
 
       - name: Run formal Strategy 1 Reference Distribution
@@ -53,6 +54,14 @@ jobs:
         run: |
           set -o pipefail
           futureview-strategy1-reference-distribution-fast 2>&1 | tee strategy1-reference-distribution.log
+
+      - name: Audit entry-level L U Q mu
+        shell: bash
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_entry_luqmu_audit 2>&1 | tee strategy1-entry-luqmu.log
 
       - name: Compare 60D fixed three-entry baseline
         shell: bash
@@ -88,6 +97,15 @@ jobs:
               echo 'No Reference Distribution log was produced.'
             fi
             echo
+            echo '### Entry-level L / U / Q / mu audit'
+            if [[ -f strategy1-entry-luqmu.log ]]; then
+              echo '```text'
+              grep -E '^S1 ENTRY_LUQMU (DATA|SUMMARY|GROUP|RELATION|PASS)' strategy1-entry-luqmu.log || true
+              echo '```'
+            else
+              echo 'No entry-level L/U/Q/mu audit log was produced.'
+            fi
+            echo
             echo '### 60D fixed three-entry baseline vs Strategy Upper Bound'
             if [[ -f strategy1-fixed-entry-compare.log ]]; then
               echo '```text'
@@ -105,6 +123,7 @@ jobs:
           name: strategy1-reference-distribution-${{ matrix.ticker }}-${{ github.run_number }}
           path: |
             strategy1-reference-distribution.log
+            strategy1-entry-luqmu.log
             strategy1-fixed-entry-compare.log
           if-no-files-found: warn
           retention-days: 30
