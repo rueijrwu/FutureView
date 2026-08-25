@@ -5,7 +5,9 @@ import numpy as np
 from .data import download_spy_daily, validate_daily_ohlcv
 from .strategy1 import (
     COOLDOWN_SESSIONS,
+    LOCAL_MAX_MIN_GAP,
     STRATEGY1_HORIZONS,
+    _locked_addon_levels,
     add_strategy1_events,
     make_strategy1_oracle_labels,
     oracle_value_for_window,
@@ -26,7 +28,6 @@ def _group_stats(values: np.ndarray, mask: np.ndarray) -> tuple[int, float, floa
 
 
 def _assert_spacing(run) -> tuple[int, int]:
-    """Validate the three-session entry/exit spacing on one selected path."""
     last_entry_index: int | None = None
     last_partial_exit_index: int | None = None
     checked_exits = 0
@@ -57,11 +58,6 @@ def _assert_spacing(run) -> tuple[int, int]:
                 )
             if action.action == "exit5_half":
                 last_partial_exit_index = action.index
-            else:
-                # Full exit must be terminal for the single campaign. Only the
-                # loop itself can prove no later action occurs; remember it and
-                # fail if any later non-horizon action is encountered.
-                pass
 
     full_positions = [i for i, a in enumerate(run.actions) if a.action == "exit10_full"]
     if full_positions:
@@ -72,6 +68,32 @@ def _assert_spacing(run) -> tuple[int, int]:
             raise RuntimeError("Strategy 1 may have at most one full exit")
 
     return checked_exits, checked_addons
+
+
+def _assert_local_max_sets(events) -> tuple[int, int]:
+    checked_entries = 0
+    two_level_entries = 0
+    for i in range(len(events)):
+        if not bool(events.at[i, "entry1_event"]):
+            continue
+        checked_entries += 1
+        levels = _locked_addon_levels(events, i)
+        if len(levels) > 2:
+            raise RuntimeError("Strategy 1 locked more than two addon local maxima")
+        for index, price in levels:
+            if index >= i:
+                raise RuntimeError("Strategy 1 local maximum must precede Entry1")
+            if abs(float(events.at[index, "close"]) - price) > 1e-12:
+                raise RuntimeError("Strategy 1 local-maximum price mismatch")
+        if len(levels) == 2:
+            two_level_entries += 1
+            newest_index = levels[0][0]
+            older_index = levels[1][0]
+            if newest_index - older_index <= LOCAL_MAX_MIN_GAP:
+                raise RuntimeError(
+                    "Strategy 1 local maxima are not separated by more than five sessions"
+                )
+    return checked_entries, two_level_entries
 
 
 def _print_oracle_case(events, t: int, horizon: int, bucket: str) -> None:
@@ -127,14 +149,20 @@ def main() -> None:
     if labels.empty:
         raise RuntimeError("Strategy 1 Oracle labels are empty")
 
+    local_checked, local_two = _assert_local_max_sets(events)
+
     print(
         "STRATEGY1 DATA "
         f"rows={audit.rows} start={audit.start} end={audit.end} "
         f"entry1_events={int(events['entry1_event'].sum())} "
-        f"breakout20_events={int(events['breakout20_event'].sum())} "
         f"exit5_events={int(events['exit5_event'].sum())} "
         f"exit10_events={int(events['exit10_event'].sum())} "
-        f"spacing={COOLDOWN_SESSIONS}"
+        f"spacing={COOLDOWN_SESSIONS} local_max_min_gap={LOCAL_MAX_MIN_GAP}"
+    )
+    print(
+        "STRATEGY1 LOCAL_MAX_SET PASS "
+        f"checked_entries={local_checked} entries_with_two_levels={local_two} "
+        "addon_source=locked_prior_local_maxima"
     )
 
     spacing_checked_exits = 0
