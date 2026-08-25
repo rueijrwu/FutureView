@@ -45,6 +45,7 @@ futureview-strategy1-success-threshold-sweep = "futureview.strategy1_success_thr
 futureview-strategy1-success-adaptive-gate = "futureview.strategy1_success_adaptive_gate:main"
 futureview-strategy1-success-hybrid-gate = "futureview.strategy1_success_hybrid_gate:main"
 futureview-strategy1-success-hybrid-floor-sweep = "futureview.strategy1_success_hybrid_floor_sweep:main"
+futureview-strategy1-success-live-campaign = "futureview.strategy1_success_live_campaign:main"
 futureview-strategy1-oos-portfolio = "futureview.strategy1_oos_portfolio:main"
 futureview-strategy1-oos-portfolio-rank-gate = "futureview.strategy1_oos_portfolio_rank_gate:main"
 futureview-strategy1-oos-portfolio-recent-rank = "futureview.strategy1_oos_portfolio_recent_rank_gate:main"
