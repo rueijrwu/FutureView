@@ -1,0 +1,81 @@
+name: Strategy 1 QQQ Live Threshold
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cnn-trend-reset
+    paths:
+      - 'src/futureview/strategy1_success_threshold.py'
+      - 'src/futureview/strategy1_success_training.py'
+      - 'src/futureview/strategy1.py'
+      - 'src/futureview/strategy1_reference_distribution.py'
+      - 'src/futureview/strategy1_reference_distribution_fast.py'
+      - 'src/futureview/features.py'
+      - 'src/futureview/models.py'
+      - 'src/futureview/data.py'
+      - 'pyproject.toml'
+      - '.github/workflows/strategy1-qqq-live-threshold.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  qqq-live-threshold:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FUTUREVIEW_TICKER: QQQ
+
+    steps:
+      - name: Checkout cnn-trend-reset
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install research dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "torch>=2.4" "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
+          python -m pip install -e . --no-deps
+
+      - name: Run QQQ live threshold gate
+        shell: bash
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: |
+          set -o pipefail
+          futureview-strategy1-success-threshold 2>&1 | tee strategy1-qqq-live-threshold.log
+
+      - name: Write results to job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Strategy 1 QQQ Live Threshold'
+            echo
+            echo 'Branch: `cnn-trend-reset`'
+            echo 'Ticker: `QQQ`'
+            echo 'Decision: `enter if p_hat >= train-history threshold`'
+            echo
+            if [[ -f strategy1-qqq-live-threshold.log ]]; then
+              echo '```text'
+              grep -E '^S1 LIVE_THRESHOLD (DATA|RULE|FOLD_METRIC|SUMMARY|PASS)' strategy1-qqq-live-threshold.log || true
+              echo '```'
+            else
+              echo 'No live-threshold log was produced.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload threshold log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-qqq-live-threshold-${{ github.run_number }}
+          path: strategy1-qqq-live-threshold.log
+          if-no-files-found: warn
+          retention-days: 30
