@@ -4,6 +4,7 @@ import numpy as np
 
 from .data import download_spy_daily, validate_daily_ohlcv
 from .strategy1 import (
+    COOLDOWN_SESSIONS,
     STRATEGY1_HORIZONS,
     add_strategy1_events,
     make_strategy1_oracle_labels,
@@ -24,14 +25,34 @@ def _group_stats(values: np.ndarray, mask: np.ndarray) -> tuple[int, float, floa
     )
 
 
+def _assert_cooldown(run) -> int:
+    """Fail if any entry/add-on occurs in the three sessions after an exit."""
+    last_exit_index: int | None = None
+    checked_entries = 0
+    for action in run.actions:
+        if action.action in {"exit5_half", "exit10_full"}:
+            last_exit_index = action.index
+            continue
+        if action.action in {"entry1", "addon1", "addon2"} and last_exit_index is not None:
+            checked_entries += 1
+            gap = action.index - last_exit_index
+            if gap <= COOLDOWN_SESSIONS:
+                raise RuntimeError(
+                    "Strategy 1 cooldown violation: "
+                    f"exit_index={last_exit_index} entry_index={action.index} gap={gap}"
+                )
+    return checked_entries
+
+
 def _print_oracle_case(events, t: int, horizon: int, bucket: str) -> None:
     run = oracle_value_for_window(events, t, t + horizon)
+    _assert_cooldown(run)
     window_date = events.at[t, "date"].date()
     end_date = events.at[t + horizon, "date"].date()
     print(
         f"STRATEGY1 CASE {bucket} {horizon}D "
         f"window_start={window_date} window_end={end_date} "
-        f"value={run.final_return:.6f} entries={run.entries_used}"
+        f"value={run.final_return:.6f} entries={run.entries_used} campaigns={run.campaigns_used}"
     )
     if not run.actions:
         print("STRATEGY1 CASE_ACTION no_trade")
@@ -82,13 +103,17 @@ def main() -> None:
         f"entry1_events={int(events['entry1_event'].sum())} "
         f"breakout20_events={int(events['breakout20_event'].sum())} "
         f"exit5_events={int(events['exit5_event'].sum())} "
-        f"exit10_events={int(events['exit10_event'].sum())}"
+        f"exit10_events={int(events['exit10_event'].sum())} "
+        f"cooldown={COOLDOWN_SESSIONS}"
     )
+
+    cooldown_checked_entries = 0
 
     for h in STRATEGY1_HORIZONS:
         values = labels[f"oracle_value_{h}"].to_numpy(dtype=float)
         starts = labels[f"oracle_start_offset_{h}"].to_numpy(dtype=int)
         entries = labels[f"oracle_entries_{h}"].to_numpy(dtype=int)
+        campaigns = labels[f"oracle_campaigns_{h}"].to_numpy(dtype=int)
         partial = labels[f"oracle_partial_exit_{h}"].to_numpy(dtype=bool)
         full = labels[f"oracle_full_exit_{h}"].to_numpy(dtype=bool)
         horizon_exit = labels[f"oracle_horizon_exit_{h}"].to_numpy(dtype=bool)
@@ -97,19 +122,28 @@ def main() -> None:
             raise RuntimeError(f"Non-finite oracle values for {h}D")
         if (values < -1e-12).any():
             raise RuntimeError(f"Negative oracle values for {h}D despite no-trade option")
-        if (entries < 0).any() or (entries > 3).any():
-            raise RuntimeError(f"Invalid entry count for {h}D")
-        if ((starts == -1) != (entries == 0)).any():
+        if (entries < 0).any() or (campaigns < 0).any():
+            raise RuntimeError(f"Invalid action counts for {h}D")
+        if ((starts == -1) != (campaigns == 0)).any():
             raise RuntimeError(f"No-trade/start-offset mismatch for {h}D")
-        if (full & horizon_exit).any():
-            raise RuntimeError(f"Full-exit/horizon-exit overlap for {h}D")
+        if ((campaigns == 0) != (entries == 0)).any():
+            raise RuntimeError(f"Campaign/entry mismatch for {h}D")
+
+        # Recompute selected paths so cooldown is checked on every Oracle label,
+        # not only on the representative examples printed below.
+        for t in range(len(labels)):
+            run = oracle_value_for_window(events, t, t + h)
+            cooldown_checked_entries += _assert_cooldown(run)
 
         positive = float((values > 0.0).mean())
-        no_trade = float((entries == 0).mean())
+        no_trade = float((campaigns == 0).mean())
         e1 = float((entries == 1).mean())
         e2 = float((entries == 2).mean())
         e3 = float((entries == 3).mean())
-        traded = entries > 0
+        e4plus = float((entries >= 4).mean())
+        c1 = float((campaigns == 1).mean())
+        c2plus = float((campaigns >= 2).mean())
+        traded = campaigns > 0
         traded_n = int(traded.sum())
 
         print(
@@ -120,28 +154,37 @@ def main() -> None:
         )
         print(
             f"STRATEGY1 ACTIONS {h}D "
-            f"entry1={e1:.3f} entry2={e2:.3f} entry3={e3:.3f} "
+            f"entries1={e1:.3f} entries2={e2:.3f} entries3={e3:.3f} entries4plus={e4plus:.3f} "
+            f"campaign1={c1:.3f} campaign2plus={c2plus:.3f} "
             f"partial_exit={partial.mean():.3f} full_exit={full.mean():.3f} "
             f"horizon_exit={horizon_exit.mean():.3f}"
         )
         if traded_n:
             print(
                 f"STRATEGY1 ACTIONS_CONDITIONAL {h}D traded={traded_n} "
-                f"entry1={(entries[traded] == 1).mean():.3f} "
-                f"entry2={(entries[traded] == 2).mean():.3f} "
-                f"entry3={(entries[traded] == 3).mean():.3f} "
+                f"entries1={(entries[traded] == 1).mean():.3f} "
+                f"entries2={(entries[traded] == 2).mean():.3f} "
+                f"entries3={(entries[traded] == 3).mean():.3f} "
+                f"entries4plus={(entries[traded] >= 4).mean():.3f} "
+                f"campaign2plus={(campaigns[traded] >= 2).mean():.3f} "
                 f"partial_exit={partial[traded].mean():.3f} "
                 f"full_exit={full[traded].mean():.3f} "
                 f"horizon_exit={horizon_exit[traded].mean():.3f}"
             )
 
-        for k in (1, 2, 3):
-            n, mean, median, p90, max_value = _group_stats(values, entries == k)
+        for label, mask in (
+            ("1", entries == 1),
+            ("2", entries == 2),
+            ("3", entries == 3),
+            ("4plus", entries >= 4),
+        ):
+            n, mean, median, p90, max_value = _group_stats(values, mask)
             print(
-                f"STRATEGY1 VALUE_BY_ENTRIES {h}D entries={k} n={n} "
+                f"STRATEGY1 VALUE_BY_ENTRIES {h}D entries={label} n={n} "
                 f"mean={mean:.6f} median={median:.6f} p90={p90:.6f} max={max_value:.6f}"
             )
 
+    print(f"STRATEGY1 COOLDOWN PASS checked_post_exit_entries={cooldown_checked_entries}")
     _print_representative_60d_cases(events, labels)
     print("STRATEGY1 ORACLE SMOKE PASS")
 
