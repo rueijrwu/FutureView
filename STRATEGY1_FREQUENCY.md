@@ -23,7 +23,7 @@ The target remains daily Strategy 1 `OracleValue30`. Intraday data is used only 
 - MAE: secondary calibration diagnostic
 - No random split
 
-## Input variants tested so far
+## Input variants
 
 ```text
 DAILY_50_K5_10_20
@@ -34,6 +34,13 @@ DAILY_50_K5_10_20
 RTH2_100_K5_10_20
   50 sessions x 2 regular-session observations = 100 observations
   kernels = 5 / 10 / 20
+  params = 2764
+
+RTH2_100_K5_10_20_DILATION2
+  same 100 intraday observations
+  kernels = 5 / 10 / 20
+  dilation = 2
+  effective widths = 9 / 19 / 39 intraday bars ~= 4.5 / 9.5 / 19.5 sessions
   params = 2764
 
 RTH2_100_K10_20_40
@@ -124,7 +131,7 @@ feed = IEX
 input timeframe = 30Min
 ```
 
-Cross-seed results:
+Cross-seed results before the dilation control:
 
 ```text
 DAILY_50_K5_10_20
@@ -163,17 +170,82 @@ Fold 2: Daily +0.045867 | RTH2 K5/10/20 +0.029268 | RTH2 K10/20/40 -0.107643
 Fold 3: Daily +0.112637 | RTH2 K5/10/20 +0.086947 | RTH2 K10/20/40 -0.282613
 ```
 
-## Current interpretation
+The matched-feed multi-fold result did not establish a general higher-frequency advantage. `RTH2_100_K5_10_20` had almost the same mean Spearman as the Daily baseline, slightly worse seed dispersion, and lower top-20% Oracle lift.
 
-The matched-feed multi-fold result does **not** establish a general higher-frequency advantage.
+## Parameter-matched dilation control
 
-`RTH2_100_K5_10_20` has almost the same mean Spearman as the Daily baseline (`+0.072512` vs `+0.067405`), but slightly worse seed dispersion and lower top-20% Oracle lift. The direction is not stable across folds: RTH2 is better in Fold 1, while Daily is better in Folds 2 and 3.
+To test whether the raw RTH2 model failed because K5/10/20 spans shorter calendar time in intraday coordinates, a predeclared parameter-matched dilation control was added:
 
-Therefore the strong Massive one-fold result is best treated as regime-specific rather than evidence that doubling observation density generally improves prediction.
+```text
+RTH2_100_K5_10_20_DILATION2
+  input = same Alpaca IEX RTH2-100 tensor
+  kernels = 5 / 10 / 20
+  dilation = 2
+  params = 2764
+```
 
-`RTH2_100_K10_20_40` remains fail/hold for ranking. Its larger kernels also increase parameter count from 2764 to 4164, so it is not a clean receptive-field control.
+The implementation contains a runtime guard requiring the dilation model parameter count to equal the Daily Model A parameter count exactly.
 
-Current status:
+Observed cross-seed result:
+
+```text
+RTH2_100_K5_10_20_DILATION2
+  Spearman mean = +0.048054
+  Spearman std  = 0.099043
+  positive seeds = 3/5
+  top20 lift mean = +0.000014
+  top20 lift std  = 0.000584
+  positive lift seeds = 3/5
+  MAE mean = 0.112242
+```
+
+Comparison:
+
+```text
+DAILY_50_K5_10_20
+  Spearman = +0.067405
+  top20 lift = +0.000358
+
+RTH2_100_K5_10_20
+  Spearman = +0.072512
+  top20 lift = +0.000094
+
+RTH2_100_K5_10_20_DILATION2
+  Spearman = +0.048054
+  top20 lift = +0.000014
+```
+
+Fold-level dilation Spearman means were:
+
+```text
+Fold 1 = -0.084361
+Fold 2 = +0.065523
+Fold 3 = +0.162999
+```
+
+Fold-level dilation top20-lift means were:
+
+```text
+Fold 1 = -0.000860
+Fold 2 = -0.000246
+Fold 3 = +0.001148
+```
+
+The dilation control therefore **fails to establish a higher-frequency advantage**. Matching the approximate calendar receptive field while holding parameter count fixed does not improve the intraday model over either the raw RTH2 condition or the Daily baseline.
+
+This materially weakens the hypothesis that the earlier RTH2 result was limited mainly because the undilated intraday kernels covered too little calendar time.
+
+## Current conclusion
+
+The frequency hypothesis is now **HOLD / NOT ESTABLISHED**.
+
+The strongest supported interpretation is:
+
+> Under the current Model A, 30D RAW_ORACLE target, Sliding-260 training policy, and 50-session historical context, doubling the number of observations from 50 daily bars to 100 intraday RTH bars does not produce a reproducible multi-fold OOS ranking or top-quantile advantage.
+
+The strong Massive one-fold result is best treated as regime-specific. Neither same-parameter raw RTH2 nor the parameter-matched dilation control reproduces that advantage across the Alpaca matched-feed folds.
+
+Current model status:
 
 ```text
 1. CNN A / Daily-50 / K5-10-20
@@ -182,78 +254,17 @@ Current status:
 2. CNN A / RTH2-100 / K5-10-20
    Hold / research variant; no reproducible frequency advantage established.
 
-3. RTH2-100 / K10-20-40
-   Fail / hold.
+3. CNN A / RTH2-100 / K5-10-20 / dilation=2
+   Fail / hold as a calendar-receptive-field control.
 
-4. CNN B
+4. RTH2-100 / K10-20-40
+   Fail / hold; parameter count is larger and ranking is negative on average.
+
+5. CNN B
    Fail / hold for ranking and top20 lift.
 ```
 
-## Next experiment: parameter-matched dilation control
-
-The next experiment is predeclared before observing its results.
-
-Add one new model condition:
-
-```text
-RTH2_100_K5_10_20_DILATION2
-  input = same Alpaca IEX RTH2-100 tensor
-  kernels = 5 / 10 / 20
-  dilation = 2
-  params = 2764 (must exactly match Daily Model A and RTH2 K5/10/20)
-```
-
-For a dilated convolution, effective temporal width is:
-
-```text
-effective_width = dilation * (kernel_size - 1) + 1
-```
-
-Therefore the three branches cover approximately:
-
-```text
-K5,  dilation 2 -> 9 intraday bars  ~= 4.5 sessions
-K10, dilation 2 -> 19 intraday bars ~= 9.5 sessions
-K20, dilation 2 -> 39 intraday bars ~= 19.5 sessions
-```
-
-This approximately restores the Daily model's 5/10/20-session calendar receptive fields without increasing the number of convolution weights.
-
-Everything else remains frozen:
-
-```text
-same Alpaca IEX matched input feed
-same common dates
-same 50-session historical span
-same RTH2-100 observations
-same 30D RAW_ORACLE target
-same Sliding-260 training
-same 60-session purge
-same 60-session OOS folds
-same five seeds
-same epochs / LR / Huber delta
-same Model-A topology
-```
-
-The implementation contains a runtime parameter-count guard. The dilation-control run must abort if the dilated model does not have exactly the same parameter count as the Daily Model A baseline.
-
-### Predeclared interpretation
-
-```text
-If DILATION2 > Daily and DILATION2 > raw RTH2 across folds/seeds:
-  higher-frequency input may help when calendar receptive field is preserved.
-
-If DILATION2 ~= raw RTH2 ~= Daily:
-  extra observation density has no material benefit under the current setup.
-
-If Daily > both RTH2 variants:
-  daily compression is more appropriate for the current target/model.
-
-If DILATION2 is strong only in one fold:
-  treat as regime-specific, not a pass.
-```
-
-Primary evidence remains fold-wise Spearman, cross-seed stability, and top-20% realized Oracle Value lift. MAE remains secondary.
+MAE remains secondary. The K10/20/40 model again illustrates that lower point error can coexist with poor ranking quality.
 
 ## Commands
 
@@ -266,7 +277,7 @@ export APCA_API_KEY_ID='...'
 export APCA_API_SECRET_KEY='...'
 ```
 
-Run the canonical comparison, now including the dilation control:
+Run the canonical comparison:
 
 ```bash
 futureview-strategy1-frequency-compare
