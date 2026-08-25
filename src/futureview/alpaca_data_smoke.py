@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .alpaca_data import aggregate_rth_two_bars
+from .alpaca_data import aggregate_rth_daily, aggregate_rth_two_bars
 
 
 def main() -> None:
@@ -31,6 +31,17 @@ def main() -> None:
             }
         )
     raw = pd.DataFrame(rows)
+
+    daily = aggregate_rth_daily(raw)
+    if len(daily) != 1:
+        raise RuntimeError(f"expected 1 daily bar, got {len(daily)}")
+    d = daily.iloc[0]
+    if abs(float(d["open"]) - 100.0) > 1e-12 or abs(float(d["close"]) - 112.5) > 1e-12:
+        raise RuntimeError("daily aggregation price mismatch")
+    expected_daily_volume = float(np.sum([1000.0 + i for i in range(13)]))
+    if abs(float(d["volume"]) - expected_daily_volume) > 1e-12:
+        raise RuntimeError("daily aggregation volume mismatch")
+
     out = aggregate_rth_two_bars(raw)
     if len(out) != 2:
         raise RuntimeError(f"expected 2 session bars, got {len(out)}")
@@ -52,7 +63,7 @@ def main() -> None:
         raise RuntimeError("first bar volume mismatch")
     if abs(float(second["volume"]) - expected_second_volume) > 1e-12:
         raise RuntimeError("second bar volume mismatch")
-    print("ALPACA INTRADAY AGGREGATION SMOKE PASS")
+    print("ALPACA MATCHED-FEED AGGREGATION SMOKE PASS")
 
 
 if __name__ == "__main__":
