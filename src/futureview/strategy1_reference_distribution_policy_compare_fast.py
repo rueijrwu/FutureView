@@ -1,25 +1,32 @@
 from __future__ import annotations
 
-import pandas as pd
+import os
 
 from . import strategy1_reference_distribution as base
 from . import strategy1_reference_distribution_fast as fast
 from . import strategy1_reference_distribution_policy_compare as policy
 
 
-def _init_worker_fast(events: pd.DataFrame) -> None:
-    base._simulate_cached = fast._simulate_cached_fast
-    base._prepare_worker_state(events)
-
-
 def main() -> None:
+    # The fast backend is installed at runtime by replacing base._simulate_cached.
+    # ProcessPoolExecutor child processes re-import modules and do not reliably
+    # inherit that monkeypatch, which can terminate workers abruptly. Keep this
+    # runner single-process while retaining the Numba-JIT hot simulation path.
     base._simulate_cached = fast._simulate_cached_fast
-    policy._init_worker = _init_worker_fast
-    print(
-        "S1 POLICY_COMPARE FAST backend=numba_jit "
-        "policies=max1,unrestricted,spacing10,spacing20,spacing30"
-    )
-    policy.main()
+    previous_workers = os.environ.get("FUTUREVIEW_WORKERS")
+    os.environ["FUTUREVIEW_WORKERS"] = "1"
+    try:
+        print(
+            "S1 POLICY_COMPARE FAST backend=numba_jit workers=1 "
+            "reason=runtime_jit_patch_process_safe "
+            "policies=max1,unrestricted,spacing10,spacing20,spacing30"
+        )
+        policy.main()
+    finally:
+        if previous_workers is None:
+            os.environ.pop("FUTUREVIEW_WORKERS", None)
+        else:
+            os.environ["FUTUREVIEW_WORKERS"] = previous_workers
 
 
 if __name__ == "__main__":
