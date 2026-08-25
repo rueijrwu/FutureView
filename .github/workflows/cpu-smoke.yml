@@ -61,3 +61,8 @@ jobs:
         env:
           CUDA_VISIBLE_DEVICES: ''
         run: futureview-strategy1-target-smoke
+
+      - name: Run Strategy 1 walk-forward feasibility experiment
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: futureview-strategy1-feasibility
