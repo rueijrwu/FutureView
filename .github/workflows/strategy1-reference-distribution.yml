@@ -55,6 +55,7 @@ jobs:
             echo '## Strategy 1 Reference Distribution'
             echo
             echo 'Branch: `cnn-trend-reset`'
+            echo 'Trigger: push or manual dispatch'
             echo
             if [[ -f strategy1-reference-distribution.log ]]; then
               echo '### Formal rule'
