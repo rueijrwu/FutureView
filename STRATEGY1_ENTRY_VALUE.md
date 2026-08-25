@@ -28,9 +28,14 @@ Oracle is benchmark only.
 OracleValue = future-known best legal Strategy 1 campaign in the same 30-session interval
 ```
 
-It is the best solution available with knowledge of the future and is not a learning target.
+The Oracle candidate set includes the current legal Entry1 itself. Dataset invariants enforce:
 
-Diagnostics such as regret and capture compare a chosen entry with this future-known reference. They do not enter model training.
+```text
+OracleValue >= max(0, EntryReturn)
+OracleRegret = OracleValue - EntryReturn >= 0
+```
+
+Therefore Oracle is a valid future-known upper benchmark for the current decision point. It is never used as a learning target.
 
 ## Fixed 5-year setup
 
@@ -69,7 +74,7 @@ SUMMARY_RIDGE
 CONSTANT
 ```
 
-## Results
+## Entry-return results
 
 ### Summary Ridge
 
@@ -139,6 +144,50 @@ MAE mean = 0.097443
 
 The direct Summary20 fusion fails again and should remain hold/fail.
 
+## Oracle-Regret benchmark
+
+The canonical Oracle benchmark metric is now:
+
+```text
+OracleRegret = OracleValue - EntryReturn
+```
+
+Lower regret is better. Since Oracle is the future-known best legal solution at the same decision point, regret measures how much return the current entry leaves on the table relative to that upper benchmark.
+
+The regret-first analysis does **not** train on Oracle or regret. Models are still trained only on `EntryReturn`. Regret is evaluated after OOS predictions are produced.
+
+Primary regret diagnostics:
+
+```text
+overall_regret_mean
+  mean OracleRegret across all legal OOS Entry1 events
+
+top_regret_mean
+  mean OracleRegret among the model's top-20% scored entries
+
+regret_reduction_vs_all
+  overall_regret_mean - top_regret_mean
+  positive is better
+
+top_oracle_match_rate
+  fraction of top-scored entries with regret approximately zero
+  no additional tunable threshold; numerical epsilon only
+```
+
+The intended indicator test is:
+
+> If a model's high-score entries have higher realized EntryReturn **and** lower OracleRegret than the full legal-entry set, the score is useful both economically and relative to the future-known benchmark.
+
+Raw capture ratio is no longer a primary metric because `EntryReturn / OracleValue` becomes unstable when OracleValue is close to zero.
+
+Run the regret-first comparison with:
+
+```bash
+futureview-strategy1-entry-regret-compare
+```
+
+The run keeps the same five-year data cap, legal Entry1 samples, chronological event folds, 60-session raw purge, five seeds, and model set as the entry-value comparison.
+
 ## Current model status
 
 ```text
@@ -164,26 +213,14 @@ Primary trading-indicator metrics are:
 1. top-score realized Entry Return
 2. top-score lift versus all legal Entry1 events
 3. top-score win rate
-4. fold stability
-5. seed stability
-6. Spearman as a ranking diagnostic
+4. top-score OracleRegret
+5. regret reduction versus all legal entries
+6. fold stability
+7. seed stability
+8. Spearman as a ranking diagnostic
 ```
 
 MAE is secondary. A model can be useful as an indicator without producing well-calibrated percentage-return estimates.
-
-Oracle diagnostics are secondary benchmarking metrics only.
-
-### Capture-ratio caution
-
-The raw ratio
-
-```text
-EntryReturn / OracleValue
-```
-
-is numerically unstable when `OracleValue` is very close to zero. This run contains examples where tiny Oracle denominators produce very large negative capture values. Therefore raw mean capture should not be used as a primary model-quality metric without a predeclared minimum-Oracle threshold or another robust normalization.
-
-Regret (`OracleValue - EntryReturn`) is better behaved and remains useful as a benchmark diagnostic.
 
 ## Current conclusion
 
@@ -193,4 +230,4 @@ The historical question was whether a CNN could predict the future best Oracle o
 
 On the current five-year, four-fold, five-seed experiment, CNN A gives the strongest evidence so far. Its top-20% entry-return lift is positive in all five seeds, while the other tested models do not show the same stability.
 
-This is sufficient to keep CNN A as the primary Entry Quality Score model, but not sufficient yet to claim a robust trading indicator across regimes.
+The next benchmark layer is OracleRegret: a useful Entry Quality Score should not only pick higher realized returns, but should also pick entries with systematically smaller distance to the future-known Strategy 1 optimum.
