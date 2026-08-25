@@ -42,7 +42,7 @@ class Strategy1Run:
 
 
 def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
-    """Add causal Strategy 1 indicators and discrete entry/exit events."""
+    """Add causal Strategy 1 indicators, candidate sets, and legacy events."""
     out = df.copy()
     close = out["close"].astype(float)
 
@@ -57,17 +57,23 @@ def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
         & (out["ma5"] > out["ma10"])
         & (out["ma10"] > out["ma20"])
     )
+    # Reference-distribution candidate: every session satisfying the entry rule.
+    out["entry_candidate"] = stack.fillna(False)
+    # Legacy event-conditioned research keeps only the newly-true transition.
     out["entry1_event"] = stack & ~stack.shift(1, fill_value=False)
 
     # Retained only as a historical diagnostic column. Strategy 1 add-ons no
-    # longer use this rolling breakout event; they use local maxima locked at
-    # the Entry1 close by _locked_addon_levels().
+    # longer use this rolling breakout event; they use local maxima.
     prior20_high = close.shift(1).rolling(20, min_periods=20).max()
     above_prior20 = close > prior20_high
     out["breakout20_event"] = above_prior20 & ~above_prior20.shift(1, fill_value=False)
 
     below5 = close < out["ma5"]
     below10 = close < out["ma10"]
+    # Candidate sets expose every qualifying session. Legacy execution events
+    # remain first-crossing events so existing Strategy 1 runners are unchanged.
+    out["exit5_candidate"] = below5.fillna(False)
+    out["exit10_candidate"] = below10.fillna(False)
     out["exit5_event"] = below5 & ~below5.shift(1, fill_value=False)
     out["exit10_event"] = below10 & ~below10.shift(1, fill_value=False)
 
@@ -98,14 +104,7 @@ def _locked_addon_levels(
     *,
     min_gap: int = LOCAL_MAX_MIN_GAP,
 ) -> tuple[tuple[int, float], ...]:
-    """Lock the two nearest prior local maxima for one Entry1 campaign.
-
-    The most recent local maximum is selected first. The second is the nearest
-    earlier local maximum whose trading-index distance from the first is
-    strictly greater than min_gap. The selected levels never change after
-    Entry1. If history does not contain two eligible maxima, the available
-    subset is returned and later add-ons are correspondingly unavailable.
-    """
+    """Lock the two nearest prior local maxima for one Entry1 campaign."""
     if min_gap < 0:
         raise ValueError("min_gap must be non-negative")
     maxima = local_maximum_indices(events, entry_index)
@@ -122,20 +121,19 @@ def _locked_addon_levels(
     return tuple((i, float(events.at[i, "close"])) for i in selected)
 
 
-def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
-    """Simulate one fixed Strategy 1 campaign from a legal first-entry event.
+def _simulate_from_start(
+    events: pd.DataFrame,
+    start: int,
+    end: int,
+    *,
+    addon_levels: tuple[tuple[int, float], ...] | None = None,
+) -> Strategy1Run:
+    """Simulate one Strategy 1 campaign from a legal entry.
 
-    Addon1 / Addon2 reference prices are locked at Entry1 from the two nearest
-    prior confirmed close-price local maxima, requiring their trading dates to
-    be separated by more than five sessions. A later add-on occurs only on a
-    newly observed close-price crossing above its corresponding locked level.
-
-    The campaign allows at most three total entries. After any entry/add-on, MA5
-    and MA10 exits are blocked for the next three trading sessions. After an MA5
-    partial exit, add-ons are blocked for the next three trading sessions. An
-    MA10 full exit terminates the campaign; no second campaign may start in the
-    same Oracle window. Horizon liquidation is mandatory and exempt from the
-    spacing rule because it is the evaluation boundary, not a strategy signal.
+    By default the legacy Strategy 1 behavior locks the two nearest prior local
+    maxima. Reference-distribution analysis may pass an explicit zero/one/two
+    level set so all legal addon-reference combinations can be compared without
+    changing legacy callers.
     """
     cash = 1.0
     shares = 0.0
@@ -149,7 +147,10 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
     last_entry_index: int | None = None
     last_partial_exit_index: int | None = None
     actions: list[Strategy1Action] = []
-    addon_levels = _locked_addon_levels(events, start)
+    if addon_levels is None:
+        addon_levels = _locked_addon_levels(events, start)
+    if len(addon_levels) > 2:
+        raise ValueError("Strategy 1 supports at most two addon levels")
 
     def buy(index: int) -> None:
         nonlocal cash, shares, exposure_fraction, entries_used, last_entry_index
