@@ -33,6 +33,7 @@ futureview-strategy1-summary-baseline = "futureview.strategy1_summary_baseline:m
 futureview-strategy1-summary-fusion = "futureview.strategy1_summary_fusion:main"
 futureview-strategy1-entry-value-compare = "futureview.strategy1_entry_value_compare_5y:main"
 futureview-strategy1-entry-regret-compare = "futureview.strategy1_entry_regret_compare_5y:main"
+futureview-strategy1-entry-horizon-baseline = "futureview.strategy1_entry_horizon_baseline:main"
 futureview-strategy1-oos-portfolio = "futureview.strategy1_oos_portfolio:main"
 futureview-strategy1-oos-portfolio-rank-gate = "futureview.strategy1_oos_portfolio_rank_gate:main"
 futureview-strategy1-oos-portfolio-recent-rank = "futureview.strategy1_oos_portfolio_recent_rank_gate:main"
