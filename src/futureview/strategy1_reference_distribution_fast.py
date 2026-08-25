@@ -32,7 +32,7 @@ def _simulate_numeric(
     addon_level_1: float,
     addon_level_2: float,
     addon2_spacing_tolerance: float,
-) -> tuple[float, float, float, int]:
+) -> tuple[float, float, float, int, int, int, int, int, int]:
     cash = 1.0
     shares = 0.0
     exposure_fraction = 0.0
@@ -43,6 +43,11 @@ def _simulate_numeric(
     last_partial_exit_index = -1
     entry_price = close[start]
     addon1_price = 0.0
+    addon1_index = -1
+    addon2_index = -1
+    exit5_index = -1
+    exit10_index = -1
+    horizon_exit_index = -1
 
     amount = 1.0 / 3.0
     shares += amount / entry_price
@@ -60,6 +65,7 @@ def _simulate_numeric(
             cash += shares * price
             shares = 0.0
             exposure_fraction = 0.0
+            exit10_index = i
             break
 
         if exit_eligible and exit5_event[i] and (not partial_exit_used) and shares > 0.0:
@@ -69,6 +75,7 @@ def _simulate_numeric(
             exposure_fraction *= 0.5
             partial_exit_used = True
             last_partial_exit_index = i
+            exit5_index = i
             continue
 
         addon_eligible = last_partial_exit_index < 0 or i - last_partial_exit_index > COOLDOWN_SESSIONS
@@ -95,14 +102,28 @@ def _simulate_numeric(
                 last_entry_index = i
                 if entries_used == 2:
                     addon1_price = price
+                    addon1_index = i
+                elif entries_used == 3:
+                    addon2_index = i
 
     if shares > 0.0:
         cash += shares * close[end]
+        horizon_exit_index = end
 
     final_return = cash - 1.0
     efficiency = final_return / exposure_days if exposure_days > 0.0 else 0.0
     executed_addons = entries_used - 1
-    return final_return, efficiency, exposure_days, executed_addons
+    return (
+        final_return,
+        efficiency,
+        exposure_days,
+        executed_addons,
+        addon1_index,
+        addon2_index,
+        exit5_index,
+        exit10_index,
+        horizon_exit_index,
+    )
 
 
 def _fast_event_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -117,12 +138,12 @@ def _fast_event_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 @lru_cache(maxsize=FAST_SIM_CACHE_SIZE)
-def _simulate_cached_fast(
+def _simulate_cached_fast_path(
     entry: int,
     end: int,
     addon_level_indices: tuple[int, ...],
     addon2_spacing_tolerance: float | None = None,
-) -> tuple[float, float, float, int]:
+) -> tuple[float, float, float, int, tuple[int, int, int, int, int, int]]:
     close, exit5_event, exit10_event = _fast_event_arrays()
     count = len(addon_level_indices)
     if count > 2:
@@ -130,7 +151,17 @@ def _simulate_cached_fast(
     level1 = float(close[addon_level_indices[0]]) if count >= 1 else 0.0
     level2 = float(close[addon_level_indices[1]]) if count >= 2 else 0.0
     spacing_tolerance = -1.0 if addon2_spacing_tolerance is None else float(addon2_spacing_tolerance)
-    ret, efficiency, exposure, executed_addons = _simulate_numeric(
+    (
+        ret,
+        efficiency,
+        exposure,
+        executed_addons,
+        addon1_index,
+        addon2_index,
+        exit5_index,
+        exit10_index,
+        horizon_exit_index,
+    ) = _simulate_numeric(
         close,
         exit5_event,
         exit10_event,
@@ -141,7 +172,31 @@ def _simulate_cached_fast(
         level2,
         spacing_tolerance,
     )
-    return float(ret), float(efficiency), float(exposure), int(executed_addons)
+    path = (
+        int(entry),
+        int(addon1_index),
+        int(addon2_index),
+        int(exit5_index),
+        int(exit10_index),
+        int(horizon_exit_index),
+    )
+    return float(ret), float(efficiency), float(exposure), int(executed_addons), path
+
+
+@lru_cache(maxsize=FAST_SIM_CACHE_SIZE)
+def _simulate_cached_fast(
+    entry: int,
+    end: int,
+    addon_level_indices: tuple[int, ...],
+    addon2_spacing_tolerance: float | None = None,
+) -> tuple[float, float, float, int]:
+    ret, efficiency, exposure, executed_addons, _ = _simulate_cached_fast_path(
+        entry,
+        end,
+        addon_level_indices,
+        addon2_spacing_tolerance,
+    )
+    return ret, efficiency, exposure, executed_addons
 
 
 def main() -> None:
