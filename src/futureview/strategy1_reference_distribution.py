@@ -13,6 +13,7 @@ from .strategy1 import LOCAL_MAX_MIN_GAP, _simulate_from_start, add_strategy1_ev
 DATA_PERIOD = "5y"
 WINDOWS = (30, 45, 60, 90)
 ADDON_GROUPS = (0, 1, 2)
+ADDON2_SPACING_TOLERANCES = (0.10, 0.20, 0.30)
 
 _WORKER_EVENTS: pd.DataFrame | None = None
 _CLOSE: np.ndarray | None = None
@@ -77,10 +78,21 @@ def _addon_reference_sets(start: int, entry: int) -> tuple[tuple[tuple[int, floa
 
 
 @lru_cache(maxsize=None)
-def _simulate_cached(entry: int, end: int, addon_level_indices: tuple[int, ...]) -> tuple[float, float, float, int]:
+def _simulate_cached(
+    entry: int,
+    end: int,
+    addon_level_indices: tuple[int, ...],
+    addon2_spacing_tolerance: float | None = None,
+) -> tuple[float, float, float, int]:
     events, close, _, _, _, _ = _require_state()
     addon_levels = tuple((i, float(close[i])) for i in addon_level_indices)
-    run = _simulate_from_start(events, entry, end, addon_levels=addon_levels)
+    run = _simulate_from_start(
+        events,
+        entry,
+        end,
+        addon_levels=addon_levels,
+        addon2_spacing_tolerance=addon2_spacing_tolerance,
+    )
     executed_addons = max(0, int(run.entries_used) - 1)
     return float(run.final_return), float(run.return_per_exposure_day), float(run.exposure_days), executed_addons
 
@@ -131,6 +143,10 @@ def _summarize_window(start: int, end: int, entries: np.ndarray,
     grouped: dict[int, dict[str, list[float]]] = {
         a: {"returns": [], "efficiencies": [], "exposures": []} for a in ADDON_GROUPS
     }
+    spacing_grouped: dict[float, dict[str, list[float]]] = {
+        tol: {"returns": [], "efficiencies": [], "exposures": []}
+        for tol in ADDON2_SPACING_TOLERANCES
+    }
     legal_combinations = 0
     local_max_candidate_count = 0
 
@@ -141,7 +157,7 @@ def _summarize_window(start: int, end: int, entries: np.ndarray,
         legal_combinations += len(configs)
         for addon_levels in configs:
             level_indices = tuple(level[0] for level in addon_levels)
-            ret, eff, exp, executed_addons = _simulate_cached(entry, end, level_indices)
+            ret, eff, exp, executed_addons = _simulate_cached(entry, end, level_indices, None)
             returns.append(ret)
             efficiencies.append(eff)
             exposures.append(exp)
@@ -150,14 +166,32 @@ def _summarize_window(start: int, end: int, entries: np.ndarray,
             g["efficiencies"].append(eff)
             g["exposures"].append(exp)
 
+            if len(level_indices) == 2:
+                for tol in ADDON2_SPACING_TOLERANCES:
+                    sret, seff, sexp, sexecuted = _simulate_cached(entry, end, level_indices, tol)
+                    if sexecuted == 2:
+                        sg = spacing_grouped[tol]
+                        sg["returns"].append(sret)
+                        sg["efficiencies"].append(seff)
+                        sg["exposures"].append(sexp)
+
     overall = _group_summary(returns, efficiencies, exposures)
     addon_groups = {
         a: _group_summary(grouped[a]["returns"], grouped[a]["efficiencies"], grouped[a]["exposures"])
         for a in ADDON_GROUPS
     }
+    spacing_groups = {
+        tol: _group_summary(
+            spacing_grouped[tol]["returns"],
+            spacing_grouped[tol]["efficiencies"],
+            spacing_grouped[tol]["exposures"],
+        )
+        for tol in ADDON2_SPACING_TOLERANCES
+    }
     return {
         **overall,
         "addon_groups": addon_groups,
+        "addon2_spacing_groups": spacing_groups,
         "entry_count": float(len(entries)),
         "local_max_candidates": float(local_max_candidate_count),
         "exit5_candidates": float(_candidate_count(exit5_prefix, start, end)),
@@ -231,6 +265,45 @@ def _print_group_stats(w: int, addon_count: int, rows: list[dict[str, object]]) 
     )
 
 
+def _print_spacing_stats(w: int, tolerance: float, rows: list[dict[str, object]]) -> None:
+    groups = [row["addon2_spacing_groups"][tolerance] for row in rows]  # type: ignore[index]
+    nonempty = [g for g in groups if int(g["return"]["n"]) > 0]  # type: ignore[index]
+    if not nonempty:
+        return
+
+    def mf(section: str, name: str) -> float:
+        return float(np.mean([g[section][name] for g in nonempty]))  # type: ignore[index]
+
+    counts = np.asarray([g["return"]["n"] for g in groups], dtype=float)  # type: ignore[index]
+    unrestricted_counts = np.asarray(
+        [row["addon_groups"][2]["return"]["n"] for row in rows], dtype=float  # type: ignore[index]
+    )
+    unrestricted_total = float(unrestricted_counts.sum())
+    acceptance_rate = float(counts.sum() / unrestricted_total) if unrestricted_total > 0.0 else 0.0
+
+    total_return = 0.0
+    total_exposure = 0.0
+    for g in nonempty:
+        exposure = float(g["total_exposure_days"])
+        total_return += float(g["aggregate_efficiency"]) * exposure
+        total_exposure += exposure
+    pooled = total_return / total_exposure if total_exposure > 0.0 else 0.0
+
+    print(
+        f"S1 REFERENCE_DISTRIBUTION ADDON2_SPACING w={w} tolerance={tolerance:.2f} "
+        "rule=abs((addon2_price-addon1_price)/(addon1_price-entry_price)-1)<=tolerance "
+        f"executed2_count_mean={counts.mean():.3f} executed2_count_median={np.median(counts):.3f} "
+        f"acceptance_rate={acceptance_rate:.3f} "
+        f"return_lower_mean={mf('return','lower'):.6f} return_upper_mean={mf('return','upper'):.6f} "
+        f"return_mean={mf('return','mean'):.6f} return_median={mf('return','median'):.6f} "
+        f"return_std_mean={mf('return','std'):.6f} return_iqr_mean={mf('return','iqr'):.6f} "
+        f"win_rate_mean={mf('return','positive_rate'):.3f} "
+        f"efficiency_mean={mf('efficiency','mean'):.6f} efficiency_median={mf('efficiency','median'):.6f} "
+        f"efficiency_lower_mean={mf('efficiency','lower'):.6f} efficiency_upper_mean={mf('efficiency','upper'):.6f} "
+        f"efficiency_pooled={pooled:.6f}"
+    )
+
+
 def main() -> None:
     df = download_spy_daily(period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
@@ -242,7 +315,8 @@ def main() -> None:
         "S1 REFERENCE_DISTRIBUTION DATA "
         f"period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
         f"windows={','.join(str(w) for w in WINDOWS)} model=false target=false workers={workers} "
-        "precompute=true cache_simulations=true anchor_task=true addon_groups=executed_0_1_2"
+        "precompute=true cache_simulations=true anchor_task=true addon_groups=executed_0_1_2 "
+        f"addon2_spacing_tolerances={','.join(f'{t:.2f}' for t in ADDON2_SPACING_TOLERANCES)}"
     )
     print(
         "S1 REFERENCE_DISTRIBUTION RULE "
@@ -251,7 +325,8 @@ def main() -> None:
         f"local_max_pair_gap=gt_{LOCAL_MAX_MIN_GAP} addon_paths=optional_none_single_pair "
         "exit_set=all_exit_condition_sessions_for_audit exit_execution=existing_strategy1_first_eligible_signal_priority "
         "combination=entry_x_legal_addon_reference_set lower_bound=min_legal_combination_return "
-        "upper_bound=max_legal_combination_return efficiency=combination_return_per_capital_weighted_exposure_day"
+        "upper_bound=max_legal_combination_return efficiency=combination_return_per_capital_weighted_exposure_day "
+        "addon2_spacing_test=realized_entry_addon1_addon2_equal_price_step legacy_unrestricted_preserved"
     )
     aggregate: dict[int, list[dict[str, object]]] = {w: [] for w in WINDOWS}
     starts = list(range(anchor_count))
@@ -318,6 +393,8 @@ def main() -> None:
         )
         for addon_count in ADDON_GROUPS:
             _print_group_stats(w, addon_count, rows)
+        for tolerance in ADDON2_SPACING_TOLERANCES:
+            _print_spacing_stats(w, tolerance, rows)
     print("S1 REFERENCE_DISTRIBUTION COMPLETE")
 
 
