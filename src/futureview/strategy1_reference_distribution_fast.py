@@ -18,6 +18,7 @@ except ImportError as exc:  # pragma: no cover - environment dependent
 _FAST_EVENTS_ID: int | None = None
 _FAST_EXIT5: np.ndarray | None = None
 _FAST_EXIT10: np.ndarray | None = None
+FAST_SIM_CACHE_SIZE = 32768
 
 
 @njit(cache=True)
@@ -115,7 +116,7 @@ def _fast_event_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return close, _FAST_EXIT5, _FAST_EXIT10
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=FAST_SIM_CACHE_SIZE)
 def _simulate_cached_fast(
     entry: int,
     end: int,
@@ -147,7 +148,7 @@ def main() -> None:
     base._simulate_cached = _simulate_cached_fast
     print(
         "S1 REFERENCE_DISTRIBUTION FAST backend=numba_jit semantics=unchanged "
-        "addon_groups=executed addon2_spacing=realized_equal_price_step"
+        f"cache_size={FAST_SIM_CACHE_SIZE} addon_groups=executed addon2_spacing=realized_equal_price_step"
     )
     base.main()
 
