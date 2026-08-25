@@ -1,6 +1,6 @@
 # Strategy 1 — CNN + Summary20 Fusion Experiment
 
-This document predeclares the 20-feature fusion test before observing results. It does not change frozen Strategy 1 mechanics or the Oracle definition.
+This document records the 20-feature fusion test. It does not change frozen Strategy 1 mechanics or the Oracle definition.
 
 ## Question
 
@@ -39,6 +39,7 @@ CNN_A_PLUS_SUMMARY20
   -> hidden width 8
   -> 4 horizon outputs
   -> Tanh
+  params = 2924
 ```
 
 The fusion test intentionally does not replace the Model-A convolution encoder.
@@ -84,7 +85,7 @@ z_test = (summary_test - mean_train) / std_train
 
 OOS data is never used to fit feature normalization.
 
-## Interpretation gate
+## Predeclared interpretation gate
 
 The hypothesis is supported only if `CNN_A_PLUS_SUMMARY20` shows a meaningful and reasonably stable improvement in ranking-oriented metrics relative to `CNN_A` on the same OOS dates.
 
@@ -101,7 +102,91 @@ NOT a pass:
 - top20 lift materially worsens despite a small Spearman gain.
 ```
 
-This is a prediction-layer experiment. It does not promote the fusion model to portfolio testing unless the prediction gate is first supported.
+## Observed result
+
+Dataset and evaluation remained the fixed formal setup:
+
+```text
+windows = 623
+folds = 4
+horizon = 30
+train = Sliding-260
+purge = 60
+test_size = 60
+summary_dim = 20
+```
+
+Cross-seed results:
+
+```text
+CNN_A
+  Spearman mean = +0.233705
+  Spearman std = 0.103928
+  positive seeds = 5/5
+  top20 lift mean = +0.004189
+  top20 lift std = 0.001429
+  positive lift seeds = 5/5
+  MAE mean = 0.114506
+
+CNN_A_PLUS_SUMMARY20
+  Spearman mean = -0.133411
+  Spearman std = 0.231136
+  positive seeds = 2/5
+  top20 lift mean = +0.000101
+  top20 lift std = 0.003473
+  positive lift seeds = 2/5
+  MAE mean = 0.080978
+```
+
+Fold-wise cross-seed Spearman means:
+
+```text
+Fold 1: CNN_A +0.202796 | Fusion -0.306839
+Fold 2: CNN_A +0.034425 | Fusion -0.058394
+Fold 3: CNN_A +0.035332 | Fusion -0.041346
+Fold 4: CNN_A +0.662265 | Fusion -0.127065
+```
+
+Fold-wise top20 lift means:
+
+```text
+Fold 1: CNN_A +0.002844 | Fusion -0.002051
+Fold 2: CNN_A +0.000012 | Fusion -0.000083
+Fold 3: CNN_A +0.000007 | Fusion +0.000000
+Fold 4: CNN_A +0.013894 | Fusion +0.002540
+```
+
+## Interpretation
+
+The 20-feature fusion **fails** the predeclared prediction gate.
+
+The fusion model improves MAE from `0.114506` to `0.080978`, but this is a secondary calibration metric. The primary ranking metrics deteriorate sharply:
+
+```text
+Spearman: +0.233705 -> -0.133411
+positive Spearman seeds: 5/5 -> 2/5
+top20 lift: +0.004189 -> +0.000101
+positive top20-lift seeds: 5/5 -> 2/5
+```
+
+The degradation is not confined to one fold. The fusion has lower mean Spearman than CNN A in all four folds, including the strongest original CNN regime in Fold 4.
+
+Therefore the low-dimensional Summary20 feature set should **not** be concatenated directly into the CNN prediction head under this fixed architecture/training setup.
+
+This result does not invalidate Summary Ridge as a separate causal portfolio baseline. It shows that information useful to a simple linear filter does not automatically improve the CNN when fused directly into its learned representation. The two models can be useful for different decision layers.
+
+Current status:
+
+```text
+CNN_A
+  remains the primary prediction-ranking model.
+
+CNN_A_PLUS_SUMMARY20
+  fail / hold; do not promote to portfolio testing.
+
+SUMMARY_RIDGE
+  remains a separate low-dimensional baseline and the strongest observed causal portfolio filter so far, with small-sample caveat.
+```
 
 ## Run
 
