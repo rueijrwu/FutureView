@@ -10,15 +10,16 @@ The purpose is feasibility testing, not claiming that this is an optimal trading
 - Direction: long only
 - Data frequency: daily
 - Future horizons: 15, 30, 45, 60 trading sessions
-- Maximum entries per campaign: 3
-- Entry capital weights: 1/3, 1/3, 1/3 of capital available at the start of that campaign
-- Post-exit cooldown: 3 trading sessions
+- Maximum campaigns per future window: 1
+- Maximum entries in that campaign: 3
+- Entry capital weights: 1/3, 1/3, 1/3 of initial capital
+- Entry/exit spacing: 3 trading sessions
 - Transaction costs/slippage: 0 for v0 smoke testing
 - Execution price: event-day close
 - Remaining position at horizon end: forced close at final horizon-day close
 - No-trade is always allowed and has Oracle Value 0
 
-A future window may contain more than one campaign. A new campaign is allowed only after a full exit, the three-session cooldown has expired, and a new legal Entry-1 event occurs.
+A full MA10 exit terminates the only allowed campaign. No second campaign may start inside the same Oracle horizon.
 
 ## 2. First entry event
 
@@ -35,7 +36,7 @@ and the complete condition was false on the previous trading session.
 
 This makes the first entry a discrete transition event rather than a condition that remains continuously active for many days.
 
-At a campaign's first-entry event, invest 1/3 of the capital available at the start of that campaign.
+At the selected first-entry event, invest 1/3 of initial capital.
 
 ## 3. Add-on events
 
@@ -55,17 +56,17 @@ AbovePrior20[t] = true
 AbovePrior20[t-1] = false
 ```
 
-After the first entry in a campaign:
+After the first entry:
 
 - first later eligible breakout event -> invest the second 1/3
 - next later eligible breakout event -> invest the final 1/3
-- no more entries after three total entries in that campaign
+- no more entries after three total entries
 
 Continuous new highs while the breakout state remains true do not consume repeated add-on entries. A new breakout event requires the breakout state to reset and become true again.
 
-An add-on event that occurs during a post-exit cooldown is not eligible and is skipped.
+After an MA5 partial exit, add-ons are blocked for the next three trading sessions. If the partial exit occurs on session `t`, then add-ons are blocked on `t+1`, `t+2`, and `t+3`; add-on eligibility resumes on `t+4`.
 
-## 4. Exit events and cooldown
+## 4. Exit events and three-session spacing
 
 All exit rules use daily close.
 
@@ -79,47 +80,60 @@ Close[t] < MA5[t]
 
 with the previous session not below MA5.
 
-At the first such event after entry in a campaign:
+At the first eligible such event after entry:
 
 ```text
 sell 50% of the current shares
 ```
 
-Only one MA5 partial exit is allowed per campaign.
+Only one MA5 partial exit is allowed in the campaign.
 
 ### Full exit
 
 A 10-day moving-average exit event occurs when price crosses from not-below MA10 to below MA10.
 
-At that event:
+At the first eligible such event:
 
 ```text
 sell all remaining shares
-end the current campaign
+terminate the campaign
 ```
 
-If MA5 and MA10 exit events occur on the same session, the MA10 full exit has priority.
+If MA5 and MA10 exit events occur on the same eligible session, the MA10 full exit has priority.
 
 No add-on is performed on a session used for an exit event.
 
-### Three-session post-exit cooldown
+### Three-session spacing after entry/add-on
 
-Any MA5 partial exit or MA10 full exit starts a cooldown covering the next three trading sessions.
+Any entry or add-on blocks MA5 and MA10 strategy exits for the next three trading sessions.
 
-If an exit occurs on trading session `t`, then:
+If an entry/add-on occurs on trading session `t`, then:
 
 ```text
-t+1: no entry / no add-on
-t+2: no entry / no add-on
-t+3: no entry / no add-on
-t+4: entry/add-on eligibility resumes
+t+1: MA5/MA10 strategy exit blocked
+t+2: MA5/MA10 strategy exit blocked
+t+3: MA5/MA10 strategy exit blocked
+t+4: exit eligibility resumes
 ```
 
-During a cooldown after a partial exit, the remaining shares continue to be held and normal exit rules remain active; only new entry/add-on actions are blocked.
+An MA5/MA10 crossover event that occurs inside the blocked interval is skipped rather than deferred. A later new eligible crossover event is required.
 
-After a full exit, the strategy remains flat through the cooldown. Beginning on the fourth trading session after that exit, the first new legal Entry-1 transition event may start a new campaign. A legal Entry-1 event that occurs inside the cooldown is skipped rather than deferred.
+The mandatory horizon-end liquidation is exempt from this spacing rule because it is imposed by the label-window boundary rather than by a strategy exit signal.
 
-Each new campaign resets its own three-entry allowance and its one-time MA5 partial-exit allowance. Its 1/3 + 1/3 + 1/3 allocation is measured against capital available when that campaign begins.
+### Three-session spacing after partial exit
+
+An MA5 partial exit blocks add-ons for the next three trading sessions:
+
+```text
+t+1: no add-on
+t+2: no add-on
+t+3: no add-on
+t+4: add-on eligibility resumes
+```
+
+The remaining shares continue to be held during this interval, and MA10 full-exit logic remains available subject to the entry/add-on-to-exit spacing above.
+
+After an MA10 full exit, the campaign is finished and no re-entry is allowed inside the same Oracle horizon.
 
 ## 5. Oracle choice
 
@@ -131,16 +145,17 @@ For prediction date `t` and horizon `h`, the future window is:
 
 The Oracle has complete knowledge of this future window only for label construction.
 
-It may choose which legal first-entry event within that window starts the first Strategy 1 campaign.
+It may choose which legal first-entry event within that window starts the single Strategy 1 campaign.
 
-Once that first-entry event is chosen, all subsequent add-ons, exits, cooldowns, and later eligible re-entry campaigns are deterministic under the fixed rules above.
+Once a first-entry event is chosen, all subsequent add-ons, exits, and spacing rules are deterministic under the fixed rules above.
 
 The Oracle may not alter:
 
 - entry weights
 - event definitions
-- number of allowed entries per campaign
-- cooldown length
+- maximum three entries
+- maximum one campaign
+- three-session spacing
 - exit rules
 - execution prices
 - horizon
@@ -148,7 +163,7 @@ The Oracle may not alter:
 The Oracle Value is:
 
 ```text
-max(0, best final capital return among all legal first-campaign start candidates)
+max(0, best final capital return among all legal first-entry candidates)
 ```
 
 The zero option represents choosing not to trade.
@@ -178,7 +193,8 @@ The following are deliberately excluded until the basic Oracle-value hypothesis 
 - intraday execution
 - 4-hour / 1-hour inputs
 - transaction costs and slippage
-- variable cooldown duration
+- variable spacing duration
+- repeated campaigns inside one horizon
 - variable entry weights
 - strategy-specific stop losses beyond MA exits
 
