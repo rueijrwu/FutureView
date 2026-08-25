@@ -10,12 +10,21 @@ ENTRY_WEIGHTS = (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
 
 
 @dataclass(frozen=True)
+class Strategy1Action:
+    index: int
+    action: str
+    price: float
+    fraction: float
+
+
+@dataclass(frozen=True)
 class Strategy1Run:
     final_return: float
     start_index: int | None
     entries_used: int
     partial_exit_used: bool
     full_exit_used: bool
+    actions: tuple[Strategy1Action, ...] = ()
 
 
 def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
@@ -55,6 +64,7 @@ def _simulate_cycle(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
     entries_used = 0
     partial_exit_used = False
     full_exit_used = False
+    actions: list[Strategy1Action] = []
 
     def buy(index: int) -> None:
         nonlocal cash, shares, entries_used
@@ -65,6 +75,8 @@ def _simulate_cycle(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
         shares += amount / price
         cash -= amount
         entries_used += 1
+        action = "entry1" if entries_used == 1 else f"addon{entries_used - 1}"
+        actions.append(Strategy1Action(index=index, action=action, price=price, fraction=amount))
 
     buy(start)
 
@@ -76,6 +88,7 @@ def _simulate_cycle(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
             cash += shares * price
             shares = 0.0
             full_exit_used = True
+            actions.append(Strategy1Action(index=i, action="exit10_full", price=price, fraction=1.0))
             break
 
         if bool(events.at[i, "exit5_event"]) and not partial_exit_used and shares > 0.0:
@@ -83,6 +96,7 @@ def _simulate_cycle(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
             cash += sold * price
             shares -= sold
             partial_exit_used = True
+            actions.append(Strategy1Action(index=i, action="exit5_half", price=price, fraction=0.5))
             # Do not add on the same session as an exit event.
             continue
 
@@ -90,8 +104,10 @@ def _simulate_cycle(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
             buy(i)
 
     if shares > 0.0:
-        cash += shares * float(events.at[end, "close"])
+        price = float(events.at[end, "close"])
+        cash += shares * price
         shares = 0.0
+        actions.append(Strategy1Action(index=end, action="horizon_exit", price=price, fraction=1.0))
 
     return Strategy1Run(
         final_return=float(cash - 1.0),
@@ -99,6 +115,7 @@ def _simulate_cycle(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
         entries_used=entries_used,
         partial_exit_used=partial_exit_used,
         full_exit_used=full_exit_used,
+        actions=tuple(actions),
     )
 
 
