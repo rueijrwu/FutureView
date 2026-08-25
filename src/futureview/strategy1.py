@@ -8,6 +8,7 @@ import pandas as pd
 STRATEGY1_HORIZONS = (15, 30, 45, 60)
 ENTRY_WEIGHTS = (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
 COOLDOWN_SESSIONS = 3
+LOCAL_MAX_MIN_GAP = 5
 
 
 @dataclass(frozen=True)
@@ -35,14 +36,13 @@ class Strategy1Run:
 
     @property
     def return_per_exposure_day(self) -> float:
-        """Campaign return per capital-weighted trading day of market exposure."""
         if self.exposure_days <= 0.0:
             return 0.0
         return float(self.final_return / self.exposure_days)
 
 
 def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
-    """Add causal Strategy 1 indicators and discrete candidate events."""
+    """Add causal Strategy 1 indicators and discrete entry/exit events."""
     out = df.copy()
     close = out["close"].astype(float)
 
@@ -59,6 +59,9 @@ def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
     )
     out["entry1_event"] = stack & ~stack.shift(1, fill_value=False)
 
+    # Retained only as a historical diagnostic column. Strategy 1 add-ons no
+    # longer use this rolling breakout event; they use local maxima locked at
+    # the Entry1 close by _locked_addon_levels().
     prior20_high = close.shift(1).rolling(20, min_periods=20).max()
     above_prior20 = close > prior20_high
     out["breakout20_event"] = above_prior20 & ~above_prior20.shift(1, fill_value=False)
@@ -71,21 +74,68 @@ def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def local_maximum_indices(events: pd.DataFrame, entry_index: int) -> tuple[int, ...]:
+    """Return prior close-price local maxima known at the Entry1 close.
+
+    A prior session i is a confirmed local maximum when close[i] is strictly
+    above close[i-1] and greater than or equal to close[i+1]. Because the
+    function is called at the Entry1 close, every value used here is already
+    observable. The Entry1 session itself is never a candidate.
+    """
+    if entry_index <= 1:
+        return ()
+    close = events["close"].to_numpy(dtype=float)
+    maxima: list[int] = []
+    for i in range(1, entry_index):
+        if close[i] > close[i - 1] and close[i] >= close[i + 1]:
+            maxima.append(i)
+    return tuple(maxima)
+
+
+def _locked_addon_levels(
+    events: pd.DataFrame,
+    entry_index: int,
+    *,
+    min_gap: int = LOCAL_MAX_MIN_GAP,
+) -> tuple[tuple[int, float], ...]:
+    """Lock the two nearest prior local maxima for one Entry1 campaign.
+
+    The most recent local maximum is selected first. The second is the nearest
+    earlier local maximum whose trading-index distance from the first is
+    strictly greater than min_gap. The selected levels never change after
+    Entry1. If history does not contain two eligible maxima, the available
+    subset is returned and later add-ons are correspondingly unavailable.
+    """
+    if min_gap < 0:
+        raise ValueError("min_gap must be non-negative")
+    maxima = local_maximum_indices(events, entry_index)
+    if not maxima:
+        return ()
+
+    first = maxima[-1]
+    selected = [first]
+    for candidate in reversed(maxima[:-1]):
+        if first - candidate > min_gap:
+            selected.append(candidate)
+            break
+
+    return tuple((i, float(events.at[i, "close"])) for i in selected)
+
+
 def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
     """Simulate one fixed Strategy 1 campaign from a legal first-entry event.
+
+    Addon1 / Addon2 reference prices are locked at Entry1 from the two nearest
+    prior confirmed close-price local maxima, requiring their trading dates to
+    be separated by more than five sessions. A later add-on occurs only on a
+    newly observed close-price crossing above its corresponding locked level.
 
     The campaign allows at most three total entries. After any entry/add-on, MA5
     and MA10 exits are blocked for the next three trading sessions. After an MA5
     partial exit, add-ons are blocked for the next three trading sessions. An
     MA10 full exit terminates the campaign; no second campaign may start in the
-    same Oracle window. Horizon liquidation is mandatory and is exempt from the
-    three-session spacing rule because it is the label boundary, not a strategy
-    signal.
-
-    Exposure is measured close-to-close. After all actions at close i, the
-    remaining position fraction is the market exposure carried into session
-    i+1. Capital-weighted exposure days sum that fraction across held intervals;
-    holding_days counts intervals with any positive exposure.
+    same Oracle window. Horizon liquidation is mandatory and exempt from the
+    spacing rule because it is the evaluation boundary, not a strategy signal.
     """
     cash = 1.0
     shares = 0.0
@@ -99,6 +149,7 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
     last_entry_index: int | None = None
     last_partial_exit_index: int | None = None
     actions: list[Strategy1Action] = []
+    addon_levels = _locked_addon_levels(events, start)
 
     def buy(index: int) -> None:
         nonlocal cash, shares, exposure_fraction, entries_used, last_entry_index
@@ -119,9 +170,6 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
     buy(start)
 
     for i in range(start + 1, end + 1):
-        # Position carried after the previous close was exposed during this
-        # close-to-close interval. This is measured before processing actions
-        # at the current close.
         if exposure_fraction > 1e-12:
             holding_days += 1
             exposure_days += exposure_fraction
@@ -129,8 +177,6 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
         price = float(events.at[i, "close"])
         exit_eligible = last_entry_index is None or (i - last_entry_index > COOLDOWN_SESSIONS)
 
-        # MA10 full exit has priority when an exit is eligible and both exit
-        # events coincide. A full exit permanently ends this one campaign.
         if exit_eligible and bool(events.at[i, "exit10_event"]):
             cash += shares * price
             shares = 0.0
@@ -158,12 +204,13 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
             last_partial_exit_index is None
             or i - last_partial_exit_index > COOLDOWN_SESSIONS
         )
-        if (
-            addon_eligible
-            and entries_used < len(ENTRY_WEIGHTS)
-            and bool(events.at[i, "breakout20_event"])
-        ):
-            buy(i)
+        next_addon = entries_used - 1
+        if addon_eligible and entries_used < len(ENTRY_WEIGHTS) and next_addon < len(addon_levels):
+            _, level = addon_levels[next_addon]
+            prev_price = float(events.at[i - 1, "close"])
+            crossed = price > level and prev_price <= level
+            if crossed:
+                buy(i)
 
     if shares > 0.0:
         price = float(events.at[end, "close"])
@@ -190,12 +237,7 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
 
 
 def oracle_value_for_window(events: pd.DataFrame, start_exclusive: int, end_inclusive: int) -> Strategy1Run:
-    """Return the best legal single-campaign Strategy 1 path in a future window.
-
-    The Oracle may choose which legal first-entry candidate starts the campaign,
-    or choose no trade. Once started, add-ons, exits, and spacing rules are
-    deterministic. A full exit ends the only allowed campaign.
-    """
+    """Return the best legal single-campaign Strategy 1 path in a future window."""
     best = Strategy1Run(0.0, None, 0, 0, False, False, False)
 
     first = start_exclusive + 1
