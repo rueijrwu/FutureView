@@ -54,3 +54,28 @@ A successful Phase-0 run proves only that the implementation is mechanically run
 After Phase 0 passes, the next implementation step is real SPY data ingestion, causal preprocessing, trend-label construction, and a small chronological walk-forward smoke test.
 
 GPU/CUDA remains deferred until repeated walk-forward training makes acceleration useful.
+
+## Current Strategy 1 frequency research
+
+The first matched-calendar frequency experiment found preliminary evidence that 100 intraday observations over the same 50-session history improve Model A ranking stability relative to 50 daily observations. The first run used only one 46-session OOS regime, so it is preliminary rather than a formal multi-fold pass.
+
+The current frequency-replication provider is **Alpaca IEX**, not Massive. Alpaca historical intraday data is cached locally under `.cache/futureview/alpaca/` and is never committed.
+
+Required environment variables:
+
+```bash
+export APCA_API_KEY_ID='...'
+export APCA_API_SECRET_KEY='...'
+```
+
+Run:
+
+```bash
+python -m pip install -e . --no-deps
+futureview-alpaca-data-smoke
+futureview-strategy1-frequency-compare
+```
+
+The default `futureview-strategy1-frequency-compare` command now routes to the Alpaca canonical multi-fold runner. The old Massive path remains available only as `futureview-strategy1-frequency-compare-massive` for historical reproducibility.
+
+See `STRATEGY1_FREQUENCY.md` for the exact limited-history results, caveats, and the fixed Alpaca replication gate.
