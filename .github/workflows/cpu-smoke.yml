@@ -56,3 +56,8 @@ jobs:
         env:
           CUDA_VISIBLE_DEVICES: ''
         run: futureview-strategy1-smoke
+
+      - name: Run Strategy 1 formal target smoke test
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: futureview-strategy1-target-smoke
