@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 from . import strategy1_reference_distribution as base
 from . import strategy1_reference_distribution_fast as fast
 from . import strategy1_reference_distribution_formal as formal
-from .data import download_spy_daily, validate_daily_ohlcv
+from .data import download_ticker_daily, validate_daily_ohlcv
 
 DATA_PERIOD = "5y"
 WINDOW = 60
 ENTRY_OFFSETS = (0, 20, 40)
+
+
+def _research_ticker() -> str:
+    ticker = os.environ.get("FUTUREVIEW_TICKER", "SPY").strip().upper()
+    if not ticker:
+        raise ValueError("FUTUREVIEW_TICKER must be non-empty")
+    return ticker
 
 
 def _fixed_three_entry_return(close: np.ndarray, start: int, end: int) -> float:
@@ -43,7 +52,8 @@ def _formal_60d_row(start: int) -> dict[str, object]:
 
 
 def main() -> None:
-    df = download_spy_daily(period=DATA_PERIOD)
+    ticker = _research_ticker()
+    df = download_ticker_daily(ticker, period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
     events = base.add_strategy1_events(df).reset_index(drop=True)
     base._prepare_worker_state(events)
@@ -88,7 +98,7 @@ def main() -> None:
 
     print(
         "S1 FIXED_ENTRY_COMPARE DATA "
-        f"period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
+        f"ticker={ticker} period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
         f"window={WINDOW} anchors={anchor_count} evaluated={upper.size}"
     )
     print(
