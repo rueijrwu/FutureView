@@ -7,6 +7,7 @@ import pandas as pd
 
 STRATEGY1_HORIZONS = (15, 30, 45, 60)
 ENTRY_WEIGHTS = (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0)
+COOLDOWN_SESSIONS = 3
 
 
 @dataclass(frozen=True)
@@ -22,8 +23,12 @@ class Strategy1Run:
     final_return: float
     start_index: int | None
     entries_used: int
+    campaigns_used: int
     partial_exit_used: bool
     full_exit_used: bool
+    horizon_exit_used: bool
+    partial_exit_count: int = 0
+    full_exit_count: int = 0
     actions: tuple[Strategy1Action, ...] = ()
 
 
@@ -57,82 +62,128 @@ def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _simulate_cycle(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
-    """Simulate one fixed Strategy 1 cycle beginning at a legal first-entry event."""
+def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
+    """Simulate Strategy 1 beginning at one Oracle-selected first-entry event.
+
+    Each campaign allows at most three entries. Any MA5 partial exit or MA10 full
+    exit starts a three-trading-session cooldown during which no entry or add-on
+    may occur. After a full exit, the first later legal Entry-1 event after the
+    cooldown starts a new campaign. Subsequent campaign starts are deterministic;
+    only the first campaign start is chosen by the Oracle.
+    """
     cash = 1.0
     shares = 0.0
     entries_used = 0
-    partial_exit_used = False
-    full_exit_used = False
+    campaigns_used = 0
+    entries_in_campaign = 0
+    campaign_capital = 0.0
+    partial_exit_in_campaign = False
+    partial_exit_count = 0
+    full_exit_count = 0
+    horizon_exit_used = False
+    cooldown_through = -1
     actions: list[Strategy1Action] = []
 
+    def begin_campaign(index: int) -> None:
+        nonlocal campaign_capital, campaigns_used, entries_in_campaign, partial_exit_in_campaign
+        if shares > 1e-15:
+            raise RuntimeError("Cannot begin a new Strategy 1 campaign while shares remain")
+        campaign_capital = cash
+        campaigns_used += 1
+        entries_in_campaign = 0
+        partial_exit_in_campaign = False
+        buy(index)
+
     def buy(index: int) -> None:
-        nonlocal cash, shares, entries_used
-        amount = ENTRY_WEIGHTS[entries_used]
+        nonlocal cash, shares, entries_used, entries_in_campaign
+        if entries_in_campaign >= len(ENTRY_WEIGHTS):
+            raise RuntimeError("Strategy 1 attempted more than three entries in one campaign")
+        amount = campaign_capital * ENTRY_WEIGHTS[entries_in_campaign]
         price = float(events.at[index, "close"])
         if cash + 1e-12 < amount:
-            raise RuntimeError("Strategy 1 attempted to exceed its fixed capital budget")
+            raise RuntimeError("Strategy 1 attempted to exceed available cash")
         shares += amount / price
         cash -= amount
+        entries_in_campaign += 1
         entries_used += 1
-        action = "entry1" if entries_used == 1 else f"addon{entries_used - 1}"
-        actions.append(Strategy1Action(index=index, action=action, price=price, fraction=amount))
+        action = "entry1" if entries_in_campaign == 1 else f"addon{entries_in_campaign - 1}"
+        actions.append(Strategy1Action(index=index, action=action, price=price, fraction=ENTRY_WEIGHTS[entries_in_campaign - 1]))
 
-    buy(start)
+    begin_campaign(start)
 
     for i in range(start + 1, end + 1):
         price = float(events.at[i, "close"])
 
-        # Full exit has priority if MA5 and MA10 exit events coincide.
-        if bool(events.at[i, "exit10_event"]):
-            cash += shares * price
-            shares = 0.0
-            full_exit_used = True
-            actions.append(Strategy1Action(index=i, action="exit10_full", price=price, fraction=1.0))
-            break
+        if shares > 0.0:
+            # Full exit has priority if MA5 and MA10 exit events coincide.
+            if bool(events.at[i, "exit10_event"]):
+                cash += shares * price
+                shares = 0.0
+                full_exit_count += 1
+                actions.append(Strategy1Action(index=i, action="exit10_full", price=price, fraction=1.0))
+                entries_in_campaign = 0
+                partial_exit_in_campaign = False
+                cooldown_through = i + COOLDOWN_SESSIONS
+                continue
 
-        if bool(events.at[i, "exit5_event"]) and not partial_exit_used and shares > 0.0:
-            sold = 0.5 * shares
-            cash += sold * price
-            shares -= sold
-            partial_exit_used = True
-            actions.append(Strategy1Action(index=i, action="exit5_half", price=price, fraction=0.5))
-            # Do not add on the same session as an exit event.
+            if bool(events.at[i, "exit5_event"]) and not partial_exit_in_campaign:
+                sold = 0.5 * shares
+                cash += sold * price
+                shares -= sold
+                partial_exit_in_campaign = True
+                partial_exit_count += 1
+                actions.append(Strategy1Action(index=i, action="exit5_half", price=price, fraction=0.5))
+                cooldown_through = i + COOLDOWN_SESSIONS
+                continue
+
+            if (
+                i > cooldown_through
+                and entries_in_campaign < len(ENTRY_WEIGHTS)
+                and bool(events.at[i, "breakout20_event"])
+            ):
+                buy(i)
             continue
 
-        if entries_used < len(ENTRY_WEIGHTS) and bool(events.at[i, "breakout20_event"]):
-            buy(i)
+        # Flat after a full exit: wait through the three-session cooldown, then
+        # deterministically take the next legal Entry-1 transition event.
+        if i > cooldown_through and bool(events.at[i, "entry1_event"]):
+            begin_campaign(i)
 
     if shares > 0.0:
         price = float(events.at[end, "close"])
         cash += shares * price
         shares = 0.0
+        horizon_exit_used = True
         actions.append(Strategy1Action(index=end, action="horizon_exit", price=price, fraction=1.0))
 
     return Strategy1Run(
         final_return=float(cash - 1.0),
         start_index=start,
         entries_used=entries_used,
-        partial_exit_used=partial_exit_used,
-        full_exit_used=full_exit_used,
+        campaigns_used=campaigns_used,
+        partial_exit_used=partial_exit_count > 0,
+        full_exit_used=full_exit_count > 0,
+        horizon_exit_used=horizon_exit_used,
+        partial_exit_count=partial_exit_count,
+        full_exit_count=full_exit_count,
         actions=tuple(actions),
     )
 
 
 def oracle_value_for_window(events: pd.DataFrame, start_exclusive: int, end_inclusive: int) -> Strategy1Run:
-    """Return the best legal Strategy 1 cycle inside a known future window.
+    """Return the best legal Strategy 1 path inside a known future window.
 
-    The Oracle may choose which legal first-entry candidate starts the single cycle.
-    It may also choose no trade, which has return 0.
-    Once started, all add-on and exit rules are deterministic and fixed.
+    The Oracle may choose which legal first-entry candidate starts the first
+    campaign, or choose no trade. Once started, add-ons, exits, cooldowns, and
+    any later re-entry campaign are deterministic under the fixed strategy.
     """
-    best = Strategy1Run(0.0, None, 0, False, False)
+    best = Strategy1Run(0.0, None, 0, 0, False, False, False)
 
     first = start_exclusive + 1
     for i in range(first, end_inclusive + 1):
         if not bool(events.at[i, "entry1_event"]):
             continue
-        run = _simulate_cycle(events, i, end_inclusive)
+        run = _simulate_from_start(events, i, end_inclusive)
         if run.final_return > best.final_return:
             best = run
 
@@ -159,10 +210,13 @@ def make_strategy1_oracle_labels(
             run = oracle_value_for_window(events, t, t + h)
             row[f"oracle_value_{h}"] = float(run.final_return)
             row[f"oracle_entries_{h}"] = int(run.entries_used)
+            row[f"oracle_campaigns_{h}"] = int(run.campaigns_used)
             row[f"oracle_start_offset_{h}"] = -1 if run.start_index is None else int(run.start_index - t)
             row[f"oracle_partial_exit_{h}"] = bool(run.partial_exit_used)
             row[f"oracle_full_exit_{h}"] = bool(run.full_exit_used)
-            row[f"oracle_horizon_exit_{h}"] = bool(run.start_index is not None and not run.full_exit_used)
+            row[f"oracle_horizon_exit_{h}"] = bool(run.horizon_exit_used)
+            row[f"oracle_partial_exit_count_{h}"] = int(run.partial_exit_count)
+            row[f"oracle_full_exit_count_{h}"] = int(run.full_exit_count)
         rows.append(row)
 
     out = pd.DataFrame(rows)
