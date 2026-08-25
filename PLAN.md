@@ -1,725 +1,392 @@
-# FutureView CNN Trend Research Plan
+# FutureView Phase-1 Plan
 
 Last updated: 2026-08-24
 
-## 1. Reset Scope
+## 1. Phase-1 question
 
-This branch is a clean research restart.
+FutureView is currently a CPU-first feasibility study on SPY only.
 
-The previous momentum ranking, sector-selection, portfolio-construction, pyramiding, options, frontend, and production workflow logic are intentionally excluded from the initial research scope.
+The primary question is now:
 
-Phase 1 has one question only:
+> Can causal SPY price/volume structure predict the future Oracle Value of one fixed trading strategy over an approximately 3-week to 3-month horizon?
 
-> Using only recent SPY price and volume history, can a small CNN identify future 3-week to 3-month bullish trends with a materially higher out-of-sample successful rate than the unconditional SPY baseline?
+This replaces the earlier assumption that the CNN must first predict one universal geometric definition of trend.
 
-If SPY itself cannot produce a useful and stable out-of-sample trend signal, do not expand to QQQ, sector ETFs, individual stocks, portfolio construction, or options.
-
-## 2. Technical Baseline
-
-Primary language:
+The working framework is strategy-relative:
 
 ```text
-Python
+fixed strategy S
++ future SPY path
++ complete future knowledge for label construction only
+        -> OracleValue(S)
+
+causal historical OHLCV
+        -> CNN
+        -> predicted OracleValue(S)
 ```
 
-Primary ML framework:
+The Oracle baseline is deterministic once the strategy and future path are fixed. Statistical confidence belongs to the predictive model, not to the Oracle baseline.
+
+See `STRATEGY_FRAMEWORK.md` for the conceptual framework and `DEFINITION.md` for literature-based trend/path descriptors.
+
+---
+
+## 2. Scope
+
+Phase 1 is deliberately narrow:
+
+- SPY only
+- daily OHLCV first
+- raw technical information only: Open, High, Low, Close, Volume
+- CNN as the primary predictive model
+- CPU first
+- intended strategy horizon: roughly 15-60 trading sessions
+- strict chronological / purged out-of-sample validation
+- no fundamentals, news, macro, sentiment, options, breadth, or alternative data
+- no QQQ, sectors, or individual equities until SPY feasibility is demonstrated
+
+Later work may add 4-hour and 1-hour OHLCV as multi-resolution inputs, but not before the daily strategy-value pipeline is validated.
+
+---
+
+## 3. Why OHLCV is the model input
+
+Most classical technical indicators are deterministic transformations or filters of price and volume.
+
+The Phase-1 hypothesis is therefore that a CNN can learn useful time-scale and pattern transformations directly from causal OHLCV instead of requiring a large hand-designed indicator set.
+
+This is an empirical hypothesis, not an assumption of success.
+
+Later interpretability work may compare:
+
+- raw OHLCV CNN
+- explicitly interpretable multi-scale filters / moving averages
+- hybrid models
+
+but Phase 1 first asks whether the raw OHLCV -> strategy value mapping exists at all.
+
+---
+
+## 4. Confirmed SPY data pipeline
+
+The current repository already has a working Yahoo Finance SPY daily pipeline.
+
+Current smoke configuration:
 
 ```text
-PyTorch
+symbol: SPY
+period: 3y
+interval: 1d
+auto_adjust: false
+fields: date, open, high, low, close, volume
 ```
 
-Local research environment:
+GitHub Actions has repeatedly confirmed live SPY retrieval and validation.
+
+Confirmed result on 2026-08-24:
 
 ```text
-CPU first
-GPU only when repeated experiments justify it
-Tesla P100 available
-CUDA ecosystem available up to CUDA 12.9
-cuDNN 9.x
+rows = 751
+start = 2023-08-25
+end = 2026-08-24
+duplicates = 0
+missing = 0
 ```
 
-The initial SPY dataset and CNNs are small enough that CPU execution is the default. GPU acceleration is optional and should be enabled only if walk-forward, repeated seeds, or hyperparameter experiments become materially slow.
+The same data path successfully feeds causal feature generation, 50-session windows, chronological splits, and CPU training smoke tests.
 
-Use standard PyTorch modules first. Do not write custom CUDA kernels during Phase 1.
+Important: the current `period="3y"` dataset is suitable for debugging. Formal experiments should eventually use fixed absolute date ranges for reproducibility.
 
-## 3. Core Research Rules
+---
 
-1. SPY only in Phase 1.
-2. Price and volume only.
-3. Pure technical-analysis research: no fundamentals, news, macro, sentiment, options, breadth, analyst data, or alternative data.
-4. PyTorch CNN is the primary predictive model.
-5. The primary target is future trend quality, not next-day direction.
-6. The intended trading horizon is 3 weeks to 3 months, approximately 15-60 trading sessions.
-7. Evaluate multiple forward horizons: 15, 30, 45, and 60 sessions.
-8. Use strict chronological, purged walk-forward validation. Never randomly shuffle overlapping time-series samples.
-9. Do not assume older market data is equally useful. Test recent-history length empirically.
-10. Optimize for out-of-sample trend discrimination and successful rate, not training accuracy.
-11. Keep the first models deliberately small.
-12. QQQ, sectors, and stocks are deferred until SPY succeeds.
+## 5. Existing model/pipeline status
 
-## 4. Data Scope
+Already implemented and smoke-tested:
 
-Initial instrument:
+- canonical SPY OHLCV loading and validation
+- causal OHLCV-derived features
+- 50-session input windows
+- horizons 15 / 30 / 45 / 60
+- Model A: joint OHLCV CNN
+- Model B: separate price / volume CNN
+- purged chronological smoke split
+- CPU synthetic model smoke
+- CPU real-data training smoke
+
+The current old `trend_h` labels and loose/strict success labels are provisional pipeline-validation labels only. They are no longer treated as the final Phase-1 research target.
+
+Do not use their current loss values to claim strategy predictability.
+
+---
+
+## 6. Strategy-relative Oracle baseline
+
+For each timestamp `t` and fixed strategy `S`, define a future path over horizon `h`.
+
+The Oracle Value is:
 
 ```text
-SPY only
+OracleValue(S, future_path)
+    = maximum final profit achievable
+      with complete future knowledge
+      while obeying every rule and resource constraint of S.
 ```
 
-Allowed raw model information:
+The Oracle may choose which legal candidate events to use, but it may not alter:
+
+- capital weights
+- allowed number of entries
+- allowed number of exits
+- event definitions
+- exit rules
+- horizon
+- transaction-cost assumptions
+
+If a candidate event is skipped, its allocation is effectively zero.
+
+This keeps the baseline tied to a real fixed strategy instead of an unconstrained buy-the-low / sell-the-high hindsight number.
+
+---
+
+## 7. Strategy 1 — initial fixed prototype
+
+Strategy 1 is intentionally simple. The goal is to create one unambiguous Oracle baseline before adding more technical rules.
+
+### Direction
 
 ```text
-Open
-High
-Low
-Close
-Volume
+long only
 ```
 
-Derived transformations are allowed only when they are produced entirely from historical price and volume available at or before the prediction date.
-
-Examples:
+### Capital structure
 
 ```text
-returns
-relative OHLC geometry
-moving averages
-volume averages
-range measures
-price/volume normalization
+maximum entries: 3 total
+initial entry + 2 add-ons
+fixed capital allocation per entry
+initial default: 1/3 + 1/3 + 1/3
 ```
 
-Future-path quantities may be used only to construct labels and evaluation metrics.
+The weights are part of the strategy and must not be optimized separately for each future path.
 
-### Data sources
+### First entry condition
 
-Preferred history:
+Use daily close.
+
+The first entry candidate occurs when price closes above all three moving averages:
 
 ```text
-Yahoo Finance or another reliable source: up to ~5 recent years of SPY daily OHLCV
-Massive: recent ~2 years for cross-checking and/or current updates
+Close > MA5
+Close > MA10
+Close > MA20
 ```
 
-Before reconciling sources, verify:
+and the moving averages are in bullish order:
 
 ```text
-trading dates
-OHLC values
-volume
-adjustment conventions
-missing sessions
-corporate-action treatment
+MA5 > MA10 > MA20
 ```
 
-Produce one canonical SPY daily series before training.
+For a discrete new-entry event, require that the full condition was not already true on the previous trading session.
 
-## 5. Recency Research
+### Add-on 1 and Add-on 2
 
-Older market regimes may not represent the current market well, so training-history length is itself a research variable.
-
-Primary comparison:
+Initial simple rule:
 
 ```text
-1-year rolling history
-2-year rolling history
-3-year rolling history
-5-year rolling history
-5-year history with recency-weighted loss
+add on a new breakout high after the previous entry/add-on
 ```
 
-All variants must use identical test dates, preprocessing, target definitions, architecture, optimizer, and evaluation logic. Only training-history treatment should differ.
+This rule still requires one precise implementation choice before coding the Oracle: the exact definition of "prior high / breakout high" (for example rolling N-day high versus post-entry swing high).
 
-## 6. Input Representation
+Until that is frozen, do not add gap, volume-contraction, RSI, MACD, or other confirmation rules.
 
-Initial lookback:
+### Exit structure
+
+Use staged exits based on daily close:
 
 ```text
-50 trading sessions
+Close < MA5  -> reduce current position by 50%
+Close < MA10 -> exit all remaining position
 ```
 
-Baseline tensor:
+The MA10 rule has precedence if both conditions first become true on the same session.
+
+The exact re-entry/reset behavior after a full exit still needs to be frozen for Oracle implementation.
+
+### Intended holding / evaluation horizon
 
 ```text
-50 x 5
+15-60 trading sessions
 ```
 
-Do not feed absolute SPY price levels directly without normalization.
+We should first compute Oracle Values separately for 15D / 30D / 45D / 60D rather than collapsing them into one weighted target.
 
-Candidate causal price channels:
+---
+
+## 8. Immediate implementation sequence
+
+### Step 1 — freeze Strategy 1 semantics
+
+Before coding, resolve only the remaining ambiguous rules:
+
+1. exact breakout-high definition for the two add-ons
+2. whether a 5-day partial exit can trigger only once per campaign or repeatedly
+3. reset/re-entry behavior after a full MA10 exit
+4. treatment of an open position at the horizon boundary
+5. transaction cost / slippage assumption for the first prototype
+
+Do not add additional indicators yet.
+
+### Step 2 — implement Strategy 1 event engine
+
+Create deterministic causal event calculations for:
+
+- MA5 / MA10 / MA20
+- first-entry event
+- add-on candidate events
+- MA5 partial-exit event
+- MA10 full-exit event
+
+The event engine itself must not use future information.
+
+### Step 3 — implement Strategy 1 Oracle
+
+For each future 15/30/45/60-day path:
+
+- enumerate only legal Strategy-1 action sequences
+- obey fixed entry/exit counts and weights
+- select the legal sequence producing maximum final profit
+- store Oracle Value and selected action sequence
+
+The search should operate on strategy-defined candidate events rather than arbitrary timestamps whenever possible.
+
+### Step 4 — Oracle smoke validation
+
+Check hand-constructed paths:
+
+- steady uptrend
+- early dip then strong trend
+- choppy oscillation
+- sharp spike
+- failed breakout
+- trend followed by MA5 then MA10 breakdown
+
+Verify that the Oracle never changes strategy parameters path by path.
+
+### Step 5 — generate SPY Oracle labels
+
+Using the already validated SPY daily dataset, generate:
 
 ```text
-Open / previous Close - 1
-High / previous Close - 1
-Low / previous Close - 1
-Close / previous Close - 1
+oracle_15
+oracle_30
+oracle_45
+oracle_60
 ```
 
-or equivalent log-return representations.
+plus action metadata such as entry/add-on/exit dates and realized capital-weighted return.
 
-Candidate volume normalization:
+### Step 6 — replace provisional trend target in a new experiment path
+
+Do not delete the existing smoke labels immediately.
+
+Add a strategy-value experiment path so the existing mechanical smoke tests remain available while the new target is validated.
+
+### Step 7 — CNN feasibility test
+
+Train Model A and Model B on causal OHLCV to predict Strategy-1 Oracle Value.
+
+The first scientific question is not whether training loss decreases. It is whether out-of-sample predictions discriminate high-value from low-value future Strategy-1 opportunities.
+
+---
+
+## 9. Validation
+
+Random splitting is forbidden.
+
+Formal evaluation must use purged chronological walk-forward folds:
 
 ```text
-log(volume)
-relative volume using trailing history
-causal z-score using trailing history
+past -> train
+next block -> validation
+purge future-label overlap
+later block -> test
+roll forward
 ```
 
-No normalization may use future information.
+For early CPU debugging, the current simple chronological split may remain as a smoke test only.
 
-## 7. Phase-1 Models
+Formal results should use multiple seeds and identical test dates for Model A/B comparisons.
 
-Two CNN models must be implemented together and evaluated under identical conditions.
+---
 
-### Model A — Joint OHLCV CNN
+## 10. What model confidence means
 
-Purpose: establish the cleanest CNN baseline.
+Confidence is a property of the mapping:
 
 ```text
-Input: past 50 sessions OHLCV
-
-            -> Conv1D kernel 5  -\
-            -> Conv1D kernel 10 -- concat -> fusion -> pooling -> dense -> trend outputs
-            -> Conv1D kernel 20 -/
+historical OHLCV -> future Strategy-1 Oracle Value
 ```
 
-Price and volume are treated as channels in one shared representation.
+Candidate measurements later include:
 
-### Model B — Separate Price / Volume CNN
+- out-of-sample prediction error
+- rank correlation between predicted and realized Oracle Value
+- top-quantile realized Oracle Value
+- probability that Oracle Value exceeds a practical threshold
+- fold-to-fold stability
+- seed / ensemble dispersion
+- calibration
 
-Purpose: test whether modeling price structure and volume structure separately improves future-trend detection.
+For multiple future strategies, strategy separation will also matter:
 
 ```text
-Price branch: OHLC
-    -> multi-scale Conv1D 5/10/20
-
-Volume branch: Volume
-    -> multi-scale Conv1D 5/10/20
-
-Price features + Volume features
-    -> fusion
-    -> pooling
-    -> dense
-    -> trend outputs
+predicted value of best strategy
+minus
+predicted value of alternatives
 ```
 
-The key Phase-1 comparison is:
+If all strategy models are weak or indistinguishable, `no trade` should remain a valid eventual decision.
+
+No final confidence score is fixed yet.
+
+---
+
+## 11. Phase-1 success criterion
+
+Phase 1 succeeds only if causal SPY OHLCV contains reproducible out-of-sample information about Strategy-1 future Oracle Value.
+
+Useful evidence should include:
 
 ```text
-Model A: joint OHLCV representation
-vs
-Model B: separate price and volume representations
+higher predicted StrategyValue
+-> higher realized OracleValue
 ```
 
-Do not add extra architecture complexity unless this comparison has been completed.
+with:
 
-## 8. Prediction Horizons
+- meaningful separation across prediction buckets
+- stable walk-forward folds
+- enough samples / coverage
+- reproducibility across seeds
+- improvement beyond simple technical baselines
 
-Because the intended trading strategy holds approximately 3 weeks to 3 months, the CNN should not optimize only for a 20-day future.
+If this relation does not hold, do not expand to more securities merely to find a favorable example. First revisit the strategy definition, Oracle semantics, input representation, model, or history window.
 
-The model should produce horizon-specific future trend estimates:
+---
 
-```text
-Trend15
-Trend30
-Trend45
-Trend60
-```
+## 12. Later phases — explicitly deferred
 
-Conceptually:
+Only after Strategy 1 on SPY is understood:
 
-```text
-Past 50D OHLCV
-      -> CNN
-      -> Trend15
-      -> Trend30
-      -> Trend45
-      -> Trend60
-```
+1. define Strategy 2 / 3 / 4, each with its own Oracle baseline
+2. compare which strategy values are most predictable from SPY OHLCV
+3. investigate model interpretability and learned time scales
+4. test explicit MA/filter branches versus raw OHLCV
+5. add multi-resolution daily + 4H, then possibly 1H
+6. compare SPY with QQQ / sector ETFs / individual equities
+7. study security-specific strategy suitability
+8. construct a strategy-selection and confidence layer
 
-Do not immediately collapse these four outputs into one weighted score. First evaluate each horizon independently.
-
-This allows the model to distinguish, for example:
-
-```text
-short-lived acceleration
-medium-duration swing trend
-persistent multi-month trend
-```
-
-## 9. Trend Ground Truth
-
-Defining realized trend quality is the most important modeling decision.
-
-A successful bullish trend should not mean only that the final price is higher.
-
-A high-quality trend should generally combine:
-
-```text
-positive forward return
-persistent directional movement
-limited adverse excursion
-reasonable path efficiency
-```
-
-For each horizon h in {15, 30, 45, 60}, calculate at least:
-
-```text
-ForwardReturn_h
-MAE_h
-MFE_h
-TrendEfficiency_h
-```
-
-A useful path-efficiency definition is:
-
-```text
-TrendEfficiency_h =
-    (Close[t+h] - Close[t])
-    /
-    sum(abs(Close[i] - Close[i-1])) over the forward h-session path
-```
-
-A smooth directional rise should score better than a highly erratic path ending at the same final return.
-
-### Continuous trend target
-
-The CNN should primarily predict a continuous realized trend-quality target rather than a next-day binary direction.
-
-Conceptually:
-
-```text
-FutureTrendQuality_h
-= reward(forward return)
-+ reward(path efficiency)
-- penalty(adverse excursion)
-```
-
-The exact formula and coefficients are research hypotheses and must be documented and tested for robustness.
-
-## 10. Successful Trend Definition
-
-Successful rate is an evaluation metric, not the only training target.
-
-For each horizon h, define:
-
-```text
-SuccessfulTrend_h = 1
-```
-
-when the realized future path satisfies a predeclared combination of:
-
-```text
-minimum forward return
-maximum acceptable MAE
-minimum trend efficiency
-```
-
-Otherwise:
-
-```text
-SuccessfulTrend_h = 0
-```
-
-Do not tune these thresholds solely to maximize the headline successful rate.
-
-Use at least two predeclared evaluation definitions, for example a looser and a stricter definition, to test whether model quality is robust to the exact success threshold.
-
-## 11. Successful Rate
-
-For a selected group of predictions:
-
-```text
-Successful Rate
-= number of SuccessfulTrend signals
-  / number of evaluated signals
-```
-
-The most important comparison is not the raw successful rate by itself, but the improvement over the unconditional SPY baseline for the same horizon and dates.
-
-Define:
-
-```text
-BaselineSuccessRate_h
-= successful future trends across all eligible SPY dates
-```
-
-Then evaluate model-selected subsets such as:
-
-```text
-top 50% TrendScore
-top 30%
-top 20%
-top 10%
-```
-
-The key evidence is:
-
-```text
-SuccessRate(high TrendScore)
->> BaselineSuccessRate
-```
-
-and this improvement must repeat across walk-forward folds.
-
-A model that produces a tiny number of signals with a superficially high success rate is not automatically useful.
-
-## 12. Primary Phase-1 Goal
-
-The highest-priority empirical property is:
-
-```text
-higher predicted TrendScore
--> higher realized Successful Rate
-```
-
-Ideally, TrendScore buckets should also show:
-
-```text
-higher realized trend quality
-higher forward return
-better MFE
-controlled MAE
-higher path efficiency
-```
-
-But successful-rate discrimination is the primary Phase-1 gate.
-
-If high TrendScore does not materially and consistently improve successful rate over baseline SPY behavior, the model is not good enough to expand.
-
-## 13. Validation Rules
-
-Random train/test splitting is forbidden because adjacent 50-day windows overlap heavily.
-
-Required method:
-
-```text
-Train on past data only
-Validate on the next chronological block
-Purge future-label overlap at boundaries
-Test on a later untouched block
-Roll forward
-Repeat
-```
-
-All results must be reported out-of-sample.
-
-The final conclusion must not depend on one favorable market period.
-
-## 14. Model-A vs Model-B Evaluation
-
-A and B must use:
-
-```text
-same SPY data
-same 50-day lookback
-same 15/30/45/60 horizons
-same targets
-same walk-forward folds
-same optimizer
-same learning rate policy
-same epoch limit
-same early stopping
-same random seeds
-same history-window experiment
-```
-
-Only the representation architecture differs.
-
-Required comparison for each horizon:
-
-```text
-baseline successful rate
-Model A top-score successful rate
-Model B top-score successful rate
-success-rate lift over baseline
-sample count / coverage
-fold stability
-```
-
-Prefer the simpler model unless Model B shows reproducible incremental value.
-
-## 15. Initial Training Defaults
-
-First implementation should favor stable defaults over tuning.
-
-Suggested starting point:
-
-```text
-Optimizer: AdamW
-Loss: Huber / SmoothL1 for continuous trend targets
-Batch size: ~32
-Epoch limit: ~100
-Early stopping: validation patience ~10
-Activation: ReLU or GELU
-Dropout: small, approximately 0.1-0.2
-Device: CPU
-```
-
-These are starting defaults, not permanent strategy parameters.
-
-## 16. CPU-First Policy
-
-Initial execution should use:
-
-```text
-device = cpu
-```
-
-Reasons:
-
-```text
-SPY daily dataset is small
-models are intentionally small
-debugging chronology and labels matters more than speed
-CPU improves implementation simplicity during Phase 1
-```
-
-GPU becomes useful when experiment volume grows, for example:
-
-```text
-many walk-forward folds
-x multiple training-history windows
-x Model A/B
-x repeated random seeds
-x multiple label variants
-```
-
-At that point enable the Tesla P100 through PyTorch CUDA without changing the research logic.
-
-## 17. Primary Evaluation Output
-
-Every experiment should report, separately for 15/30/45/60 sessions:
-
-```text
-BaselineSuccessRate
-TrendScore distribution
-TrendScore quantiles / deciles
-signal count
-coverage
-successful rate by score bucket
-successful-rate lift over baseline
-mean forward return
-median forward return
-MAE
-MFE
-TrendEfficiency
-walk-forward fold results
-```
-
-The most important table should resemble:
-
-```text
-Horizon | Score bucket | Signals | Success rate | Baseline | Lift
-15D     | top 20%      | ...     | ...          | ...      | ...
-30D     | top 20%      | ...     | ...          | ...      | ...
-45D     | top 20%      | ...     | ...          | ...      | ...
-60D     | top 20%      | ...     | ...          | ...      | ...
-```
-
-## 18. Baseline Models
-
-The CNN must also outperform simple price/volume baselines.
-
-At minimum compare against:
-
-```text
-unconditional SPY baseline
-simple recent-return trend score
-simple MA-based price trend score
-small linear model using the same allowed price/volume data
-```
-
-This prevents attributing value to CNN complexity when a simpler price trend rule performs equally well.
-
-## 19. Initial Experiment Matrix
-
-### CNN architecture
-
-```text
-Model A: joint OHLCV CNN
-Model B: separate price / volume CNN
-```
-
-### Training-history window
-
-```text
-1Y
-2Y
-3Y
-5Y
-5Y recency-weighted
-```
-
-### Prediction horizons
-
-```text
-15D
-30D
-45D
-60D
-```
-
-### Device
-
-```text
-CPU first
-GPU only if experiment throughput requires it
-```
-
-Do not broaden the matrix until these experiments are understood.
-
-## 20. Local Python / PyTorch Structure
-
-Suggested initial repository structure:
-
-```text
-PLAN.md
-pyproject.toml
-README.md
-src/
-  futureview/
-    data.py
-    features.py
-    labels.py
-    datasets.py
-    models.py
-    train.py
-    walkforward.py
-    evaluate.py
-    device.py
-configs/
-  baseline.yaml
-scripts/
-  download_spy.py
-  train_spy.py
-  evaluate_spy.py
-tests/
-```
-
-Responsibilities:
-
-```text
-data.py        -> canonical SPY OHLCV loading and source reconciliation
-features.py    -> causal price/volume normalization\labels.py      -> 15/30/45/60 trend-quality, success, MAE, MFE, efficiency labels
-datasets.py    -> PyTorch Dataset and 50-session sequence construction
-models.py      -> Model A and Model B
-train.py       -> PyTorch training loop, seeds, checkpoints
-walkforward.py -> purged chronological fold generation
-evaluate.py    -> successful-rate and trend-quality audits
-device.py      -> CPU default and optional CUDA selection
-```
-
-## 21. Reproducibility
-
-Record for every experiment:
-
-```text
-Python version
-PyTorch version
-execution device
-CUDA/cuDNN versions if GPU is used
-GPU model if GPU is used
-random seed
-training date range
-validation date range
-test date range
-training-history length
-model configuration
-target configuration
-success-definition configuration
-```
-
-Save configuration, metrics, and predictions with each run.
-
-## 22. Expansion Gate
-
-Do not add QQQ, IWM, sector ETFs, individual stocks, sector weights, or per-stock context weights during Phase 1.
-
-Expansion is allowed only if the SPY CNN demonstrates reproducible out-of-sample value.
-
-The minimum qualitative gate is:
-
-```text
-high TrendScore groups consistently produce materially higher successful rates than unconditional SPY baseline
-```
-
-across multiple walk-forward folds and preferably across multiple 15-60 day horizons.
-
-If SPY fails this test:
-
-```text
-do not add more instruments
-revise target definition
-revise input representation
-revise model architecture
-revise training-history assumptions
-```
-
-Adding QQQ or stocks must not be used to hide a weak SPY trend detector.
-
-## 23. Explicitly Deferred
-
-Until the SPY expansion gate is passed, do not implement:
-
-```text
-QQQ weighting
-sector ETF weighting
-stock-specific context weights
-individual-stock CNNs
-stock ranking
-portfolio construction
-pyramiding
-options acceleration
-broker execution
-frontend dashboard
-production workflows
-```
-
-These are future phases only.
-
-## 24. First Implementation Milestones
-
-1. Build the canonical recent SPY daily OHLCV dataset, preferably up to 5 years.
-2. Cross-check Yahoo Finance and Massive overlap where practical.
-3. Implement causal 50-session price/volume preprocessing.
-4. Implement 15/30/45/60 future trend-quality labels.
-5. Implement 15/30/45/60 successful-trend evaluation labels.
-6. Calculate unconditional SPY baseline successful rates for every horizon.
-7. Implement simple non-CNN price/volume baselines.
-8. Implement Model A.
-9. Implement Model B.
-10. Implement strict purged walk-forward evaluation.
-11. Run CPU-based A/B baseline experiments.
-12. Run 1Y/2Y/3Y/5Y training-history comparisons.
-13. Run 5Y recency-weighted comparison.
-14. Produce TrendScore bucket vs Successful Rate reports for 15/30/45/60 days.
-15. Decide whether SPY passes the expansion gate.
-16. Use GPU only if experiment throughput becomes a practical bottleneck.
-
-## 25. Phase-1 Success Criterion
-
-The first milestone is not portfolio return.
-
-The central question is:
-
-> Can the CNN reliably identify SPY states whose future 3-week to 3-month trend success probability is materially higher than normal?
-
-A strong result should show:
-
-```text
-TrendScore increases
--> Successful Rate increases
--> successful-rate lift over baseline is material
--> improvement persists across walk-forward folds
--> result is not caused by a tiny number of signals
-```
-
-Additional supporting evidence:
-
-```text
-better forward return
-better MFE
-controlled MAE
-higher trend efficiency
-```
-
-If these conditions are not met, Phase 1 is not complete and the project should not expand beyond SPY.
+The long-term objective is not one universally best technical strategy. It is to estimate which fixed strategy is predictably compatible with the current price/volume structure of a given security.
