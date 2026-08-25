@@ -47,6 +47,7 @@ futureview-strategy1-success-hybrid-gate = "futureview.strategy1_success_hybrid_
 futureview-strategy1-success-hybrid-floor-sweep = "futureview.strategy1_success_hybrid_floor_sweep:main"
 futureview-strategy1-success-live-campaign = "futureview.strategy1_success_live_campaign:main"
 futureview-strategy1-success-live-campaign-expanded-oos = "futureview.strategy1_success_live_campaign_expanded_oos:main"
+futureview-strategy1-success-expanded-baseline-compare = "futureview.strategy1_success_expanded_baseline_compare:main"
 futureview-strategy1-oos-portfolio = "futureview.strategy1_oos_portfolio:main"
 futureview-strategy1-oos-portfolio-rank-gate = "futureview.strategy1_oos_portfolio_rank_gate:main"
 futureview-strategy1-oos-portfolio-recent-rank = "futureview.strategy1_oos_portfolio_recent_rank_gate:main"
