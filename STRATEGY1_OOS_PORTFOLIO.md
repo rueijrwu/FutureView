@@ -198,4 +198,57 @@ although it has only three campaigns and therefore remains small-sample evidence
 
 The single CNN campaign has attractive return per exposure-day, but one campaign is not enough to support a robust economic claim.
 
-The next experiment should not change CNN architecture, target, training history, or Strategy 1 mechanics. If gate research continues, it should test a genuinely recent OOS-relative calibration rule whose reference is not dominated by the training-score distribution, with its lookback and warm-up policy predeclared before observing results.
+## Next experiment: recent-OOS-only rolling P80
+
+The next gate experiment is predeclared before observing its result. It keeps the Daily CNN A model, 30D raw Oracle target, Sliding-260 training, four OOS folds, five seeds, Strategy 1 mechanics, and fixed 80% cutoff unchanged.
+
+The new reference deliberately excludes training predictions. OOS predictions are treated as one chronological stream across fold boundaries.
+
+Fixed rule:
+
+```text
+recent_oos_window = 60 predictions
+global OOS warm-up = first 60 OOS predictions
+training predictions excluded from rank reference
+current prediction excluded
+future predictions excluded
+```
+
+For OOS prediction `j >= 60`, define:
+
+```text
+history_j = OOS predictions[j-60 : j]
+percentile_j = mean(history_j <= prediction_j)
+```
+
+The gate authorizes next-session Entry1 only when:
+
+```text
+percentile_j >= 0.80
+```
+
+The first 60 OOS predictions are strict warm-up and cannot authorize an entry. The 60-observation window is fixed in advance because it corresponds to one complete existing OOS fold and avoids tuning a new short lookback from results.
+
+This design tests whether a genuinely recent OOS-relative calibration rule can restore useful signal frequency when the training-score distribution is removed from the rank reference.
+
+Interpretation is predeclared:
+
+```text
+If recent-OOS rank materially increases signal frequency and improves portfolio economics:
+  recent prediction-scale adaptation is a plausible gate bottleneck.
+
+If signal frequency increases but economics do not improve:
+  calibration was suppressing activity, but CNN ranking is not sufficient for entry selection.
+
+If signal frequency remains sparse or portfolio remains one-campaign driven:
+  recent relative calibration does not solve the portfolio conversion problem.
+
+If results depend mainly on one fold:
+  treat as regime-specific, not a pass.
+```
+
+Run:
+
+```bash
+futureview-strategy1-oos-portfolio-recent-rank
+```
