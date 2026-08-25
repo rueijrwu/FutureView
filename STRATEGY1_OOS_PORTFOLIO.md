@@ -90,18 +90,9 @@ return_per_exposure_day = 0.001442
 
 `HINDSIGHT_ENTRY_UPPER` is a hindsight reference that selects profitable non-overlapping Entry1 campaigns with future knowledge. It is not a tradable strategy and is not the same object as the per-date Oracle Value label.
 
-## Causal rolling-rank P80 gate result
+## Causal expanding-rank P80 result
 
-The second gate experiment preserved the same Daily CNN A model, target, training history, folds, seeds, Strategy 1 mechanics, and fixed 80% cutoff. Only the mapping from raw prediction level to gate decision changed.
-
-For each OOS prediction `j` inside a fold, the causal rank reference was:
-
-```text
-fold training predictions
-+ OOS predictions 0 ... j-1
-```
-
-The current OOS prediction and all future OOS predictions were excluded. The gate authorized next-session Entry1 when the causal percentile was at least 80%.
+For each OOS prediction, the causal rank reference used the fold training predictions plus prior OOS predictions, excluding the current and future OOS predictions.
 
 Observed signal rates were:
 
@@ -112,46 +103,61 @@ Fold 3: absolute = 0.0% | causal rank = 0.0% | mean rank percentile = 0.435
 Fold 4: absolute = 8.3% | causal rank = 10.0% | mean rank percentile = 0.382
 ```
 
-The causal-rank gate therefore did not materially restore OOS signal frequency. In three folds it was identical to the absolute gate; in Fold 4 it increased the signal rate only from 8.3% to 10.0%.
+The causal-rank gate did not materially restore OOS signal frequency. Portfolio results were exactly the same as the absolute gate: one campaign, total return `0.027515`, and return per exposure-day `0.002117`.
 
-Portfolio results were exactly the same for the two CNN gates:
+## Recent-OOS-only rolling P80 result
 
-```text
-CNN_ABSOLUTE_TRAIN_P80
-campaigns = 1
-total_return = 0.027515
-annualized_return = 0.025754
-max_drawdown = 0.016140
-win_rate = 1.000000
-avg_campaign_return = 0.027515
-exposure_days = 13.000000
-holding_days = 26
-exposure_ratio = 0.048327
-return_per_exposure_day = 0.002117
+The third gate experiment removed training predictions from the rank reference entirely. OOS predictions were treated as one chronological stream across folds.
 
-CNN_CAUSAL_RANK_P80
-campaigns = 1
-total_return = 0.027515
-annualized_return = 0.025754
-max_drawdown = 0.016140
-win_rate = 1.000000
-avg_campaign_return = 0.027515
-exposure_days = 13.000000
-holding_days = 26
-exposure_ratio = 0.048327
-return_per_exposure_day = 0.002117
-```
-
-Both gates selected only the same campaign:
+Fixed rule:
 
 ```text
-start = 2026-04-13
-end = 2026-05-19
-return = 0.027515
-exposure_days = 13.0
+recent_oos_window = 60 predictions
+global OOS warm-up = first 60 OOS predictions
+training predictions excluded
+current prediction excluded
+future predictions excluded
+P80 cutoff unchanged
 ```
 
-The baselines remained:
+Observed signal behavior:
+
+```text
+Fold 1: eligible 0/60  | recent-rank signal rate = 0.000
+Fold 2: eligible 60/60 | recent-rank signal rate = 0.100 | mean percentile = 0.401944
+Fold 3: eligible 60/60 | recent-rank signal rate = 0.300 | mean percentile = 0.562778
+Fold 4: eligible 60/60 | recent-rank signal rate = 0.267 | mean percentile = 0.431111
+```
+
+This gate **did restore activity** relative to the absolute and expanding-rank gates. The key question is therefore no longer whether recent relative calibration can increase signal frequency; it can. The question is whether the extra signals are economically useful.
+
+Portfolio result:
+
+```text
+CNN_RECENT_OOS_RANK60_P80
+campaigns = 3
+total_return = 0.016356
+annualized_return = 0.015314
+max_drawdown = 0.017216
+win_rate = 0.333333
+avg_campaign_return = 0.005544
+exposure_days = 26.666667
+holding_days = 49
+exposure_ratio = 0.099133
+return_per_exposure_day = 0.000613
+```
+
+Selected campaigns:
+
+```text
+2025-12-04 -> 2025-12-31   return = -0.008027
+2026-01-27 -> 2026-02-03   return = -0.002856
+2026-04-13 -> 2026-05-19   return = +0.027515
+```
+
+The two incremental campaigns admitted by recent-rank normalization were both losing campaigns. The gate retained the same profitable April 2026 campaign that the absolute gate had already selected.
+
+Baseline comparison:
 
 ```text
 ALWAYS_ON
@@ -166,6 +172,18 @@ total_return = 0.048026
 max_drawdown = 0.016140
 return_per_exposure_day = 0.001517
 
+CNN_ABSOLUTE_TRAIN_P80
+campaigns = 1
+total_return = 0.027515
+max_drawdown = 0.016140
+return_per_exposure_day = 0.002117
+
+CNN_RECENT_OOS_RANK60_P80
+campaigns = 3
+total_return = 0.016356
+max_drawdown = 0.017216
+return_per_exposure_day = 0.000613
+
 HINDSIGHT_ENTRY_UPPER
 campaigns = 6
 total_return = 0.083854
@@ -175,80 +193,37 @@ return_per_exposure_day = 0.001442
 
 ## Updated interpretation
 
-The causal rolling-rank normalization **does not pass** the gate-mapping test.
+The recent-OOS-only rank gate **fails the portfolio-conversion test**.
 
-The result rules out a simple version of the calibration-drift explanation: replacing a fixed absolute training P80 threshold with an expanding causal percentile rank over training predictions plus prior OOS predictions does not materially change the authorization pattern or portfolio economics.
+It successfully addresses the sparse-activity symptom, but the added activity is not economically selective. This is the strongest gate-layer result so far because it separates two hypotheses:
 
-This does not prove that calibration is irrelevant. The causal rank reference is still dominated by the 260 training predictions at the start of each fold, and the observed mean OOS percentiles remain well below 0.50 in every fold. However, under the predeclared gate tested here, relative-rank normalization is insufficient.
+```text
+Hypothesis A:
+CNN gates are sparse only because prediction scale drifts.
+Result: partially supported. Recent OOS-relative ranking restores signal frequency.
 
-The current strongest conclusions are:
+Hypothesis B:
+Once signal frequency is restored, CNN ranking can authorize better Entry1 campaigns.
+Result: not supported. The extra admitted campaigns are losses and total portfolio return falls.
+```
+
+Therefore the main bottleneck is no longer best described as simple calibration drift. Under the tested fixed P80 policies, Daily CNN A's OOS ranking signal does not reliably translate into useful Strategy 1 Entry1 authorization.
+
+Current status:
 
 ```text
 Prediction layer:
-Daily CNN A still has positive prior evidence for OOS ranking of 30D Oracle Value.
+Daily CNN A retains prior positive evidence for ranking 30D Oracle Value.
 
 Gate layer:
-Absolute P80 and causal expanding-rank P80 both remain too sparse.
+Absolute P80 = too sparse.
+Expanding causal-rank P80 = too sparse.
+Recent-OOS rank60 P80 = restores activity but adds losing campaigns.
 
 Portfolio layer:
-CNN portfolio superiority is still not established.
+CNN portfolio superiority is not established.
 Summary Ridge remains the strongest realized tradable filter in this sample,
-although it has only three campaigns and therefore remains small-sample evidence.
+with 3 campaigns, +0.048026 total return, lower drawdown, and higher exposure efficiency than always-on.
 ```
 
-The single CNN campaign has attractive return per exposure-day, but one campaign is not enough to support a robust economic claim.
-
-## Next experiment: recent-OOS-only rolling P80
-
-The next gate experiment is predeclared before observing its result. It keeps the Daily CNN A model, 30D raw Oracle target, Sliding-260 training, four OOS folds, five seeds, Strategy 1 mechanics, and fixed 80% cutoff unchanged.
-
-The new reference deliberately excludes training predictions. OOS predictions are treated as one chronological stream across fold boundaries.
-
-Fixed rule:
-
-```text
-recent_oos_window = 60 predictions
-global OOS warm-up = first 60 OOS predictions
-training predictions excluded from rank reference
-current prediction excluded
-future predictions excluded
-```
-
-For OOS prediction `j >= 60`, define:
-
-```text
-history_j = OOS predictions[j-60 : j]
-percentile_j = mean(history_j <= prediction_j)
-```
-
-The gate authorizes next-session Entry1 only when:
-
-```text
-percentile_j >= 0.80
-```
-
-The first 60 OOS predictions are strict warm-up and cannot authorize an entry. The 60-observation window is fixed in advance because it corresponds to one complete existing OOS fold and avoids tuning a new short lookback from results.
-
-This design tests whether a genuinely recent OOS-relative calibration rule can restore useful signal frequency when the training-score distribution is removed from the rank reference.
-
-Interpretation is predeclared:
-
-```text
-If recent-OOS rank materially increases signal frequency and improves portfolio economics:
-  recent prediction-scale adaptation is a plausible gate bottleneck.
-
-If signal frequency increases but economics do not improve:
-  calibration was suppressing activity, but CNN ranking is not sufficient for entry selection.
-
-If signal frequency remains sparse or portfolio remains one-campaign driven:
-  recent relative calibration does not solve the portfolio conversion problem.
-
-If results depend mainly on one fold:
-  treat as regime-specific, not a pass.
-```
-
-Run:
-
-```bash
-futureview-strategy1-oos-portfolio-recent-rank
-```
+The recent-rank gate should be marked fail/hold. Further gate tuning on this same OOS sample would risk turning into post-hoc threshold/lookback optimization and should not be treated as fresh validation.
