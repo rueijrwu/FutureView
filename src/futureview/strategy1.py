@@ -57,21 +57,15 @@ def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
         & (out["ma5"] > out["ma10"])
         & (out["ma10"] > out["ma20"])
     )
-    # Reference-distribution candidate: every session satisfying the entry rule.
     out["entry_candidate"] = stack.fillna(False)
-    # Legacy event-conditioned research keeps only the newly-true transition.
     out["entry1_event"] = stack & ~stack.shift(1, fill_value=False)
 
-    # Retained only as a historical diagnostic column. Strategy 1 add-ons no
-    # longer use this rolling breakout event; they use local maxima.
     prior20_high = close.shift(1).rolling(20, min_periods=20).max()
     above_prior20 = close > prior20_high
     out["breakout20_event"] = above_prior20 & ~above_prior20.shift(1, fill_value=False)
 
     below5 = close < out["ma5"]
     below10 = close < out["ma10"]
-    # Candidate sets expose every qualifying session. Legacy execution events
-    # remain first-crossing events so existing Strategy 1 runners are unchanged.
     out["exit5_candidate"] = below5.fillna(False)
     out["exit10_candidate"] = below10.fillna(False)
     out["exit5_event"] = below5 & ~below5.shift(1, fill_value=False)
@@ -81,13 +75,7 @@ def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def local_maximum_indices(events: pd.DataFrame, entry_index: int) -> tuple[int, ...]:
-    """Return prior close-price local maxima known at the Entry1 close.
-
-    A prior session i is a confirmed local maximum when close[i] is strictly
-    above close[i-1] and greater than or equal to close[i+1]. Because the
-    function is called at the Entry1 close, every value used here is already
-    observable. The Entry1 session itself is never a candidate.
-    """
+    """Return prior close-price local maxima known at the Entry1 close."""
     if entry_index <= 1:
         return ()
     close = events["close"].to_numpy(dtype=float)
@@ -127,14 +115,18 @@ def _simulate_from_start(
     end: int,
     *,
     addon_levels: tuple[tuple[int, float], ...] | None = None,
+    addon2_spacing_tolerance: float | None = None,
 ) -> Strategy1Run:
     """Simulate one Strategy 1 campaign from a legal entry.
 
-    By default the legacy Strategy 1 behavior locks the two nearest prior local
-    maxima. Reference-distribution analysis may pass an explicit zero/one/two
-    level set so all legal addon-reference combinations can be compared without
-    changing legacy callers.
+    ``addon2_spacing_tolerance`` is an optional research-only rule. When set,
+    Addon2 may execute only when the realized close-price distance Entry->Addon1
+    is approximately equal to Addon1->Addon2 within the supplied relative
+    tolerance. ``None`` preserves legacy Strategy 1 behavior exactly.
     """
+    if addon2_spacing_tolerance is not None and addon2_spacing_tolerance < 0.0:
+        raise ValueError("addon2_spacing_tolerance must be non-negative")
+
     cash = 1.0
     shares = 0.0
     exposure_fraction = 0.0
@@ -146,6 +138,8 @@ def _simulate_from_start(
     horizon_exit_used = False
     last_entry_index: int | None = None
     last_partial_exit_index: int | None = None
+    entry_price: float | None = None
+    addon1_price: float | None = None
     actions: list[Strategy1Action] = []
     if addon_levels is None:
         addon_levels = _locked_addon_levels(events, start)
@@ -154,6 +148,7 @@ def _simulate_from_start(
 
     def buy(index: int) -> None:
         nonlocal cash, shares, exposure_fraction, entries_used, last_entry_index
+        nonlocal entry_price, addon1_price
         if entries_used >= len(ENTRY_WEIGHTS):
             raise RuntimeError("Strategy 1 attempted more than three entries")
         amount = ENTRY_WEIGHTS[entries_used]
@@ -165,6 +160,10 @@ def _simulate_from_start(
         exposure_fraction += amount
         entries_used += 1
         last_entry_index = index
+        if entries_used == 1:
+            entry_price = price
+        elif entries_used == 2:
+            addon1_price = price
         action = "entry1" if entries_used == 1 else f"addon{entries_used - 1}"
         actions.append(Strategy1Action(index=index, action=action, price=price, fraction=amount))
 
@@ -210,7 +209,19 @@ def _simulate_from_start(
             _, level = addon_levels[next_addon]
             prev_price = float(events.at[i - 1, "close"])
             crossed = price > level and prev_price <= level
-            if crossed:
+            spacing_ok = True
+            if crossed and next_addon == 1 and addon2_spacing_tolerance is not None:
+                if entry_price is None or addon1_price is None:
+                    spacing_ok = False
+                else:
+                    first_gap = addon1_price - entry_price
+                    second_gap = price - addon1_price
+                    spacing_ok = (
+                        first_gap > 0.0
+                        and second_gap > 0.0
+                        and abs(second_gap / first_gap - 1.0) <= addon2_spacing_tolerance
+                    )
+            if crossed and spacing_ok:
                 buy(i)
 
     if shares > 0.0:
