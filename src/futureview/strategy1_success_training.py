@@ -12,7 +12,7 @@ from . import strategy1_reference_distribution as base
 from .data import download_ticker_daily, validate_daily_ohlcv
 from .features import FEATURE_COLUMNS, make_causal_features
 from .models import MultiScaleBlock, count_parameters
-from .strategy1 import add_strategy1_events
+from .strategy1 import LOCAL_MAX_MIN_GAP, add_strategy1_events
 from .strategy1_reference_distribution_fast import _simulate_path_fast
 
 TICKER = "QQQ"
@@ -39,6 +39,7 @@ class SuccessDataset:
     entry_lower: np.ndarray
     entry_upper: np.ndarray
     path_count: np.ndarray
+    realized_return: np.ndarray
     raw_indices: np.ndarray
     dates: np.ndarray
 
@@ -100,6 +101,34 @@ def _entry_target(entry: int, end: int) -> tuple[float, float, float, float, int
     )
 
 
+def _deterministic_addon_indices(entry: int) -> tuple[int, ...]:
+    """Choose the actual Strategy 1 addon references using only information known at Entry."""
+    history_start = max(0, entry - REFERENCE_LOOKBACK + 1)
+    maxima = base._window_local_maxima(history_start, entry)
+    if not maxima:
+        return ()
+
+    addon1 = int(maxima[-1])
+    selected = [addon1]
+    for candidate in reversed(maxima[:-1]):
+        candidate = int(candidate)
+        if addon1 - candidate > LOCAL_MAX_MIN_GAP:
+            selected.append(candidate)
+            break
+    return tuple(selected)
+
+
+def _actual_entry_return(entry: int, end: int) -> float:
+    addon_indices = _deterministic_addon_indices(entry)
+    ret, _, _, _, _ = _simulate_path_fast(
+        entry,
+        end,
+        addon_indices,
+        ADDON2_SPACING_TOLERANCE,
+    )
+    return float(ret)
+
+
 def make_success_dataset(df: pd.DataFrame) -> SuccessDataset:
     events = add_strategy1_events(df).reset_index(drop=True)
     base._prepare_worker_state(events)
@@ -116,6 +145,7 @@ def make_success_dataset(df: pd.DataFrame) -> SuccessDataset:
     lowers: list[float] = []
     uppers: list[float] = []
     path_counts: list[int] = []
+    realized_returns: list[float] = []
     raw_indices: list[int] = []
     dates: list[object] = []
 
@@ -135,12 +165,14 @@ def make_success_dataset(df: pd.DataFrame) -> SuccessDataset:
             raise RuntimeError(f"unexpected feature shape {x.shape}")
 
         p, mean_ret, lower, upper, n_paths = _entry_target(entry, end)
+        actual_ret = _actual_entry_return(entry, end)
         xs.append(x)
         success.append(p)
         net_return.append(mean_ret)
         lowers.append(lower)
         uppers.append(upper)
         path_counts.append(n_paths)
+        realized_returns.append(actual_ret)
         raw_indices.append(entry)
         dates.append(event_dates.iloc[entry])
 
@@ -154,6 +186,7 @@ def make_success_dataset(df: pd.DataFrame) -> SuccessDataset:
         entry_lower=np.asarray(lowers, dtype=float),
         entry_upper=np.asarray(uppers, dtype=float),
         path_count=np.asarray(path_counts, dtype=int),
+        realized_return=np.asarray(realized_returns, dtype=float),
         raw_indices=np.asarray(raw_indices, dtype=int),
         dates=np.asarray(dates),
     )
@@ -186,13 +219,20 @@ def _spearman(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(np.corrcoef(_rankdata(y_true), _rankdata(y_pred))[0, 1])
 
 
+def _top_indices(prediction: np.ndarray) -> np.ndarray:
+    n_top = max(1, int(math.ceil(len(prediction) * TOP_FRACTION)))
+    return np.argsort(prediction, kind="stable")[-n_top:]
+
+
 def _metrics(
     y_true: np.ndarray,
     net_return: np.ndarray,
+    realized_return: np.ndarray,
     prediction: np.ndarray,
 ) -> dict[str, float]:
-    n_top = max(1, int(math.ceil(len(prediction) * TOP_FRACTION)))
-    top = np.argsort(prediction, kind="stable")[-n_top:]
+    top = _top_indices(prediction)
+    realized_all_success = float(np.mean(realized_return > 0.0))
+    realized_top_success = float(np.mean(realized_return[top] > 0.0))
     return {
         "mae": float(np.mean(np.abs(y_true - prediction))),
         "brier": float(np.mean((y_true - prediction) ** 2)),
@@ -202,6 +242,11 @@ def _metrics(
         "top_success_lift": float(np.mean(y_true[top]) - np.mean(y_true)),
         "all_net_return": float(np.mean(net_return)),
         "top_net_return": float(np.mean(net_return[top])),
+        "realized_all_success": realized_all_success,
+        "realized_top_success": realized_top_success,
+        "realized_success_lift": realized_top_success - realized_all_success,
+        "realized_all_net_return": float(np.mean(realized_return)),
+        "realized_top_net_return": float(np.mean(realized_return[top])),
     }
 
 
@@ -261,6 +306,13 @@ def main() -> None:
         "distribution_weighting=unique_realized_paths entry_set=all_entry_candidates"
     )
     print(
+        "S1 SUCCESS_MODEL ACTUAL_EXECUTION "
+        "selection=top20_predicted_entry_success_probability "
+        "addon1=nearest_known_local_max_within_prior_60_sessions "
+        "addon2=nearest_older_known_local_max_gap_gt_5 addon2_spacing_tolerance=0.20 "
+        "exit=existing_strategy1_deterministic_execution horizon=60"
+    )
+    print(
         f"S1 SUCCESS_MODEL MODEL name=ENTRY_SUCCESS_CNN params={count_parameters(EntrySuccessCNN())} "
         "loss=binary_cross_entropy_soft_target output=sigmoid_probability"
     )
@@ -270,7 +322,9 @@ def main() -> None:
         f"target_success_median={np.median(ds.success_probability):.6f} "
         f"entry_net_return_mean={ds.net_expected_return.mean():.6f} "
         f"entry_lower_mean={ds.entry_lower.mean():.6f} entry_upper_mean={ds.entry_upper.mean():.6f} "
-        f"paths_mean={ds.path_count.mean():.3f}"
+        f"paths_mean={ds.path_count.mean():.3f} "
+        f"actual_success_rate={np.mean(ds.realized_return > 0.0):.6f} "
+        f"actual_net_expected_return={ds.realized_return.mean():.6f}"
     )
 
     all_metrics: list[dict[str, float]] = []
@@ -288,25 +342,36 @@ def main() -> None:
         y_train = ds.success_probability[train]
         y_test = ds.success_probability[test]
         net_test = ds.net_expected_return[test]
+        realized_test = ds.realized_return[test]
         constant = np.full(len(test), float(np.mean(y_train)), dtype=float)
-        cm = _metrics(y_test, net_test, constant)
+        cm = _metrics(y_test, net_test, realized_test, constant)
         print(
             f"S1 SUCCESS_MODEL FOLD_METRIC id={fold_id} model=CONSTANT "
             f"mae={cm['mae']:.6f} brier={cm['brier']:.6f} "
             f"all_success={cm['all_success']:.6f} top_success={cm['top_success']:.6f} "
-            f"top_success_lift={cm['top_success_lift']:.6f} top_net_return={cm['top_net_return']:.6f}"
+            f"top_success_lift={cm['top_success_lift']:.6f} top_net_return={cm['top_net_return']:.6f} "
+            f"realized_all_success={cm['realized_all_success']:.6f} "
+            f"realized_top_success={cm['realized_top_success']:.6f} "
+            f"realized_success_lift={cm['realized_success_lift']:.6f} "
+            f"realized_all_net_return={cm['realized_all_net_return']:.6f} "
+            f"realized_top_net_return={cm['realized_top_net_return']:.6f}"
         )
 
         for seed in SEEDS:
             pred = _fit(ds.x[train].cpu(), y_train, ds.x[test].cpu(), seed=seed)
-            m = _metrics(y_test, net_test, pred)
+            m = _metrics(y_test, net_test, realized_test, pred)
             all_metrics.append(m)
             print(
                 f"S1 SUCCESS_MODEL FOLD_METRIC id={fold_id} model=ENTRY_SUCCESS_CNN seed={seed} "
                 f"spearman={_fmt(m['spearman'])} mae={m['mae']:.6f} brier={m['brier']:.6f} "
                 f"all_success={m['all_success']:.6f} top_success={m['top_success']:.6f} "
                 f"top_success_lift={m['top_success_lift']:.6f} "
-                f"all_net_return={m['all_net_return']:.6f} top_net_return={m['top_net_return']:.6f}"
+                f"all_net_return={m['all_net_return']:.6f} top_net_return={m['top_net_return']:.6f} "
+                f"realized_all_success={m['realized_all_success']:.6f} "
+                f"realized_top_success={m['realized_top_success']:.6f} "
+                f"realized_success_lift={m['realized_success_lift']:.6f} "
+                f"realized_all_net_return={m['realized_all_net_return']:.6f} "
+                f"realized_top_net_return={m['realized_top_net_return']:.6f}"
             )
 
     spearman = np.asarray([m["spearman"] for m in all_metrics], dtype=float)
@@ -316,6 +381,11 @@ def main() -> None:
     all_success = np.asarray([m["all_success"] for m in all_metrics], dtype=float)
     top_net = np.asarray([m["top_net_return"] for m in all_metrics], dtype=float)
     all_net = np.asarray([m["all_net_return"] for m in all_metrics], dtype=float)
+    realized_lift = np.asarray([m["realized_success_lift"] for m in all_metrics], dtype=float)
+    realized_top_success = np.asarray([m["realized_top_success"] for m in all_metrics], dtype=float)
+    realized_all_success = np.asarray([m["realized_all_success"] for m in all_metrics], dtype=float)
+    realized_top_net = np.asarray([m["realized_top_net_return"] for m in all_metrics], dtype=float)
+    realized_all_net = np.asarray([m["realized_all_net_return"] for m in all_metrics], dtype=float)
     mae = np.asarray([m["mae"] for m in all_metrics], dtype=float)
     brier = np.asarray([m["brier"] for m in all_metrics], dtype=float)
 
@@ -328,7 +398,13 @@ def main() -> None:
         f"all_success_mean={all_success.mean():.6f} top20_success_mean={top_success.mean():.6f} "
         f"top20_success_lift_mean={lift.mean():.6f} "
         f"top20_success_lift_positive={int(np.sum(lift > 0.0))}/{len(lift)} "
-        f"all_net_return_mean={all_net.mean():.6f} top20_net_return_mean={top_net.mean():.6f}"
+        f"all_net_return_mean={all_net.mean():.6f} top20_net_return_mean={top_net.mean():.6f} "
+        f"realized_all_success_mean={realized_all_success.mean():.6f} "
+        f"realized_top20_success_mean={realized_top_success.mean():.6f} "
+        f"realized_top20_success_lift_mean={realized_lift.mean():.6f} "
+        f"realized_top20_success_lift_positive={int(np.sum(realized_lift > 0.0))}/{len(realized_lift)} "
+        f"realized_all_net_return_mean={realized_all_net.mean():.6f} "
+        f"realized_top20_net_return_mean={realized_top_net.mean():.6f}"
     )
     print("S1 SUCCESS_MODEL PASS")
 
