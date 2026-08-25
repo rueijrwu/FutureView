@@ -66,3 +66,8 @@ jobs:
         env:
           CUDA_VISIBLE_DEVICES: ''
         run: futureview-strategy1-feasibility
+
+      - name: Compare Strategy 1 expanding and sliding training
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+        run: futureview-strategy1-training-compare
