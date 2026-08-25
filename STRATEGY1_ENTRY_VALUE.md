@@ -1,39 +1,43 @@
-# Strategy 1 — Current Research Summary
+# Strategy 1 — Research Objective and Current Definition
 
-## Status
+## 1. Original objective
 
-```text
-research_version=formal_max2_spacing20
-primary_window=60D
-robustness_window=90D
-distribution_weighting=unique_realized_paths
-model_target=entry_success_probability
-first_training_symbol=QQQ
-```
+The project goal is not to optimize a trading gate, threshold, or portfolio scheduler.
 
-Research framing:
+The core research question is:
 
 ```text
-Symbol   -> primarily determines expected profit opportunity
-Strategy -> primarily determines success rate / profitable-path selection
+Can a model identify better Strategy 1 Entry candidates
+and thereby increase Success Rate,
+while preserving positive Net Expected Return?
 ```
 
-Primary outputs:
+The intended decomposition is:
+
+```text
+Symbol   -> primarily determines profit opportunity / return magnitude
+Strategy -> defines the legal trading process
+Model    -> primarily improves Entry selection reliability / Success Rate
+```
+
+Primary outputs remain:
 
 ```text
 Success Rate        = P(Return > 0)
 Net Expected Return = E[Return]
 ```
 
-`Net Expected Return` includes losing outcomes and may be negative.
+`Net Expected Return` includes losses and may be negative.
 
-## Reference levels
+This framing is the main line of research. Threshold engineering, adaptive gates, delayed-entry windows, portfolio state machines, and capital-efficiency studies are secondary implementation diagnostics only.
 
-For a fixed formal Strategy 1 window:
+## 2. Reference framework
+
+For a fixed formal Strategy 1 future window:
 
 ```text
-Lower Bound = minimum return across formal legal realized paths
-Upper Bound = maximum return across formal legal realized paths
+Lower Bound = minimum return across all formal legal realized Strategy 1 paths
+Upper Bound = maximum return across all formal legal realized Strategy 1 paths
 Fixed DCA   = Day 0 / 20 / 40 equal entries, hold to Day 59
 ```
 
@@ -45,86 +49,37 @@ worst legal      simple          best legal
 selection        schedule        selection
 ```
 
-Fixed DCA is outside the formal Strategy 1 path space, so its realized return is not mathematically required to lie between the two formal bounds.
-
-True random-trading-day Entry is not used as the Lower Bound. The existing formal minimum legal path is the research Lower Bound because it stays inside the same Entry Set and execution space.
-
-## Current Strategy 1 rules
-
-### Entry Set
-
-Every session satisfying:
+Formal definitions:
 
 ```text
-Close > MA5
-Close > MA10
-Close > MA20
-MA5 > MA10
-MA10 > MA20
+LowerBound(W) = min(all legal realized Strategy 1 path returns in W)
+UpperBound(W) = max(all legal realized Strategy 1 path returns in W)
 ```
 
-All qualifying sessions are Entry candidates. Legacy `entry1_event` remains untouched for older experiments.
+Lower and Upper come from the same formal Strategy 1 path space.
 
-### Addition Set
+Fixed DCA is outside that path space, so its realized return is not mathematically required to lie between the two bounds.
 
-Confirmed local maximum at `i`:
+True Random Entry is not used. It is too uninformative for the current objective and does not represent the intended Lower Bound.
 
-```text
-Close[i] > Close[i-1]
-Close[i] >= Close[i+1]
-```
-
-Legal addon-reference configurations:
-
-```text
-no addon
-one local-max reference
-two local-max references with index gap > 5
-```
-
-Formal Addon2 requires:
-
-```text
-first_gap  = Addon1Price - EntryPrice
-second_gap = Addon2Price - Addon1Price
-first_gap > 0
-second_gap > 0
-abs(second_gap / first_gap - 1) <= 0.20
-```
-
-Execution remains deterministic:
-
-```text
-eligible MA10 full exit
-> eligible MA5 half exit
-> addon action
-```
-
-Three-session cooldown and horizon-end liquidation remain unchanged.
-
-## Model target
+## 3. What the model is supposed to learn
 
 ### Unit of prediction
 
 One supervised sample is one formal `entry_candidate` at session `e`.
 
-The first model uses:
+The model should answer:
 
 ```text
-symbol=QQQ
-history=5y
-future_horizon=60 sessions
-input_lookback=50 sessions
-addon_reference_lookback=60 sessions
+Given only information observable at Entry e,
+how reliable is this Entry under the formal Strategy 1 path space?
 ```
 
-The addon reference set is constructed only from local maxima observable before Entry. The model input ends on the Entry close.
-
-No future return, future bound, future exit, future local maximum, or target statistic is allowed as an input feature.
+The model is not primarily asked to predict the maximum future return, the Upper Bound, or the best future path.
 
 ### Primary target: Entry Success Probability
 
-Let `P(e,60)` be all unique formal legal realized paths beginning at Entry `e`, using the current max2/spacing20 rules.
+Let `P(e,60)` be all unique formal legal realized paths beginning from Entry `e` under the current Strategy 1 rules.
 
 ```text
 EntrySuccessProbability(e,60)
@@ -144,11 +99,11 @@ Range:
 1.0 = every legal realized path from this Entry profits
 ```
 
-This is a soft probability target. It is the primary learning objective because the model is intended to improve selection reliability rather than explain cross-symbol raw-return magnitude.
+This is the primary learning target because it directly measures Entry reliability.
 
 ### Secondary labels
 
-For every Entry candidate also retain:
+Retain for audit and evaluation:
 
 ```text
 EntryNetExpectedReturn = mean(Return(path))
@@ -157,17 +112,111 @@ EntryUpper             = max(Return(path))
 LegalRealizedPathCount = number of unique realized paths
 ```
 
-These are evaluation/audit labels, not model input features.
+These are not model input features and are not the primary target.
 
-## QQQ first model
+## 4. Causality requirements
 
-The first learning experiment is intentionally single-symbol:
+For every Entry candidate, model features must be observable at or before Entry.
+
+Current first-model setup:
+
+```text
+symbol=QQQ
+history<=5y
+input_lookback=50 sessions
+future_target_horizon=60 sessions
+addon_reference_lookback=60 prior sessions
+```
+
+Allowed inputs are causal OHLCV-derived features only.
+
+Forbidden as input features:
+
+```text
+future return
+future Lower / Upper labels
+future exit
+future local maximum
+future target statistic
+future test score distribution
+```
+
+Training and evaluation must remain chronological / walk-forward.
+
+```text
+no random train/test split
+purge future-label overlap
+no future test labels in threshold or selection logic
+```
+
+## 5. Current formal Strategy 1 rules
+
+### Entry Set
+
+Every session satisfying:
+
+```text
+Close > MA5
+Close > MA10
+Close > MA20
+MA5 > MA10
+MA10 > MA20
+```
+
+All qualifying sessions are formal Entry candidates.
+
+Legacy `entry1_event` remains untouched for compatibility with older experiments.
+
+### Addition Set
+
+Confirmed local maximum at `i`:
+
+```text
+Close[i] > Close[i-1]
+Close[i] >= Close[i+1]
+```
+
+Legal reference configurations:
+
+```text
+no addon
+one local-max reference
+two local-max references with index gap > 5
+```
+
+Formal Addon2 requires approximately equal realized price spacing:
+
+```text
+first_gap  = Addon1Price - EntryPrice
+second_gap = Addon2Price - Addon1Price
+first_gap > 0
+second_gap > 0
+abs(second_gap / first_gap - 1) <= 0.20
+```
+
+### Execution
+
+Three equal capital tranches are retained.
+
+Execution priority remains:
+
+```text
+eligible MA10 full exit
+> eligible MA5 half exit
+> addon action
+```
+
+Three-session cooldown and horizon-end liquidation remain unchanged.
+
+## 6. First model: QQQ Entry Success CNN
+
+The first supervised experiment is intentionally single-symbol.
 
 ```text
 QQQ only
 5 years maximum data
-50-session causal OHLCV feature tensor
-60-session future target horizon
+50-session causal OHLCV tensor
+60-session target horizon
 formal max2 + spacing20 path semantics
 unique-realized-path weighting
 ```
@@ -179,47 +228,155 @@ EntrySuccessCNN
 multi-scale 1D CNN kernels = 5 / 10 / 20
 input channels = causal O/H/L/C/V features
 output = one sigmoid probability
-loss = binary cross entropy with soft target EntrySuccessProbability
+loss = BCE with soft EntrySuccessProbability target
 ```
 
-The model does not train on raw return as the primary target.
+The model does not train on raw return as its primary objective.
 
-### Training split
+Training protocol:
 
 ```text
-chronological expanding folds only
-purge = 60 raw trading sessions
-no random train/test split
+chronological expanding / walk-forward folds
+60 raw-session purge
 3 fixed seeds
+no random split
 ```
 
-The purge is measured in raw sessions so labels from a training Entry cannot overlap the future test period.
+## 7. What has been learned so far
 
-### OOS evaluation
+### Model-learning evidence
 
-Primary model-learning check:
+The QQQ CNN showed that higher predicted Entry scores can identify a subset with better realized Entry quality than the full eligible set.
+
+Earlier OOS candidate-level experiments showed positive top-selection lift, and deterministic Strategy 1 execution also showed improvement when model-selected Entries were compared with all eligible Entries.
+
+This supports the hypothesis that the model contains useful Entry-selection information.
+
+### Expanded OOS comparison
+
+A later expanded walk-forward comparison used the same Strategy 1 execution on both sides:
 
 ```text
-Does predicted top-20% Entry selection have higher realized
-EntrySuccessProbability than all Entry candidates in the same OOS fold?
+Ungated baseline:
+    every formal Entry candidate can become a setup signal
+
+Q55 diagnostic gate:
+    model-selected subset only
 ```
 
-Reported model diagnostics:
+Observed expanded OOS results:
+
+| Metric | Ungated Strategy 1 | Q55-selected subset |
+|---|---:|---:|
+| Campaign count | 14 | 5 unique paths |
+| Success Rate | 42.86% | 60.00% |
+| Avg Campaign Return | +0.3526% | +0.9683% |
+
+Diagnostic lift:
 
 ```text
-Spearman(prediction, target_success_probability)
-MAE
-Brier score
-all-entry success probability
-top-20% success probability
-top-20% success lift
-all-entry Net Expected Return
-top-20% Net Expected Return
+Success Rate lift       = +17.14 percentage points
+Net Expected Return lift = +0.6157 percentage points per campaign
 ```
 
-The main requirement is higher OOS Success Rate while Net Expected Return remains positive. Extra diagnostics are supporting evidence, not new primary research objectives.
+This is evidence that the model can add Entry-selection value.
 
-## Current cross-symbol 60D reference results
+It is not evidence that Q55 is the final policy.
+
+## 8. Important correction to research direction
+
+Recent work explored:
+
+```text
+fixed percentile thresholds
+adaptive rolling thresholds
+hybrid floors
+Q50/Q55/Q60/Q65 sweeps
++3-session delayed entry
+single non-overlapping live campaigns
+expanded chronological OOS blocks
+ungated portfolio baseline comparison
+```
+
+These experiments were useful for learning about score calibration and live execution constraints, but they are not the primary research objective.
+
+They should be treated as diagnostics around the model, not as the thing being optimized.
+
+In particular:
+
+```text
+Q55 is not a new research target.
+Q55 is not a final deployable threshold.
+100% historical Success Rate from sparse folds is not a target.
+Maximizing trading frequency is not the current target.
+Capital efficiency is not the current target.
+```
+
+The project should not drift into repeatedly tuning the gate against the same OOS history.
+
+## 9. Current interpretation
+
+The intended research decomposition remains:
+
+```text
+Symbol choice
+    -> primarily controls available return opportunity / magnitude
+
+Strategy 1 mechanics
+    -> define the legal realization process
+
+Model Entry selection
+    -> should improve Success Rate / reliability
+```
+
+Ideal end state:
+
+```text
+high-opportunity symbol
++
+Entry-selection model with stable OOS Success Rate lift
++
+positive Net Expected Return
+```
+
+The model does not need to maximize raw return across symbols to be useful.
+
+## 10. Next research priority
+
+The next step should return to the original question:
+
+```text
+Does the learned Entry score produce stable chronological OOS
+Success Rate lift across more market periods,
+without re-tuning a threshold on each new test period?
+```
+
+Priority order:
+
+1. Keep Strategy 1 mechanics fixed.
+2. Keep `EntrySuccessProbability` as the primary model target.
+3. Keep QQQ as the first controlled symbol until the model behavior is understood.
+4. Evaluate whether model ranking / selection quality is stable across chronological regimes.
+5. Use Net Expected Return as a secondary economic check.
+6. Only after stable Entry-selection value is established should deployment-specific gate/frequency optimization resume.
+
+A useful model result is therefore not:
+
+```text
+"Q55 made 5 good campaigns."
+```
+
+It is:
+
+```text
+"Across chronological OOS regimes, higher model scores consistently identify
+Entry candidates with higher realized Success Rate than the same Strategy 1
+without model-based Entry selection."
+```
+
+That is the original target.
+
+## 11. Current cross-symbol 60D reference context
 
 Five-year daily samples ending 2026-08-25:
 
@@ -229,16 +386,18 @@ Five-year daily samples ending 2026-08-25:
 | QQQ | 89.8% | +2.09% | 67.4% | +2.43% |
 | SMH | 81.7% | +3.72% | 67.5% | +5.73% |
 
-Working interpretation:
+Working interpretation remains:
 
 ```text
-symbol choice -> profit magnitude
+symbol choice -> profit magnitude / opportunity
 strategy/model -> success reliability
 ```
 
-QQQ is the first training symbol because it provides a middle case between SPY and SMH while keeping the first supervised experiment simple.
+These cross-symbol numbers are reference context, not a reason to change the current QQQ learning objective.
 
-## Active commands
+## 12. Active research commands
+
+Core research:
 
 ```bash
 futureview-strategy1-reference-distribution
@@ -247,10 +406,6 @@ futureview-strategy1-fixed-entry-compare
 futureview-strategy1-success-model
 ```
 
-The QQQ training workflow is:
-
-```text
-.github/workflows/strategy1-qqq-success-model.yml
-```
+Later diagnostic commands remain available but are secondary to the core objective.
 
 Legacy Strategy 1 architecture and historical targets remain untouched unless explicitly changed by a separate experiment.
