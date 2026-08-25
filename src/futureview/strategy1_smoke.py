@@ -6,6 +6,19 @@ from .data import download_spy_daily, validate_daily_ohlcv
 from .strategy1 import STRATEGY1_HORIZONS, add_strategy1_events, make_strategy1_oracle_labels
 
 
+def _group_stats(values: np.ndarray, mask: np.ndarray) -> tuple[int, float, float, float, float]:
+    subset = values[mask]
+    if len(subset) == 0:
+        return 0, float("nan"), float("nan"), float("nan"), float("nan")
+    return (
+        len(subset),
+        float(subset.mean()),
+        float(np.median(subset)),
+        float(np.quantile(subset, 0.90)),
+        float(subset.max()),
+    )
+
+
 def main() -> None:
     df = download_spy_daily(period="3y")
     audit = validate_daily_ohlcv(df)
@@ -48,6 +61,9 @@ def main() -> None:
         e1 = float((entries == 1).mean())
         e2 = float((entries == 2).mean())
         e3 = float((entries == 3).mean())
+        traded = entries > 0
+        traded_n = int(traded.sum())
+
         print(
             f"STRATEGY1 ORACLE {h}D "
             f"n={len(values)} positive={positive:.3f} no_trade={no_trade:.3f} "
@@ -60,6 +76,23 @@ def main() -> None:
             f"partial_exit={partial.mean():.3f} full_exit={full.mean():.3f} "
             f"horizon_exit={horizon_exit.mean():.3f}"
         )
+        if traded_n:
+            print(
+                f"STRATEGY1 ACTIONS_CONDITIONAL {h}D traded={traded_n} "
+                f"entry1={(entries[traded] == 1).mean():.3f} "
+                f"entry2={(entries[traded] == 2).mean():.3f} "
+                f"entry3={(entries[traded] == 3).mean():.3f} "
+                f"partial_exit={partial[traded].mean():.3f} "
+                f"full_exit={full[traded].mean():.3f} "
+                f"horizon_exit={horizon_exit[traded].mean():.3f}"
+            )
+
+        for k in (1, 2, 3):
+            n, mean, median, p90, max_value = _group_stats(values, entries == k)
+            print(
+                f"STRATEGY1 VALUE_BY_ENTRIES {h}D entries={k} n={n} "
+                f"mean={mean:.6f} median={median:.6f} p90={p90:.6f} max={max_value:.6f}"
+            )
 
     print("STRATEGY1 ORACLE SMOKE PASS")
 
