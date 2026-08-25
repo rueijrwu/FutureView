@@ -20,10 +20,29 @@ from .strategy1_success_training import (
 )
 
 THRESHOLD_QUANTILE = 1.0 - TOP_FRACTION
+CALIBRATION_EVENTS = 30
+MIN_INNER_TRAIN_EVENTS = 100
 
 
 def _fmt(value: float) -> str:
     return "nan" if not np.isfinite(value) else f"{value:.6f}"
+
+
+def _calibration_split(train: np.ndarray, raw_indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Chronological inner split with the same raw-session purge used by outer OOS folds."""
+    train = np.asarray(train, dtype=int)
+    if len(train) <= CALIBRATION_EVENTS:
+        raise RuntimeError("not enough historical entries for threshold calibration")
+
+    calibration = train[-CALIBRATION_EVENTS:]
+    calibration_first_raw = int(raw_indices[calibration[0]])
+    cutoff = calibration_first_raw - PURGE_RAW_SESSIONS - 1
+    model_train = train[raw_indices[train] <= cutoff]
+    if len(model_train) < MIN_INNER_TRAIN_EVENTS:
+        raise RuntimeError(
+            f"inner model train too small after purge: {len(model_train)} < {MIN_INNER_TRAIN_EVENTS}"
+        )
+    return model_train, calibration
 
 
 def main() -> None:
@@ -38,27 +57,32 @@ def main() -> None:
         f"ticker={TICKER} period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
         f"samples={len(ds.success_probability)} folds={len(folds)} lookback={LOOKBACK} horizon={HORIZON} "
         f"reference_lookback={REFERENCE_LOOKBACK} purge_raw_sessions={PURGE_RAW_SESSIONS} "
-        f"seeds={','.join(map(str, SEEDS))} no_random_split=true"
+        f"calibration_events={CALIBRATION_EVENTS} seeds={','.join(map(str, SEEDS))} no_random_split=true"
     )
     print(
         "S1 LIVE_THRESHOLD RULE "
-        f"threshold_source=train_predictions threshold_quantile={THRESHOLD_QUANTILE:.2f} "
+        f"threshold_source=historical_calibration_predictions threshold_quantile={THRESHOLD_QUANTILE:.2f} "
+        "inner_split=chronological_purged same_model_for_calibration_and_test=true "
         "test_ranking_used=false test_labels_used=false decision=enter_if_p_hat_gte_threshold "
         "actual_execution=deterministic_strategy1"
     )
 
     rows: list[dict[str, float]] = []
     for fold_id, fold in enumerate(folds, start=1):
-        train, test = fold.train, fold.test
-        y_train = ds.success_probability[train]
+        outer_train, test = fold.train, fold.test
+        model_train, calibration = _calibration_split(outer_train, ds.raw_indices)
+        y_model_train = ds.success_probability[model_train]
         realized_test = ds.realized_return[test]
-        x_eval = torch.cat([ds.x[train].cpu(), ds.x[test].cpu()], dim=0)
+        x_eval = torch.cat([ds.x[calibration].cpu(), ds.x[test].cpu()], dim=0)
+
+        inner_gap = int(ds.raw_indices[calibration[0]] - ds.raw_indices[model_train[-1]] - 1)
+        outer_gap = int(ds.raw_indices[test[0]] - ds.raw_indices[outer_train[-1]] - 1)
 
         for seed in SEEDS:
-            pred_all = _fit(ds.x[train].cpu(), y_train, x_eval, seed=seed)
-            train_pred = pred_all[: len(train)]
-            test_pred = pred_all[len(train) :]
-            threshold = float(np.quantile(train_pred, THRESHOLD_QUANTILE))
+            pred_eval = _fit(ds.x[model_train].cpu(), y_model_train, x_eval, seed=seed)
+            calibration_pred = pred_eval[: len(calibration)]
+            test_pred = pred_eval[len(calibration) :]
+            threshold = float(np.quantile(calibration_pred, THRESHOLD_QUANTILE))
             selected = test_pred >= threshold
             selected_count = int(np.sum(selected))
             selection_rate = float(np.mean(selected))
@@ -87,7 +111,8 @@ def main() -> None:
             rows.append(row)
             print(
                 f"S1 LIVE_THRESHOLD FOLD_METRIC id={fold_id} seed={seed} "
-                f"train_n={len(train)} test_n={len(test)} "
+                f"model_train_n={len(model_train)} calibration_n={len(calibration)} test_n={len(test)} "
+                f"inner_gap={inner_gap} outer_gap={outer_gap} "
                 f"test_first={pd.Timestamp(ds.dates[test[0]]).date()} "
                 f"test_last={pd.Timestamp(ds.dates[test[-1]]).date()} "
                 f"threshold={threshold:.6f} selected={selected_count}/{len(test)} "
@@ -101,7 +126,7 @@ def main() -> None:
 
     valid = [row for row in rows if np.isfinite(row["selected_success"])]
     if not valid:
-        raise RuntimeError("live threshold selected no OOS entries in every run")
+        raise RuntimeError("calibrated live threshold selected no OOS entries in every run")
 
     selection_rate = np.asarray([row["selection_rate"] for row in rows], dtype=float)
     selected_count = np.asarray([row["selected_count"] for row in rows], dtype=float)
