@@ -180,23 +180,85 @@ The intended indicator test is:
 
 Raw capture ratio is no longer a primary metric because `EntryReturn / OracleValue` becomes unstable when OracleValue is close to zero.
 
-Run the regret-first comparison with:
+## Regret-first 5-year result
 
-```bash
-futureview-strategy1-entry-regret-compare
+The same 94 legal Entry1 samples, four chronological OOS folds, five seeds, 40-event training window, 10-event OOS test blocks, and 60-session raw purge were reused. The learning target remained `EntryReturn`; only the benchmark layer changed.
+
+### Summary across models
+
+```text
+SUMMARY_RIDGE
+  entry Spearman mean        -0.130303
+  top20 lift mean            +0.002891
+  top regret mean            0.006868
+  regret reduction vs all   -0.000259
+  Oracle match rate mean     0.375
+
+CNN_A
+  entry Spearman mean        +0.142424
+  top20 lift mean            +0.003880
+  top regret mean            0.003902
+  regret reduction vs all   +0.002706
+  Oracle match rate mean     0.525
+
+CNN_B
+  entry Spearman mean        +0.001212
+  top20 lift mean            -0.000512
+  top regret mean            0.005982
+  regret reduction vs all   +0.000626
+  Oracle match rate mean     0.400
+
+CNN_A_PLUS_SUMMARY20
+  entry Spearman mean        -0.049697
+  top20 lift mean            -0.000545
+  top regret mean            0.006326
+  regret reduction vs all   +0.000282
+  Oracle match rate mean     0.350
 ```
 
-The run keeps the same five-year data cap, legal Entry1 samples, chronological event folds, 60-session raw purge, five seeds, and model set as the entry-value comparison.
+### Interpretation
+
+CNN A is the only tested model that simultaneously shows:
+
+```text
+positive mean entry-return ranking
+positive top20 realized-return lift
+positive regret reduction of meaningful size
+lowest mean top regret among the learned models
+highest mean Oracle match rate
+```
+
+Its top-scored entries reduce mean regret by approximately:
+
+```text
+0.002706 = 0.2706 percentage points of initial capital
+```
+
+relative to the full legal-entry set on the evaluated OOS folds.
+
+This strengthens the Entry Quality Score interpretation. CNN A is not merely selecting entries with somewhat higher realized return; its high-score subset is also closer, on average, to the future-known Strategy 1 optimum.
+
+However, the result is still not fully regime-stable. Fold 2 remains adverse for several CNN A seeds, including negative regret reduction for seeds `20260821`, `20260824`, and `20260825`. Therefore the correct status remains:
+
+```text
+CNN A = promising Entry Quality Score
+        stronger evidence after regret analysis
+        not yet robustly established across regimes
+```
+
+The terminal `S1 ENTRY_REGRET PASS` emitted by the runner means the experiment completed successfully; it should not be interpreted as a scientific pass of the model hypothesis.
 
 ## Current model status
 
 ```text
 CNN A:
   primary entry-quality model
-  promising / not yet robustly established
+  promising / stronger evidence after Oracle-Regret analysis
+  not yet robustly established
 
 Summary Ridge:
   no longer strong under the entry-value target
+  negative mean regret reduction
 
 CNN B:
   fail / hold
@@ -215,9 +277,10 @@ Primary trading-indicator metrics are:
 3. top-score win rate
 4. top-score OracleRegret
 5. regret reduction versus all legal entries
-6. fold stability
-7. seed stability
-8. Spearman as a ranking diagnostic
+6. Oracle match rate
+7. fold stability
+8. seed stability
+9. Spearman as a ranking diagnostic
 ```
 
 MAE is secondary. A model can be useful as an indicator without producing well-calibrated percentage-return estimates.
@@ -228,6 +291,6 @@ The historical question was whether a CNN could predict the future best Oracle o
 
 > Can the model score the quality of this legal entry under fixed Strategy 1 execution?
 
-On the current five-year, four-fold, five-seed experiment, CNN A gives the strongest evidence so far. Its top-20% entry-return lift is positive in all five seeds, while the other tested models do not show the same stability.
+On the current five-year, four-fold, five-seed experiment, CNN A gives the strongest evidence so far. Its top-20% entry-return lift is positive in all five seeds, and the regret-first analysis shows the strongest average reduction in distance to the future-known optimum.
 
-The next benchmark layer is OracleRegret: a useful Entry Quality Score should not only pick higher realized returns, but should also pick entries with systematically smaller distance to the future-known Strategy 1 optimum.
+The evidence is now stronger than under entry-return lift alone, but Fold 2 prevents a robust cross-regime claim. The next scientific focus should therefore be regime stability of the score rather than further gate or threshold tuning.
