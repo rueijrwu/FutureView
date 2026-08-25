@@ -8,6 +8,7 @@ import pandas as pd
 
 from .data import download_spy_daily, validate_daily_ohlcv
 from . import strategy1_reference_distribution as base
+from .strategy1 import _simulate_from_start
 
 DATA_PERIOD = "5y"
 WINDOWS = (30, 45, 60, 90)
@@ -27,6 +28,50 @@ def _policy_configs(
     return tuple(config for config in configs if len(config) <= max_addons)
 
 
+def _simulate_policy_path(
+    entry: int,
+    end: int,
+    addon_level_indices: tuple[int, ...],
+    addon2_spacing_tolerance: float | None,
+) -> tuple[float, float, float, int, tuple[int, int, int, int, int, int]]:
+    events, close, _, _, _, _ = base._require_state()
+    addon_levels = tuple((i, float(close[i])) for i in addon_level_indices)
+    run = _simulate_from_start(
+        events,
+        entry,
+        end,
+        addon_levels=addon_levels,
+        addon2_spacing_tolerance=addon2_spacing_tolerance,
+    )
+
+    addon1 = -1
+    addon2 = -1
+    exit5 = -1
+    exit10 = -1
+    horizon = -1
+    for action in run.actions:
+        if action.action == "addon1":
+            addon1 = int(action.index)
+        elif action.action == "addon2":
+            addon2 = int(action.index)
+        elif action.action == "exit5_half":
+            exit5 = int(action.index)
+        elif action.action == "exit10_full":
+            exit10 = int(action.index)
+        elif action.action == "horizon_exit":
+            horizon = int(action.index)
+
+    path = (int(entry), addon1, addon2, exit5, exit10, horizon)
+    executed_addons = max(0, int(run.entries_used) - 1)
+    return (
+        float(run.final_return),
+        float(run.return_per_exposure_day),
+        float(run.exposure_days),
+        executed_addons,
+        path,
+    )
+
+
 def _summarize_policy_window(
     start: int,
     end: int,
@@ -35,10 +80,8 @@ def _summarize_policy_window(
     max_addons: int,
     tolerance: float | None,
 ) -> dict[str, object]:
-    returns: list[float] = []
-    efficiencies: list[float] = []
-    exposures: list[float] = []
-    executed2 = 0
+    realized: dict[tuple[int, int, int, int, int, int], tuple[float, float, float, int]] = {}
+    executed2_configs = 0
     combinations = 0
 
     for raw_entry in entries:
@@ -47,24 +90,32 @@ def _summarize_policy_window(
         combinations += len(configs)
         for config in configs:
             level_indices = tuple(level[0] for level in config)
-            ret, eff, exp, executed_addons = base._simulate_cached(
+            ret, eff, exp, executed_addons, path = _simulate_policy_path(
                 entry,
                 end,
                 level_indices,
                 tolerance,
             )
-            returns.append(ret)
-            efficiencies.append(eff)
-            exposures.append(exp)
             if executed_addons == 2:
-                executed2 += 1
+                executed2_configs += 1
+            realized.setdefault(path, (ret, eff, exp, executed_addons))
+
+    returns = [v[0] for v in realized.values()]
+    efficiencies = [v[1] for v in realized.values()]
+    exposures = [v[2] for v in realized.values()]
+    executed2_paths = sum(1 for v in realized.values() if v[3] == 2)
 
     summary = base._group_summary(returns, efficiencies, exposures)
+    realized_count = len(realized)
     return {
         **summary,
         "legal_combinations": float(combinations),
-        "executed2": float(executed2),
-        "executed2_rate": float(executed2 / combinations) if combinations > 0 else 0.0,
+        "realized_paths": float(realized_count),
+        "dedup_ratio": float(realized_count / combinations) if combinations > 0 else 0.0,
+        "executed2_configs": float(executed2_configs),
+        "executed2_config_rate": float(executed2_configs / combinations) if combinations > 0 else 0.0,
+        "executed2_paths": float(executed2_paths),
+        "executed2_path_rate": float(executed2_paths / realized_count) if realized_count > 0 else 0.0,
     }
 
 
@@ -126,9 +177,18 @@ def _print_policy(w: int, name: str, rows: list[dict[str, object]], baseline: li
         return float(np.median([row[section][field] for row in nonempty]))  # type: ignore[index]
 
     combo_mean = float(np.mean([row["legal_combinations"] for row in rows]))
-    executed2_rate = float(
-        sum(float(row["executed2"]) for row in rows)
+    path_mean = float(np.mean([row["realized_paths"] for row in rows]))
+    dedup_ratio = float(
+        sum(float(row["realized_paths"]) for row in rows)
         / max(1.0, sum(float(row["legal_combinations"]) for row in rows))
+    )
+    executed2_config_rate = float(
+        sum(float(row["executed2_configs"]) for row in rows)
+        / max(1.0, sum(float(row["legal_combinations"]) for row in rows))
+    )
+    executed2_path_rate = float(
+        sum(float(row["executed2_paths"]) for row in rows)
+        / max(1.0, sum(float(row["realized_paths"]) for row in rows))
     )
 
     total_return = 0.0
@@ -147,7 +207,9 @@ def _print_policy(w: int, name: str, rows: list[dict[str, object]], baseline: li
 
     print(
         f"S1 POLICY_COMPARE w={w} policy={name} "
-        f"legal_combinations_mean={combo_mean:.3f} addon2_execute_rate={executed2_rate:.4f} "
+        f"legal_combinations_mean={combo_mean:.3f} realized_paths_mean={path_mean:.3f} "
+        f"dedup_ratio={dedup_ratio:.4f} addon2_execute_rate={executed2_config_rate:.4f} "
+        f"addon2_path_rate={executed2_path_rate:.4f} "
         f"lower_mean={mf('return','lower'):.6f} upper_mean={mf('return','upper'):.6f} "
         f"upper_vs_max1={upper_delta:.6f} lower_vs_max1={lower_delta:.6f} "
         f"mean_return={mf('return','mean'):.6f} median_return={mf('return','median'):.6f} "
@@ -172,13 +234,15 @@ def main() -> None:
         "S1 POLICY_COMPARE DATA "
         f"period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
         f"windows={','.join(str(w) for w in WINDOWS)} workers={workers} "
-        "baseline=max1 policies=max1,unrestricted,spacing10,spacing20,spacing30"
+        "baseline=max1 policies=max1,unrestricted,spacing10,spacing20,spacing30 "
+        "distribution_weighting=unique_realized_paths"
     )
     print(
         "S1 POLICY_COMPARE RULE "
         "max1=legal_zero_or_one_addon_configs "
         "unrestricted=legal_zero_one_two_addon_configs "
         "spacing=full_config_universe_with_realized_addon2_equal_price_step_filter "
+        "realized_path_key=entry_addon1_addon2_exit5_exit10_horizon "
         "comparison=full_reference_distribution_all_anchors"
     )
 
