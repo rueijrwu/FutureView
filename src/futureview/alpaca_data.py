@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 CANONICAL_INTRADAY_COLUMNS = ["timestamp", "date", "open", "high", "low", "close", "volume"]
+CANONICAL_DAILY_COLUMNS = ["date", "open", "high", "low", "close", "volume"]
 ALPACA_BASE_URL = "https://data.alpaca.markets"
 DEFAULT_CHUNK_DAYS = 365
 DEFAULT_MAX_RETRIES = 8
@@ -118,11 +119,13 @@ def download_spy_intraday_alpaca(
         print(f"ALPACA DOWNLOAD chunk={chunk_id}/{len(chunks)} start={chunk_start} end={chunk_end}")
         page_token: str | None = None
         bars: list[dict[str, object]] = []
+        query_start = f"{chunk_start}T00:00:00Z"
+        query_end = f"{(pd.Timestamp(chunk_end) + pd.Timedelta(days=1)).date().isoformat()}T00:00:00Z"
         while True:
             params = {
                 "timeframe": timeframe,
-                "start": chunk_start,
-                "end": chunk_end,
+                "start": query_start,
+                "end": query_end,
                 "adjustment": "raw",
                 "feed": feed,
                 "limit": 10000,
@@ -159,7 +162,9 @@ def download_spy_intraday_alpaca(
         )
         clock = frame["timestamp"].dt.time
         regular = np.array([(t >= time(9, 30)) and (t < time(16, 0)) for t in clock], dtype=bool)
-        frame = frame.loc[regular, CANONICAL_INTRADAY_COLUMNS].sort_values("timestamp").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
+        frame = frame.loc[regular, CANONICAL_INTRADAY_COLUMNS]
+        frame = frame[(frame["date"] >= pd.Timestamp(chunk_start)) & (frame["date"] <= pd.Timestamp(chunk_end))]
+        frame = frame.sort_values("timestamp").drop_duplicates("timestamp", keep="last").reset_index(drop=True)
         if not frame.empty:
             _write_cache(frame, cache_path)
             frames.append(frame)
@@ -171,11 +176,40 @@ def download_spy_intraday_alpaca(
     return out[CANONICAL_INTRADAY_COLUMNS]
 
 
+def _complete_rth_dates(frame: pd.DataFrame) -> pd.Index:
+    counts = frame.groupby("date").size()
+    return counts[counts == 13].index
+
+
+def aggregate_rth_daily(frame: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate complete 30-minute Alpaca IEX regular sessions into daily OHLCV."""
+    if frame.empty:
+        raise ValueError("intraday frame is empty")
+    complete_dates = _complete_rth_dates(frame)
+    work = frame[frame["date"].isin(complete_dates)].sort_values("timestamp")
+    rows: list[dict[str, object]] = []
+    for date, group in work.groupby("date", sort=True):
+        rows.append(
+            {
+                "date": pd.Timestamp(date),
+                "open": float(group["open"].iloc[0]),
+                "high": float(group["high"].max()),
+                "low": float(group["low"].min()),
+                "close": float(group["close"].iloc[-1]),
+                "volume": float(group["volume"].sum()),
+            }
+        )
+    if not rows:
+        raise RuntimeError("no complete Alpaca IEX regular sessions for daily aggregation")
+    return pd.DataFrame(rows, columns=CANONICAL_DAILY_COLUMNS).sort_values("date").reset_index(drop=True)
+
+
 def aggregate_rth_two_bars(frame: pd.DataFrame) -> pd.DataFrame:
     """Aggregate 30-minute RTH bars into 09:30-13:30 and 13:30-16:00 ET bars."""
     if frame.empty:
         raise ValueError("intraday frame is empty")
-    work = frame.copy()
+    complete_dates = _complete_rth_dates(frame)
+    work = frame[frame["date"].isin(complete_dates)].copy()
     local_time = work["timestamp"].dt.time
     work["session_bar"] = [0 if t < time(13, 30) else 1 for t in local_time]
 
