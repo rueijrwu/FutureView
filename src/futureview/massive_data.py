@@ -4,6 +4,7 @@ import json
 import os
 import time as time_module
 from datetime import time
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlparse
 from urllib.request import urlopen
@@ -16,6 +17,8 @@ MASSIVE_BASE_URL = "https://api.massive.com"
 DEFAULT_MAX_RETRIES = 8
 DEFAULT_REQUEST_PAUSE_SECONDS = 1.0
 DEFAULT_CHUNK_DAYS = 60
+DEFAULT_CACHE_DIR = Path(".cache/futureview/massive")
+RAW_FIELDS = ["t", "o", "h", "l", "c", "v"]
 
 
 class MassiveForbiddenError(RuntimeError):
@@ -81,6 +84,43 @@ def _date_chunks(start: str, end: str, chunk_days: int) -> list[tuple[str, str]]
     return chunks
 
 
+def _cache_root(cache_dir: str | Path | None) -> Path:
+    configured = cache_dir or os.environ.get("FUTUREVIEW_CACHE_DIR")
+    root = Path(configured) if configured else DEFAULT_CACHE_DIR
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _chunk_cache_path(root: Path, base_minutes: int, start: str, end: str) -> Path:
+    return root / f"SPY_{base_minutes}m_{start}_{end}.csv.gz"
+
+
+def _chunk_forbidden_path(root: Path, base_minutes: int, start: str, end: str) -> Path:
+    return root / f"SPY_{base_minutes}m_{start}_{end}.forbidden"
+
+
+def _read_cached_chunk(path: Path) -> list[dict[str, float | int]]:
+    frame = pd.read_csv(path)
+    missing = set(RAW_FIELDS).difference(frame.columns)
+    if missing:
+        raise ValueError(f"Massive cache missing fields {sorted(missing)}: {path}")
+    return frame.loc[:, RAW_FIELDS].to_dict(orient="records")
+
+
+def _write_cached_chunk(path: Path, rows: list[dict[str, float | int]]) -> None:
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        frame = pd.DataFrame(columns=RAW_FIELDS)
+    missing = set(RAW_FIELDS).difference(frame.columns)
+    if missing:
+        raise ValueError(f"Massive response missing fields before cache write: {sorted(missing)}")
+    frame.loc[:, RAW_FIELDS].drop_duplicates(subset=["t"], keep="last").to_csv(
+        path,
+        index=False,
+        compression="gzip",
+    )
+
+
 def download_spy_intraday_massive(
     start: str,
     end: str,
@@ -90,14 +130,15 @@ def download_spy_intraday_massive(
     chunk_days: int = DEFAULT_CHUNK_DAYS,
     request_pause_seconds: float = DEFAULT_REQUEST_PAUSE_SECONDS,
     skip_forbidden_history: bool = True,
+    cache_dir: str | Path | None = None,
+    use_cache: bool = True,
 ) -> pd.DataFrame:
-    """Download SPY intraday aggregates from Massive and keep NYSE regular session only.
+    """Download/cache SPY intraday aggregates from Massive and keep NYSE regular session only.
 
-    Requests are split into bounded date chunks and rate-limit-safe pagination. HTTP 429
-    responses respect Retry-After when present and otherwise use exponential backoff.
-    If an old chunk is rejected with HTTP 403, the default behavior is to skip that chunk
-    and continue forward so Basic-plan two-year history can still be used. If every chunk
-    is forbidden, a clear entitlement/key error is raised.
+    Successful date chunks are persisted immediately as compressed CSV files. Re-running
+    the experiment reads those files instead of calling Massive again. HTTP 403 chunks are
+    recorded as small marker files so repeated runs do not repeatedly query inaccessible
+    plan history; delete the cache directory if account entitlements later change.
     """
     key = api_key or os.environ.get("MASSIVE_API_KEY")
     if not key:
@@ -107,12 +148,36 @@ def download_spy_intraday_massive(
     if request_pause_seconds < 0:
         raise ValueError("request_pause_seconds must be non-negative")
 
+    root = _cache_root(cache_dir)
     rows: list[dict[str, float | int]] = []
     chunks = _date_chunks(start, end, chunk_days)
     forbidden_chunks = 0
     successful_chunks = 0
+    cache_hits = 0
 
     for chunk_id, (chunk_start, chunk_end) in enumerate(chunks, start=1):
+        cache_path = _chunk_cache_path(root, base_minutes, chunk_start, chunk_end)
+        forbidden_path = _chunk_forbidden_path(root, base_minutes, chunk_start, chunk_end)
+
+        if use_cache and cache_path.exists():
+            cached = _read_cached_chunk(cache_path)
+            rows.extend(cached)
+            cache_hits += 1
+            successful_chunks += 1
+            print(
+                f"MASSIVE CACHE_HIT chunk={chunk_id}/{len(chunks)} "
+                f"start={chunk_start} end={chunk_end} rows={len(cached)}"
+            )
+            continue
+
+        if use_cache and skip_forbidden_history and forbidden_path.exists():
+            forbidden_chunks += 1
+            print(
+                f"MASSIVE FORBIDDEN_CACHE chunk={chunk_id}/{len(chunks)} "
+                f"start={chunk_start} end={chunk_end}"
+            )
+            continue
+
         print(
             f"MASSIVE DOWNLOAD chunk={chunk_id}/{len(chunks)} "
             f"start={chunk_start} end={chunk_end}"
@@ -121,11 +186,9 @@ def download_spy_intraday_massive(
             f"{MASSIVE_BASE_URL}/v2/aggs/ticker/SPY/range/{base_minutes}/minute/{chunk_start}/{chunk_end}"
             "?adjusted=false&sort=asc&limit=50000"
         )
-        page = 0
-        chunk_rows_before = len(rows)
+        chunk_rows: list[dict[str, float | int]] = []
         try:
             while url:
-                page += 1
                 payload = _request_json(url, key)
                 status = str(payload.get("status", "")).upper()
                 if status not in {"OK", "DELAYED"} and "results" not in payload:
@@ -133,7 +196,7 @@ def download_spy_intraday_massive(
                         f"Massive aggregate request failed: status={payload.get('status')} "
                         f"error={payload.get('error')}"
                     )
-                rows.extend(payload.get("results", []))
+                chunk_rows.extend(payload.get("results", []))
                 next_url = payload.get("next_url")
                 if next_url:
                     parsed = urlparse(next_url)
@@ -146,20 +209,33 @@ def download_spy_intraday_massive(
                     url = next_url
                 else:
                     url = ""
-                if request_pause_seconds > 0 and (url or chunk_id < len(chunks)):
+                if request_pause_seconds > 0 and url:
                     time_module.sleep(request_pause_seconds)
         except MassiveForbiddenError:
             if not skip_forbidden_history:
                 raise
             forbidden_chunks += 1
+            forbidden_path.write_text(
+                "history_entitlement_or_key_access\n",
+                encoding="utf-8",
+            )
             print(
                 f"MASSIVE FORBIDDEN_SKIP chunk={chunk_id}/{len(chunks)} "
                 f"start={chunk_start} end={chunk_end} reason=history_entitlement_or_key_access"
             )
             continue
 
-        if len(rows) > chunk_rows_before:
+        if chunk_rows:
+            rows.extend(chunk_rows)
             successful_chunks += 1
+            if use_cache:
+                _write_cached_chunk(cache_path, chunk_rows)
+                print(
+                    f"MASSIVE CACHE_WRITE chunk={chunk_id}/{len(chunks)} "
+                    f"path={cache_path} rows={len(chunk_rows)}"
+                )
+        if request_pause_seconds > 0 and chunk_id < len(chunks):
+            time_module.sleep(request_pause_seconds)
 
     if not rows:
         if forbidden_chunks == len(chunks):
@@ -169,11 +245,10 @@ def download_spy_intraday_massive(
             )
         raise RuntimeError("Massive returned no SPY intraday aggregates")
 
-    if forbidden_chunks:
-        print(
-            f"MASSIVE ACCESS_SUMMARY requested_chunks={len(chunks)} "
-            f"successful_chunks={successful_chunks} forbidden_chunks={forbidden_chunks}"
-        )
+    print(
+        f"MASSIVE ACCESS_SUMMARY requested_chunks={len(chunks)} successful_chunks={successful_chunks} "
+        f"forbidden_chunks={forbidden_chunks} cache_hits={cache_hits} cache_dir={root}"
+    )
 
     frame = pd.DataFrame(rows).drop_duplicates(subset=["t"], keep="last")
     required = {"t", "o", "h", "l", "c", "v"}
