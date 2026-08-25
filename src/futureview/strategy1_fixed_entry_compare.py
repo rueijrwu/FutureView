@@ -47,7 +47,7 @@ def main() -> None:
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
     events = base.add_strategy1_events(df).reset_index(drop=True)
     base._prepare_worker_state(events)
-    formal._simulate_path = fast._simulate_cached_fast_path
+    formal._simulate_path = fast._simulate_path_fast
 
     close = events["Close"].to_numpy(dtype=float)
     anchor_count = len(events) - WINDOW + 1
