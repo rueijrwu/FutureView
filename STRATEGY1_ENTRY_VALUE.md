@@ -31,6 +31,38 @@ Net Expected Return = E[Return]
 
 This framing is the main line of research. Threshold engineering, adaptive gates, delayed-entry windows, portfolio state machines, and capital-efficiency studies are secondary implementation diagnostics only.
 
+### Decision frequency is not a primary objective
+
+A low number of model-selected Entries is not automatically a negative result.
+
+It can mean:
+
+```text
+The current observable information is insufficient for the model
+to distinguish a high-reliability Entry from the rest.
+```
+
+In that case, not making a strong decision can be appropriate behavior.
+
+Therefore:
+
+```text
+low decision frequency != model failure
+high decision frequency != model success
+```
+
+The model should be judged first by whether its score contains stable information about Entry quality. Coverage/frequency is a later deployment property.
+
+The research must distinguish:
+
+```text
+model information quality
+from
+execution frequency
+```
+
+A model that only becomes decisive in a small number of information-rich regimes can still be useful if those decisions are reliably better than the underlying Strategy 1 Entry set.
+
 ## 2. Reference framework
 
 For a fixed formal Strategy 1 future window:
@@ -275,13 +307,13 @@ Observed expanded OOS results:
 Diagnostic lift:
 
 ```text
-Success Rate lift       = +17.14 percentage points
+Success Rate lift        = +17.14 percentage points
 Net Expected Return lift = +0.6157 percentage points per campaign
 ```
 
 This is evidence that the model can add Entry-selection value.
 
-It is not evidence that Q55 is the final policy.
+It is not evidence that Q55 is the final policy, and the smaller campaign count should not by itself be interpreted as a defect. The model may simply be more selective when observable information is weak.
 
 ## 8. Important correction to research direction
 
@@ -341,24 +373,30 @@ positive Net Expected Return
 
 The model does not need to maximize raw return across symbols to be useful.
 
+The model also does not need to make a decision on every Entry candidate. A valid model behavior is to remain non-committal when the available causal information does not support a strong distinction.
+
 ## 10. Next research priority
 
-The next step should return to the original question:
+The next step returns directly to model quality:
 
 ```text
-Does the learned Entry score produce stable chronological OOS
-Success Rate lift across more market periods,
-without re-tuning a threshold on each new test period?
+Across chronological OOS regimes, does a higher model score
+correspond to higher EntrySuccessProbability and higher realized Entry quality?
 ```
+
+This is evaluated without choosing a deployment threshold.
 
 Priority order:
 
 1. Keep Strategy 1 mechanics fixed.
 2. Keep `EntrySuccessProbability` as the primary model target.
-3. Keep QQQ as the first controlled symbol until the model behavior is understood.
-4. Evaluate whether model ranking / selection quality is stable across chronological regimes.
-5. Use Net Expected Return as a secondary economic check.
-6. Only after stable Entry-selection value is established should deployment-specific gate/frequency optimization resume.
+3. Keep QQQ as the first controlled symbol until model behavior is understood.
+4. Evaluate the full OOS score distribution, not only selected trades.
+5. Check whether Entry quality rises from low-score to high-score rank buckets.
+6. Check stability across chronological regimes and seeds.
+7. Use Net Expected Return as a secondary economic check.
+8. Treat low model decisiveness as potentially meaningful abstention, not automatically poor coverage.
+9. Only after stable score-quality structure is established should deployment-specific gate/frequency optimization resume.
 
 A useful model result is therefore not:
 
@@ -369,9 +407,8 @@ A useful model result is therefore not:
 It is:
 
 ```text
-"Across chronological OOS regimes, higher model scores consistently identify
-Entry candidates with higher realized Success Rate than the same Strategy 1
-without model-based Entry selection."
+"Across chronological OOS regimes, higher model scores consistently map to
+higher EntrySuccessProbability and better realized Entry outcomes."
 ```
 
 That is the original target.
@@ -404,8 +441,9 @@ futureview-strategy1-reference-distribution
 futureview-strategy1-reference-distribution-fast
 futureview-strategy1-fixed-entry-compare
 futureview-strategy1-success-model
+futureview-strategy1-success-model-oos-diagnostics
 ```
 
-Later diagnostic commands remain available but are secondary to the core objective.
+Later gate / portfolio diagnostic commands remain available but are secondary to the core objective.
 
 Legacy Strategy 1 architecture and historical targets remain untouched unless explicitly changed by a separate experiment.
