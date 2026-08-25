@@ -114,12 +114,11 @@ def _simulate_numeric(
 
     final_return = cash - 1.0
     efficiency = final_return / exposure_days if exposure_days > 0.0 else 0.0
-    executed_addons = entries_used - 1
     return (
         final_return,
         efficiency,
         exposure_days,
-        executed_addons,
+        entries_used - 1,
         addon1_index,
         addon2_index,
         exit5_index,
@@ -131,28 +130,30 @@ def _simulate_numeric(
 def _fast_event_arrays() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     global _FAST_EVENTS_ID, _FAST_EXIT5, _FAST_EXIT10
     events, close, _, _, _, _ = base._require_state()
-    current_id = id(events)
-    if _FAST_EVENTS_ID != current_id or _FAST_EXIT5 is None or _FAST_EXIT10 is None:
-        _FAST_EVENTS_ID = current_id
+    events_id = id(events)
+    if events_id != _FAST_EVENTS_ID or _FAST_EXIT5 is None or _FAST_EXIT10 is None:
+        _FAST_EVENTS_ID = events_id
         _FAST_EXIT5 = events["exit5_event"].to_numpy(dtype=np.bool_)
         _FAST_EXIT10 = events["exit10_event"].to_numpy(dtype=np.bool_)
     return close, _FAST_EXIT5, _FAST_EXIT10
 
 
 @lru_cache(maxsize=FAST_SIM_CACHE_SIZE)
-def _simulate_cached_fast_path(
+def _simulate_path_fast(
     entry: int,
     end: int,
     addon_level_indices: tuple[int, ...],
-    addon2_spacing_tolerance: float | None = None,
-) -> tuple[float, float, float, int, tuple[int, int, int, int, int, int]]:
+    addon2_spacing_tolerance: float | None,
+) -> formal.PathResult:
     close, exit5_event, exit10_event = _fast_event_arrays()
-    count = len(addon_level_indices)
-    if count > 2:
+    addon_count = len(addon_level_indices)
+    if addon_count > 2:
         raise ValueError("Strategy 1 supports at most two addon levels")
-    level1 = float(close[addon_level_indices[0]]) if count >= 1 else 0.0
-    level2 = float(close[addon_level_indices[1]]) if count >= 2 else 0.0
+
+    level1 = float(close[addon_level_indices[0]]) if addon_count >= 1 else 0.0
+    level2 = float(close[addon_level_indices[1]]) if addon_count >= 2 else 0.0
     spacing_tolerance = -1.0 if addon2_spacing_tolerance is None else float(addon2_spacing_tolerance)
+
     (
         ret,
         efficiency,
@@ -169,7 +170,7 @@ def _simulate_cached_fast_path(
         exit10_event,
         int(entry),
         int(end),
-        int(count),
+        int(addon_count),
         level1,
         level2,
         spacing_tolerance,
@@ -185,24 +186,8 @@ def _simulate_cached_fast_path(
     return float(ret), float(efficiency), float(exposure), int(executed_addons), path
 
 
-@lru_cache(maxsize=FAST_SIM_CACHE_SIZE)
-def _simulate_cached_fast(
-    entry: int,
-    end: int,
-    addon_level_indices: tuple[int, ...],
-    addon2_spacing_tolerance: float | None = None,
-) -> tuple[float, float, float, int]:
-    ret, efficiency, exposure, executed_addons, _ = _simulate_cached_fast_path(
-        entry,
-        end,
-        addon_level_indices,
-        addon2_spacing_tolerance,
-    )
-    return ret, efficiency, exposure, executed_addons
-
-
 def main() -> None:
-    formal._simulate_path = _simulate_cached_fast_path
+    formal._simulate_path = _simulate_path_fast
     previous_workers = os.environ.get("FUTUREVIEW_WORKERS")
     os.environ["FUTUREVIEW_WORKERS"] = "1"
     try:
