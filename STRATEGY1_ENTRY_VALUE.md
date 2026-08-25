@@ -1,36 +1,55 @@
 # Strategy 1 — Entry Quality Framework
 
-This document records the current event-conditioned Strategy 1 research framework. The frozen Strategy 1 mechanics are unchanged.
+This document records the current Strategy 1 research framework while the target definition is being finalized.
 
 ## Core research question
 
-> Under the fixed Strategy 1 execution rules, can a model provide a useful causal score for whether the current legal Entry1 is a high-quality entry?
+> Under fixed Strategy 1 execution rules, can a model provide a useful causal score for the quality of the current legal entry?
 
-The model is not asked to imitate a perfect future pattern and is not trained to predict Oracle directly.
+The model target is intentionally **not yet finalized**.
 
 ## Fixed Strategy 1 mechanics used by this research
 
-Strategy 1 is defined from the perspective of **entering on the current legal Entry1 date** and then following the already-specified campaign rules. The research layer must not redefine the mechanics.
+Strategy 1 is defined from the perspective of entering on a legal Entry1 date and then following the already-specified campaign rules. The research layer must not redefine these mechanics.
 
 ### Entry1
 
 The legal Entry1 condition is based on the 5/10/20-day moving-average trend structure already defined by Strategy 1.
 
-### Addon reference levels
+### Local-maximum set and Addon reference levels
 
-Addon1 / Addon2 are **not** defined as breakouts of a rolling previous-20-session highest close.
+Addon1 / Addon2 are **not** rolling previous-20-session highest-close breakouts.
 
-At the Entry1 date:
+At each legal Entry1 close:
 
 ```text
-1. look backward from the Entry1 date,
-2. identify the two nearest prior Local Maximum reference points,
-3. require the two Local Maximum trading dates to be separated by more than 10 trading days,
-4. lock those two Local Maximum levels at Entry1,
-5. use those fixed structural reference levels for the later Addon1 / Addon2 decisions according to the existing Strategy 1 execution rules.
+1. use only price history observable through the Entry1 close,
+2. identify confirmed prior close-price Local Maximum points,
+3. form the prior Local Maximum set,
+4. select the nearest prior Local Maximum,
+5. select the nearest earlier Local Maximum whose trading-date distance
+   from the first is strictly greater than 5 trading sessions,
+6. lock those two Local Maximum prices at Entry1,
+7. use the locked levels for Addon1 / Addon2 according to Strategy 1.
 ```
 
-The addon structure is therefore anchored to market structure known at Entry1, not to a dynamically changing rolling 20-day breakout threshold.
+Current implementation defines a confirmed prior close-price Local Maximum at session `i` as:
+
+```text
+Close[i] > Close[i-1]
+Close[i] >= Close[i+1]
+```
+
+The Entry1 session itself is never a Local Maximum candidate. The definition is causal because every value used to confirm a prior maximum is already known by the Entry1 close.
+
+The two selected reference levels are ordered by recency:
+
+```text
+Addon1 reference = nearest prior eligible Local Maximum
+Addon2 reference = next-nearest prior Local Maximum with index gap > 5
+```
+
+Once Entry1 occurs, the selected levels are frozen for that campaign; they are not replaced by future rolling highs.
 
 ### Exit
 
@@ -45,125 +64,85 @@ If both exit conditions become actionable together, the full-exit rule has prior
 
 ### Trading spacing
 
-After a Strategy 1 transaction, the next three trading sessions are blocked from another strategy transaction; the earliest next eligible strategy transaction is the fourth trading session after the prior action. Existing horizon-end forced liquidation behavior remains unchanged.
+The existing three-session trading restriction remains part of Strategy 1. Existing horizon-end forced liquidation behavior also remains unchanged.
 
 ### Research guardrail
 
-The Strategy 1 entry/addon/exit/spacing mechanics are treated as fixed infrastructure. Baseline, Oracle, model-target, and evaluation definitions must be built **on top of these rules** and must not silently alter them.
+The Strategy 1 entry/addon/exit/spacing mechanics are fixed infrastructure. Reference-distribution, model-target, and evaluation definitions must be built on top of them and must not silently alter them.
 
-## Fixed scope for the current main analysis
+## Four definitions currently under discussion
 
-```text
-symbol = SPY
-period = 5y
-sample = legal Strategy 1 Entry1 event
-input lookback = 50 daily sessions
-comparison window = 30 trading sessions
-no random split
-```
+Do not introduce additional conceptual objects until these four are clear.
 
-The current main line remains 30D / 5y until the reference structure is fully understood. Earlier 15/30/45/60 horizon comparisons are exploratory only and do not currently redefine the main horizon.
+### 1. Market Opportunity
 
-## Three separate objects
+To be described using the Reference Bounds and the return distribution of all legal entries inside a fixed future window. No additional market-opportunity indicator is currently defined.
 
-### 1. Baseline
+### 2. Current Entry Quality
 
-```text
-Baseline_t = realized profit from taking the current legal Entry1 at t
-             and following the frozen Strategy 1 mechanics inside the same 30D window
-```
+This is the conceptual quantity we ultimately want the model to identify: whether the current entry is close to the best achievable entry quality available inside the relevant Reference Bounds.
 
-Baseline describes how profitable the entry implied by the current Strategy 1 pattern actually is.
+Its mathematical learning target is not yet defined.
 
-Baseline is **not**:
-- a model prediction,
-- or an always-on policy benchmark.
+### 3. Reference Bounds
 
-Its exact relationship to the model target/label is intentionally left unresolved until the definitions are finalized.
-
-### 2. Oracle
+For a fixed future window, construct an `Entry Set` containing every legal Strategy 1 Entry1 inside that window. Run every entry with the same Strategy 1 mechanics.
 
 ```text
-Oracle_t = future-known best legal Strategy 1 profit available in the same 30D window
+Lower Bound = worst realized Strategy 1 return in the Entry Set
+Upper Bound = best realized Strategy 1 return in the Entry Set
+Reference Bounds = [Lower Bound, Upper Bound]
 ```
 
-Oracle describes the best legal profit that could have been achieved with foreknowledge of the future.
+The earlier terminology `Baseline` / `Oracle` is no longer assumed to be the final representation of the bounds.
 
-Oracle is **not**:
-- a realizable live-trading objective.
-
-Its exact role relative to the final target/label definition remains to be finalized.
-
-The current implementation guarantees:
+The return distribution of the Entry Set should initially be described with simple statistics only:
 
 ```text
-Oracle_t >= max(0, Baseline_t)
+Entry count
+Lower Bound
+Upper Bound
+Mean
+Median
+STD
+P25
+P75
+IQR
+Win rate
 ```
 
-### 3. Model score
+These values are descriptive references, not model inputs.
 
-The model sees only causal OHLCV information available through the legal Entry1 close and produces an Entry Quality Score.
+### 4. Model target
 
-The score should distinguish whether the current entry is high quality, rather than simply detect that some opportunity exists somewhere in the future window.
+Unknown. Do not force Rule Return, Upper Bound, Lower Bound, range, ratio, gap, classification, or ranking into the target until the Reference Distribution Data is understood.
 
-## Profit-quality reference frame
+## Reference Distribution Data
 
-Baseline and Oracle should be interpreted jointly.
+The preferred name for the initial descriptive dataset is **Reference Distribution Data**, not `baseline data`, because it describes the distribution of Strategy 1 returns available from the legal Entry Set rather than a baseline model.
+
+The future-window length is currently a research parameter rather than a fixed 30D assumption. Initial candidate windows may include:
 
 ```text
-Baseline high, Oracle high
-  current entry is profitable and the market also contains strong opportunity
-
-Baseline low, Oracle low
-  current entry is weak and the market contains little opportunity
-
-Baseline low or negative, Oracle high
-  the market contains opportunity, but the current entry timing is poor
-
-Baseline high, Oracle even higher
-  current entry is good, but a better legal opportunity exists in the same window
+30D
+45D
+60D
+90D
 ```
 
-The difference
+The purpose is to see how the Entry Set and its Reference Bounds behave as the window grows before choosing a window for Current Entry Quality modeling.
 
-```text
-OpportunityGap_t = Oracle_t - Baseline_t
-```
+## Current data scope
 
-measures the distance between the current entry outcome and the future-known best legal outcome in the same 30D window.
-
-The exact naming and role of this difference are also left open until the Baseline / Oracle / target definitions are finalized.
-
-## Existing 30D / 5y evidence
-
-The current event-conditioned dataset contains approximately 94 legal Entry1 samples before common-future filtering.
-
-Observed 30D reference levels in the existing run were approximately:
-
-```text
-Baseline / current-entry realized profit
-  mean ~ +0.10%
-  median ~ +0.03%
-  win rate ~ 51%
-
-Oracle
-  mean ~ +0.95%
-
-Oracle - Baseline
-  mean ~ +0.86%
-```
-
-CNN A remains the strongest tested causal model in the existing 30D / 5y model comparison, with positive mean entry-return ranking and positive top-score realized-return lift. However, fold-level stability remains incomplete, especially in Fold 2. These model results are retained as prior evidence only while the conceptual definitions are being finalized.
+The historical source period remains capped at five years for the current research branch.
 
 ## Current rule
 
-Before adding new experiments, first finalize the definitions of:
+Before returning to model training:
 
 ```text
-1. Market Opportunity
-2. Current Entry Quality
-3. Reference bounds: Baseline and Oracle
-4. Model target
+1. verify the corrected Local Maximum addon implementation,
+2. calculate Reference Distribution Data for candidate future windows,
+3. inspect whether the bounds/distribution stabilize as the window grows,
+4. only then define the mathematical model target.
 ```
-
-Do not introduce additional conceptual objects until these four are clear.
