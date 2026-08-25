@@ -63,91 +63,80 @@ def add_strategy1_events(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy1Run:
-    """Simulate Strategy 1 beginning at one Oracle-selected first-entry event.
+    """Simulate one fixed Strategy 1 campaign from a legal first-entry event.
 
-    Each campaign allows at most three entries. Any MA5 partial exit or MA10 full
-    exit starts a three-trading-session cooldown during which no entry or add-on
-    may occur. After a full exit, the first later legal Entry-1 event after the
-    cooldown starts a new campaign. Subsequent campaign starts are deterministic;
-    only the first campaign start is chosen by the Oracle.
+    The campaign allows at most three total entries. After any entry/add-on, MA5
+    and MA10 exits are blocked for the next three trading sessions. After an MA5
+    partial exit, add-ons are blocked for the next three trading sessions. An
+    MA10 full exit terminates the campaign; no second campaign may start in the
+    same Oracle window. Horizon liquidation is mandatory and is exempt from the
+    three-session spacing rule because it is the label boundary, not a strategy
+    signal.
     """
     cash = 1.0
     shares = 0.0
     entries_used = 0
-    campaigns_used = 0
-    entries_in_campaign = 0
-    campaign_capital = 0.0
-    partial_exit_in_campaign = False
-    partial_exit_count = 0
-    full_exit_count = 0
+    partial_exit_used = False
+    full_exit_used = False
     horizon_exit_used = False
-    cooldown_through = -1
+    last_entry_index: int | None = None
+    last_partial_exit_index: int | None = None
     actions: list[Strategy1Action] = []
 
-    def begin_campaign(index: int) -> None:
-        nonlocal campaign_capital, campaigns_used, entries_in_campaign, partial_exit_in_campaign
-        if shares > 1e-15:
-            raise RuntimeError("Cannot begin a new Strategy 1 campaign while shares remain")
-        campaign_capital = cash
-        campaigns_used += 1
-        entries_in_campaign = 0
-        partial_exit_in_campaign = False
-        buy(index)
-
     def buy(index: int) -> None:
-        nonlocal cash, shares, entries_used, entries_in_campaign
-        if entries_in_campaign >= len(ENTRY_WEIGHTS):
-            raise RuntimeError("Strategy 1 attempted more than three entries in one campaign")
-        amount = campaign_capital * ENTRY_WEIGHTS[entries_in_campaign]
+        nonlocal cash, shares, entries_used, last_entry_index
+        if entries_used >= len(ENTRY_WEIGHTS):
+            raise RuntimeError("Strategy 1 attempted more than three entries")
+        amount = ENTRY_WEIGHTS[entries_used]
         price = float(events.at[index, "close"])
         if cash + 1e-12 < amount:
-            raise RuntimeError("Strategy 1 attempted to exceed available cash")
+            raise RuntimeError("Strategy 1 attempted to exceed its fixed capital budget")
         shares += amount / price
         cash -= amount
-        entries_in_campaign += 1
         entries_used += 1
-        action = "entry1" if entries_in_campaign == 1 else f"addon{entries_in_campaign - 1}"
-        actions.append(Strategy1Action(index=index, action=action, price=price, fraction=ENTRY_WEIGHTS[entries_in_campaign - 1]))
+        last_entry_index = index
+        action = "entry1" if entries_used == 1 else f"addon{entries_used - 1}"
+        actions.append(Strategy1Action(index=index, action=action, price=price, fraction=amount))
 
-    begin_campaign(start)
+    buy(start)
 
     for i in range(start + 1, end + 1):
         price = float(events.at[i, "close"])
+        exit_eligible = last_entry_index is None or (i - last_entry_index > COOLDOWN_SESSIONS)
 
-        if shares > 0.0:
-            # Full exit has priority if MA5 and MA10 exit events coincide.
-            if bool(events.at[i, "exit10_event"]):
-                cash += shares * price
-                shares = 0.0
-                full_exit_count += 1
-                actions.append(Strategy1Action(index=i, action="exit10_full", price=price, fraction=1.0))
-                entries_in_campaign = 0
-                partial_exit_in_campaign = False
-                cooldown_through = i + COOLDOWN_SESSIONS
-                continue
+        # MA10 full exit has priority when an exit is eligible and both exit
+        # events coincide. A full exit permanently ends this one campaign.
+        if exit_eligible and bool(events.at[i, "exit10_event"]):
+            cash += shares * price
+            shares = 0.0
+            full_exit_used = True
+            actions.append(Strategy1Action(index=i, action="exit10_full", price=price, fraction=1.0))
+            break
 
-            if bool(events.at[i, "exit5_event"]) and not partial_exit_in_campaign:
-                sold = 0.5 * shares
-                cash += sold * price
-                shares -= sold
-                partial_exit_in_campaign = True
-                partial_exit_count += 1
-                actions.append(Strategy1Action(index=i, action="exit5_half", price=price, fraction=0.5))
-                cooldown_through = i + COOLDOWN_SESSIONS
-                continue
-
-            if (
-                i > cooldown_through
-                and entries_in_campaign < len(ENTRY_WEIGHTS)
-                and bool(events.at[i, "breakout20_event"])
-            ):
-                buy(i)
+        if (
+            exit_eligible
+            and bool(events.at[i, "exit5_event"])
+            and not partial_exit_used
+            and shares > 0.0
+        ):
+            sold = 0.5 * shares
+            cash += sold * price
+            shares -= sold
+            partial_exit_used = True
+            last_partial_exit_index = i
+            actions.append(Strategy1Action(index=i, action="exit5_half", price=price, fraction=0.5))
             continue
 
-        # Flat after a full exit: wait through the three-session cooldown, then
-        # deterministically take the next legal Entry-1 transition event.
-        if i > cooldown_through and bool(events.at[i, "entry1_event"]):
-            begin_campaign(i)
+        addon_eligible = (
+            last_partial_exit_index is None
+            or i - last_partial_exit_index > COOLDOWN_SESSIONS
+        )
+        if (
+            addon_eligible
+            and entries_used < len(ENTRY_WEIGHTS)
+            and bool(events.at[i, "breakout20_event"])
+        ):
+            buy(i)
 
     if shares > 0.0:
         price = float(events.at[end, "close"])
@@ -160,22 +149,22 @@ def _simulate_from_start(events: pd.DataFrame, start: int, end: int) -> Strategy
         final_return=float(cash - 1.0),
         start_index=start,
         entries_used=entries_used,
-        campaigns_used=campaigns_used,
-        partial_exit_used=partial_exit_count > 0,
-        full_exit_used=full_exit_count > 0,
+        campaigns_used=1,
+        partial_exit_used=partial_exit_used,
+        full_exit_used=full_exit_used,
         horizon_exit_used=horizon_exit_used,
-        partial_exit_count=partial_exit_count,
-        full_exit_count=full_exit_count,
+        partial_exit_count=int(partial_exit_used),
+        full_exit_count=int(full_exit_used),
         actions=tuple(actions),
     )
 
 
 def oracle_value_for_window(events: pd.DataFrame, start_exclusive: int, end_inclusive: int) -> Strategy1Run:
-    """Return the best legal Strategy 1 path inside a known future window.
+    """Return the best legal single-campaign Strategy 1 path in a future window.
 
-    The Oracle may choose which legal first-entry candidate starts the first
-    campaign, or choose no trade. Once started, add-ons, exits, cooldowns, and
-    any later re-entry campaign are deterministic under the fixed strategy.
+    The Oracle may choose which legal first-entry candidate starts the campaign,
+    or choose no trade. Once started, add-ons, exits, and spacing rules are
+    deterministic. A full exit ends the only allowed campaign.
     """
     best = Strategy1Run(0.0, None, 0, 0, False, False, False)
 
