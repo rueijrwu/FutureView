@@ -28,6 +28,9 @@ def main() -> None:
         values = labels[f"oracle_value_{h}"].to_numpy(dtype=float)
         starts = labels[f"oracle_start_offset_{h}"].to_numpy(dtype=int)
         entries = labels[f"oracle_entries_{h}"].to_numpy(dtype=int)
+        partial = labels[f"oracle_partial_exit_{h}"].to_numpy(dtype=bool)
+        full = labels[f"oracle_full_exit_{h}"].to_numpy(dtype=bool)
+        horizon_exit = labels[f"oracle_horizon_exit_{h}"].to_numpy(dtype=bool)
 
         if not np.isfinite(values).all():
             raise RuntimeError(f"Non-finite oracle values for {h}D")
@@ -37,13 +40,25 @@ def main() -> None:
             raise RuntimeError(f"Invalid entry count for {h}D")
         if ((starts == -1) != (entries == 0)).any():
             raise RuntimeError(f"No-trade/start-offset mismatch for {h}D")
+        if (full & horizon_exit).any():
+            raise RuntimeError(f"Full-exit/horizon-exit overlap for {h}D")
 
         positive = float((values > 0.0).mean())
+        no_trade = float((entries == 0).mean())
+        e1 = float((entries == 1).mean())
+        e2 = float((entries == 2).mean())
+        e3 = float((entries == 3).mean())
         print(
             f"STRATEGY1 ORACLE {h}D "
-            f"n={len(values)} positive={positive:.3f} "
+            f"n={len(values)} positive={positive:.3f} no_trade={no_trade:.3f} "
             f"mean={values.mean():.6f} median={np.median(values):.6f} "
             f"p90={np.quantile(values, 0.90):.6f} max={values.max():.6f}"
+        )
+        print(
+            f"STRATEGY1 ACTIONS {h}D "
+            f"entry1={e1:.3f} entry2={e2:.3f} entry3={e3:.3f} "
+            f"partial_exit={partial.mean():.3f} full_exit={full.mean():.3f} "
+            f"horizon_exit={horizon_exit.mean():.3f}"
         )
 
     print("STRATEGY1 ORACLE SMOKE PASS")
