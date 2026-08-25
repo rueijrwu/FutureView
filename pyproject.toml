@@ -37,6 +37,7 @@ futureview-strategy1-entry-horizon-baseline = "futureview.strategy1_entry_horizo
 futureview-strategy1-baseline-oracle-30d = "futureview.strategy1_baseline_oracle_30d:main"
 futureview-strategy1-reference-distribution = "futureview.strategy1_reference_distribution_formal:main"
 futureview-strategy1-reference-distribution-fast = "futureview.strategy1_reference_distribution_fast:main"
+futureview-strategy1-fixed-entry-compare = "futureview.strategy1_fixed_entry_compare:main"
 futureview-strategy1-oos-portfolio = "futureview.strategy1_oos_portfolio:main"
 futureview-strategy1-oos-portfolio-rank-gate = "futureview.strategy1_oos_portfolio_rank_gate:main"
 futureview-strategy1-oos-portfolio-recent-rank = "futureview.strategy1_oos_portfolio_recent_rank_gate:main"
