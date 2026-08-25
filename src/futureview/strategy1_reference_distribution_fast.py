@@ -30,6 +30,7 @@ def _simulate_numeric(
     addon_count: int,
     addon_level_1: float,
     addon_level_2: float,
+    addon2_spacing_tolerance: float,
 ) -> tuple[float, float, float, int]:
     cash = 1.0
     shares = 0.0
@@ -39,9 +40,11 @@ def _simulate_numeric(
     partial_exit_used = False
     last_entry_index = start
     last_partial_exit_index = -1
+    entry_price = close[start]
+    addon1_price = 0.0
 
     amount = 1.0 / 3.0
-    shares += amount / close[start]
+    shares += amount / entry_price
     cash -= amount
     exposure_fraction += amount
 
@@ -72,13 +75,25 @@ def _simulate_numeric(
         if addon_eligible and entries_used < 3 and next_addon < addon_count:
             level = addon_level_1 if next_addon == 0 else addon_level_2
             prev_price = close[i - 1]
-            if price > level and prev_price <= level:
+            crossed = price > level and prev_price <= level
+            spacing_ok = True
+            if crossed and next_addon == 1 and addon2_spacing_tolerance >= 0.0:
+                first_gap = addon1_price - entry_price
+                second_gap = price - addon1_price
+                spacing_ok = (
+                    first_gap > 0.0
+                    and second_gap > 0.0
+                    and abs(second_gap / first_gap - 1.0) <= addon2_spacing_tolerance
+                )
+            if crossed and spacing_ok:
                 amount = 1.0 / 3.0
                 shares += amount / price
                 cash -= amount
                 exposure_fraction += amount
                 entries_used += 1
                 last_entry_index = i
+                if entries_used == 2:
+                    addon1_price = price
 
     if shares > 0.0:
         cash += shares * close[end]
@@ -105,6 +120,7 @@ def _simulate_cached_fast(
     entry: int,
     end: int,
     addon_level_indices: tuple[int, ...],
+    addon2_spacing_tolerance: float | None = None,
 ) -> tuple[float, float, float, int]:
     close, exit5_event, exit10_event = _fast_event_arrays()
     count = len(addon_level_indices)
@@ -112,6 +128,7 @@ def _simulate_cached_fast(
         raise ValueError("Strategy 1 supports at most two addon levels")
     level1 = float(close[addon_level_indices[0]]) if count >= 1 else 0.0
     level2 = float(close[addon_level_indices[1]]) if count >= 2 else 0.0
+    spacing_tolerance = -1.0 if addon2_spacing_tolerance is None else float(addon2_spacing_tolerance)
     ret, efficiency, exposure, executed_addons = _simulate_numeric(
         close,
         exit5_event,
@@ -121,13 +138,17 @@ def _simulate_cached_fast(
         int(count),
         level1,
         level2,
+        spacing_tolerance,
     )
     return float(ret), float(efficiency), float(exposure), int(executed_addons)
 
 
 def main() -> None:
     base._simulate_cached = _simulate_cached_fast
-    print("S1 REFERENCE_DISTRIBUTION FAST backend=numba_jit semantics=unchanged addon_groups=executed")
+    print(
+        "S1 REFERENCE_DISTRIBUTION FAST backend=numba_jit semantics=unchanged "
+        "addon_groups=executed addon2_spacing=realized_equal_price_step"
+    )
     base.main()
 
 
