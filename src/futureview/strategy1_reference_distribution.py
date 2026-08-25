@@ -29,7 +29,6 @@ def _addon_reference_sets(events, start: int, entry: int) -> tuple[tuple[tuple[i
     configs: list[tuple[tuple[int, float], ...]] = [()]
 
     # Optional one-addon paths.
-    configs.extend(((level,),) for level in [])  # type marker; replaced below
     for level in levels:
         configs.append((level,))
 
