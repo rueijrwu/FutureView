@@ -22,15 +22,26 @@ def build_windows(
     labels: pd.DataFrame,
     lookback: int = 50,
     horizons: tuple[int, ...] = HORIZONS,
+    target_columns: tuple[str, ...] | list[str] | None = None,
 ) -> WindowedData:
     merged = features.merge(labels, on="date", how="inner").sort_values("date").reset_index(drop=True)
-    target_columns = [f"trend_{h}" for h in horizons]
+    if target_columns is None:
+        target_columns = [f"trend_{h}" for h in horizons]
+    else:
+        target_columns = list(target_columns)
+
+    missing_targets = [column for column in target_columns if column not in merged.columns]
+    if missing_targets:
+        raise ValueError(f"missing target columns: {missing_targets}")
 
     xs: list[np.ndarray] = []
     ys: list[np.ndarray] = []
     dates: list[object] = []
     values = merged.loc[:, FEATURE_COLUMNS].to_numpy(dtype=np.float32)
     targets = merged.loc[:, target_columns].to_numpy(dtype=np.float32)
+
+    if not np.isfinite(targets).all():
+        raise ValueError("non-finite targets found before window construction")
 
     for end in range(lookback - 1, len(merged)):
         start = end - lookback + 1
