@@ -60,58 +60,35 @@ def main() -> None:
     for name, arr in (("mu", mu), ("C", C), ("Q", Q), ("L", L), ("U", U)):
         _stats(name, arr)
 
-    mu_cut = np.quantile(mu, [1/3, 2/3])
-    c_cut = np.quantile(C, [1/3, 2/3])
-    q_cut = np.quantile(Q, [1/3, 2/3])
-    mu_bin = np.digitize(mu, mu_cut, right=True) + 1
-    c_bin = np.digitize(C, c_cut, right=True) + 1
-    q_bin = np.digitize(Q, q_cut, right=True) + 1
-    print(
-        f"S1 SMH_MCQ CUTS mu33={mu_cut[0]:.6f} mu67={mu_cut[1]:.6f} "
-        f"C33={c_cut[0]:.6f} C67={c_cut[1]:.6f} Q33={q_cut[0]:.6f} Q67={q_cut[1]:.6f}"
-    )
+    # Directly test whether small mu is associated with negative-return structure.
+    # Use mu deciles so the threshold pattern is visible without assuming a cutoff.
+    edges = np.quantile(mu, np.linspace(0.0, 1.0, 11))
+    # Avoid duplicate edges causing ambiguous bins; rank-based deciles keep equal counts.
+    order = np.argsort(mu, kind="stable")
+    decile = np.empty(len(mu), dtype=int)
+    for k, idxs in enumerate(np.array_split(order, 10), start=1):
+        decile[idxs] = k
 
-    # Within each historical-mu regime, summarize C x Q corners.
-    for mb in (1, 2, 3):
-        for cb, qb, label in ((3,1,"HIGH_C_LOW_Q"),(3,3,"HIGH_C_HIGH_Q"),(1,1,"LOW_C_LOW_Q"),(1,3,"LOW_C_HIGH_Q")):
-            m = (mu_bin == mb) & (c_bin == cb) & (q_bin == qb)
-            if not np.any(m):
-                print(f"S1 SMH_MCQ CELL mu_bin={mb} name={label} n=0")
-                continue
-            print(
-                f"S1 SMH_MCQ CELL mu_bin={mb} name={label} n={int(m.sum())} "
-                f"mu_mean={np.mean(mu[m]):.6f} mu_median={np.median(mu[m]):.6f} "
-                f"C_mean={np.mean(C[m]):.6f} Q_mean={np.mean(Q[m]):.6f} "
-                f"L_mean={np.mean(L[m]):.6f} U_mean={np.mean(U[m]):.6f}"
-            )
-
-    # Overall economically interesting corners.
-    cases = {
-        "HIGH_MU_HIGH_C_LOW_Q": (mu_bin == 3) & (c_bin == 3) & (q_bin == 1),
-        "HIGH_MU_HIGH_C_HIGH_Q": (mu_bin == 3) & (c_bin == 3) & (q_bin == 3),
-        "LOW_MU_HIGH_C_LOW_Q": (mu_bin == 1) & (c_bin == 3) & (q_bin == 1),
-        "LOW_MU_HIGH_C_HIGH_Q": (mu_bin == 1) & (c_bin == 3) & (q_bin == 3),
-    }
-    for label, m in cases.items():
-        if not np.any(m):
-            print(f"S1 SMH_MCQ CASE name={label} n=0")
-            continue
+    print("S1 SMH_MCQ MU_DECILES fields=bin,n,mu_min,mu_max,mu_mean,Lneg_rate,muneg_rate,Uneg_rate,C_mean,Q_mean")
+    for b in range(1, 11):
+        m = decile == b
         print(
-            f"S1 SMH_MCQ CASE name={label} n={int(m.sum())} "
-            f"mu_mean={np.mean(mu[m]):.6f} C_mean={np.mean(C[m]):.6f} Q_mean={np.mean(Q[m]):.6f} "
-            f"L_mean={np.mean(L[m]):.6f} U_mean={np.mean(U[m]):.6f}"
+            f"S1 SMH_MCQ MU_DECILE bin={b} n={int(m.sum())} "
+            f"mu_min={np.min(mu[m]):.6f} mu_max={np.max(mu[m]):.6f} mu_mean={np.mean(mu[m]):.6f} "
+            f"Lneg_rate={np.mean(L[m] < 0):.6f} muneg_rate={np.mean(mu[m] < 0):.6f} "
+            f"Uneg_rate={np.mean(U[m] < 0):.6f} C_mean={np.mean(C[m]):.6f} Q_mean={np.mean(Q[m]):.6f}"
         )
 
-    for label, idxs in (
-        ("LOWEST_Q", np.argsort(Q)[:5]),
-        ("HIGHEST_C", np.argsort(C)[-5:][::-1]),
-        ("HIGHEST_MU", np.argsort(mu)[-5:][::-1]),
-    ):
-        for rank, j in enumerate(idxs, start=1):
-            print(
-                f"S1 SMH_MCQ EXAMPLE side={label} rank={rank} date={pd.Timestamp(dates[j]).date()} "
-                f"mu={mu[j]:.6f} C={C[j]:.6f} Q={Q[j]:.6f} L={L[j]:.6f} U={U[j]:.6f}"
-            )
+    # Candidate threshold scan: for each mu cutoff, measure the retained sample and downside structure.
+    cutoffs = np.quantile(mu, [0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90])
+    for cutoff in cutoffs:
+        m = mu >= cutoff
+        print(
+            f"S1 SMH_MCQ MU_GATE cutoff={cutoff:.6f} kept={int(m.sum())} kept_rate={np.mean(m):.6f} "
+            f"Lneg_rate={np.mean(L[m] < 0):.6f} muneg_rate={np.mean(mu[m] < 0):.6f} "
+            f"Uneg_rate={np.mean(U[m] < 0):.6f} mu_mean={np.mean(mu[m]):.6f} "
+            f"C_mean={np.mean(C[m]):.6f} Q_mean={np.mean(Q[m]):.6f}"
+        )
 
     print("S1 SMH_MCQ COMPLETE")
 
