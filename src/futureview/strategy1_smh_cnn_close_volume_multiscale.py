@@ -149,14 +149,19 @@ def main() -> None:
     U = np.asarray(ds.entry_upper, dtype=float)[kept]
     C = U - L
     Q = np.divide(U - mu, C, out=np.full_like(C, np.nan), where=np.abs(C) > 1e-12)
-    valid = np.isfinite(mu) & np.isfinite(C) & np.isfinite(Q) & (C > 1e-12)
-    x = x[valid]
-    raw_indices = raw_indices[valid]
-    dates = dates[valid]
-    mu = mu[valid]
-    C = C[valid]
-    Q = Q[valid]
 
+    valid = np.isfinite(mu) & np.isfinite(C) & np.isfinite(Q) & (C > 1e-12)
+    if not np.all(valid):
+        x = x[valid]
+        raw_indices = raw_indices[valid]
+        dates = dates[valid]
+        mu = mu[valid]
+        C = C[valid]
+        Q = Q[valid]
+
+    # Build chronological purged folds on the full mature-entry sequence first.
+    # The mu gate is then learned from each training fold only and applied inside
+    # that fold. This preserves enough samples to form folds and avoids leakage.
     folds = _make_folds(raw_indices)
 
     print(
@@ -177,8 +182,6 @@ def main() -> None:
 
     fold_accs: list[float] = []
     for fold_id, (train, test) in enumerate(folds, start=1):
-        # Gate threshold is learned from training only: keep the upper half of training mu.
-        # This is intentionally simple for the first experiment and avoids peeking at test/holdout.
         mu_gate = float(np.median(mu[train]))
         train_gate = train[mu[train] >= mu_gate]
         test_gate = test[mu[test] >= mu_gate]
