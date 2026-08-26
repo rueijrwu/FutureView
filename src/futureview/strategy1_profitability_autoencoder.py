@@ -20,9 +20,9 @@ WINDOWS = tuple(
     for x in os.environ.get("FUTUREVIEW_AE_WINDOWS", "20,30,60").split(",")
     if x.strip()
 )
-LATENT_DIM = int(os.environ.get("FUTUREVIEW_AE_LATENT", "8"))
+LATENT_DIM = int(os.environ.get("FUTUREVIEW_AE_LATENT", "1"))
 HIST_BINS = int(os.environ.get("FUTUREVIEW_AE_BINS", "41"))
-EPOCHS = int(os.environ.get("FUTUREVIEW_AE_EPOCHS", "20"))
+EPOCHS = int(os.environ.get("FUTUREVIEW_AE_EPOCHS", "5"))
 BATCH_SIZE = int(os.environ.get("FUTUREVIEW_AE_BATCH", "16"))
 SEED = int(os.environ.get("FUTUREVIEW_AE_SEED", "7"))
 
@@ -56,17 +56,15 @@ def _window_specs(path_table, window: int) -> list[WindowSpec]:
         if not pieces:
             continue
         r = np.concatenate(pieces)
-        specs.append(
-            WindowSpec(
-                start=start,
-                end=start + window - 1,
-                path_count=int(len(r)),
-                lower=float(r.min()),
-                upper=float(r.max()),
-                mean_return=float(r.mean()),
-                win_rate=float(np.mean(r > 0.0)),
-            )
-        )
+        specs.append(WindowSpec(
+            start=start,
+            end=start + window - 1,
+            path_count=int(len(r)),
+            lower=float(r.min()),
+            upper=float(r.max()),
+            mean_return=float(r.mean()),
+            win_rate=float(np.mean(r > 0.0)),
+        ))
     return specs
 
 
@@ -103,9 +101,13 @@ class ProfitabilityWindowDataset(Dataset):
                     mask[category, cal, slot] = 1.0
                     returns.append(r)
         hist, _ = np.histogram(np.asarray(returns, dtype=np.float64), bins=self.edges)
+        hist = hist.astype(np.float32)
+        total = float(hist.sum())
+        if total > 0.0:
+            hist /= total
         return (
             torch.from_numpy(seq), torch.from_numpy(profit), torch.from_numpy(mask),
-            torch.from_numpy(hist.astype(np.float32)),
+            torch.from_numpy(hist),
             torch.tensor(spec.lower, dtype=torch.float32),
             torch.tensor(spec.upper, dtype=torch.float32),
             torch.tensor(spec.path_count, dtype=torch.float32),
@@ -123,12 +125,14 @@ class ProfitabilityAutoencoder(nn.Module):
             nn.AdaptiveAvgPool1d(1),
         )
         self.calendar_cnn = nn.Sequential(
-            nn.Conv1d(N_CATEGORIES * 10, 32, kernel_size=5, padding=2), nn.ReLU(),
+            nn.Conv1d(N_CATEGORIES * 9, 32, kernel_size=5, padding=2), nn.ReLU(),
             nn.Conv1d(32, 16, kernel_size=5, padding=2), nn.ReLU(),
             nn.AdaptiveAvgPool1d(1),
         )
         self.to_latent = nn.Linear(16, latent_dim)
-        self.decoder = nn.Sequential(nn.Linear(latent_dim, 32), nn.ReLU(), nn.Linear(32, hist_bins), nn.Softplus())
+        self.decoder = nn.Sequential(
+            nn.Linear(latent_dim, 32), nn.ReLU(), nn.Linear(32, hist_bins), nn.Softplus()
+        )
 
     def encode(self, sequence: torch.Tensor, profit: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         b, c, w, s, h = sequence.shape
@@ -139,8 +143,8 @@ class ProfitabilityAutoencoder(nn.Module):
         denom = count.clamp_min(1.0)
         emb_mean = (emb * m).sum(dim=3) / denom
         profit_mean = (profit * mask).sum(dim=3, keepdim=True) / denom
-        cell = torch.cat([emb_mean, profit_mean, count], dim=-1)
-        x = cell.permute(0, 1, 3, 2).reshape(b, c * 10, w)
+        cell = torch.cat([emb_mean, profit_mean], dim=-1)
+        x = cell.permute(0, 1, 3, 2).reshape(b, c * 9, w)
         return self.to_latent(self.calendar_cnn(x).squeeze(-1))
 
     def forward(self, sequence: torch.Tensor, profit: torch.Tensor, mask: torch.Tensor):
@@ -182,12 +186,7 @@ def _latent_audit(window: int, z: np.ndarray, stats: dict[str, np.ndarray]) -> N
         masked = np.where(finite, np.abs(corrs), -1.0)
         dim = int(np.argmax(masked))
         vector = ",".join(f"{x:.3f}" if np.isfinite(x) else "nan" for x in corrs)
-        print(
-            f"S1 PROFITABILITY_AE INTERP W={window} stat={name} "
-            f"max_abs_corr={abs(corrs[dim]):.6f} dim={dim} corr={corrs[dim]:.6f} vector={vector}"
-        )
-    for name in ("L", "U", "mu", "win_rate"):
-        print(f"S1 PROFITABILITY_AE STAT_CORR W={window} pair=N:{name} corr={_corr(stats['N'], stats[name]):.6f}")
+        print(f"S1 PROFITABILITY_AE INTERP W={window} stat={name} max_abs_corr={abs(corrs[dim]):.6f} dim={dim} corr={corrs[dim]:.6f} vector={vector}")
 
 
 def _run_window(path_table, window: int, device: torch.device) -> None:
@@ -214,7 +213,8 @@ def _run_window(path_table, window: int, device: torch.device) -> None:
             opt.zero_grad(set_to_none=True); loss.backward(); opt.step()
             total += float(loss.detach()) * len(seq); n += len(seq)
         epoch_loss = total / max(n, 1)
-        if first_loss is None: first_loss = epoch_loss
+        if first_loss is None:
+            first_loss = epoch_loss
         last_loss = epoch_loss
 
     model.eval(); test_total = 0.0; test_n = 0
@@ -234,7 +234,7 @@ def _run_window(path_table, window: int, device: torch.device) -> None:
     u_dist,u10,u90,u_low_n,u_high_n=_centroid_distance(z,upper)
     latent_scale=float(np.mean(np.std(z,axis=0)))
 
-    print(f"S1 PROFITABILITY_AE DATA W={window} train={len(train_ds)} test={len(test_ds)} cutoff={cutoff} max_slot={train_ds.max_slot} bins={HIST_BINS} latent={LATENT_DIM}")
+    print(f"S1 PROFITABILITY_AE DATA W={window} train={len(train_ds)} test={len(test_ds)} cutoff={cutoff} max_slot={train_ds.max_slot} bins={HIST_BINS} latent={LATENT_DIM} target_unit_mass=true explicit_count_input=false")
     print(f"S1 PROFITABILITY_AE TRAIN W={window} first_loss={first_loss:.6f} last_loss={last_loss:.6f} epochs={EPOCHS}")
     print(f"S1 PROFITABILITY_AE TEST W={window} loss={test_total/max(test_n,1):.6f} path_count_median={np.median(path_count):.1f} latent_scale={latent_scale:.6f}")
     print(f"S1 PROFITABILITY_AE POSTHOC_L W={window} p10={l10:.8f} p90={l90:.8f} centroid_distance={l_dist:.6f} low_n={l_low_n} high_n={l_high_n} labels_used_in_training=false")
@@ -249,8 +249,9 @@ def main() -> None:
     audit=validate_daily_ohlcv(df, minimum_rows=1000)
     events=add_strategy1_events(df).reset_index(drop=True)
     path_table=build_path_table(events)
-    print(f"S1 PROFITABILITY_AE START ticker={TICKER} rows={audit.rows} paths={len(path_table)} windows={','.join(map(str,WINDOWS))} device={device} pilot=true L_U_descriptive_posthoc_only=true")
-    for window in WINDOWS: _run_window(path_table, window, device)
+    print(f"S1 PROFITABILITY_AE START ticker={TICKER} rows={audit.rows} paths={len(path_table)} windows={','.join(map(str,WINDOWS))} device={device} pilot=true target_unit_mass=true explicit_count_input=false")
+    for window in WINDOWS:
+        _run_window(path_table, window, device)
     print("S1 PROFITABILITY_AE COMPLETE pilot=true research_hyperparameters_frozen=false")
 
 
