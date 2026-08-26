@@ -1,0 +1,44 @@
+name: Strategy 1 Daily Outcome Map Diagnostic
+
+on:
+  push:
+    branches: [cnn-trend-reset]
+    paths:
+      - 'src/futureview/strategy1_daily_outcome_map_diagnostic.py'
+      - '.github/workflows/strategy1-daily-outcome-map-diagnostic.yml'
+  workflow_dispatch:
+
+jobs:
+  daily-outcome-map:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
+          python -m pip install -e . --no-deps
+      - name: Run daily outcome map diagnostic
+        env:
+          FUTUREVIEW_WORKERS: '1'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_daily_outcome_map_diagnostic 2>&1 | tee strategy1-daily-outcome-map-diagnostic.log
+      - name: Summary
+        run: |
+          {
+            echo '## Strategy 1 — Daily Outcome Map Diagnostic'
+            echo
+            echo '```text'
+            grep -E '^S1 DAILY_MAP (DATA|FOLD|SUMMARY|COMPLETE)' strategy1-daily-outcome-map-diagnostic.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-daily-outcome-map-diagnostic-${{ github.run_number }}
+          path: strategy1-daily-outcome-map-diagnostic.log
+          retention-days: 30
