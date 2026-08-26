@@ -1,33 +1,39 @@
 from __future__ import annotations
 
-import gc
 import os
 import random
+from dataclasses import dataclass
 
 import numpy as np
-import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from .data import download_ticker_daily, validate_daily_ohlcv
 from .strategy1 import add_strategy1_events
-from .strategy1_profitability_io import build_path_table, build_profitability_io
+from .strategy1_profitability_io import HORIZON, N_CATEGORIES, build_path_table
 
 TICKER = os.environ.get("FUTUREVIEW_TICKER", "SMH")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "5y")
-PILOT_WINDOWS = tuple(
+WINDOWS = tuple(
     int(x.strip())
-    for x in os.environ.get("FUTUREVIEW_AE_WINDOWS", "20,30,40").split(",")
+    for x in os.environ.get("FUTUREVIEW_AE_WINDOWS", "20,30,60").split(",")
     if x.strip()
 )
-SEED = int(os.environ.get("FUTUREVIEW_AE_SEED", "7"))
-EPOCHS = int(os.environ.get("FUTUREVIEW_AE_EPOCHS", "30"))
 LATENT_DIM = int(os.environ.get("FUTUREVIEW_AE_LATENT", "8"))
-N_BINS = int(os.environ.get("FUTUREVIEW_AE_BINS", "41"))
+HIST_BINS = int(os.environ.get("FUTUREVIEW_AE_BINS", "41"))
+EPOCHS = int(os.environ.get("FUTUREVIEW_AE_EPOCHS", "20"))
 BATCH_SIZE = int(os.environ.get("FUTUREVIEW_AE_BATCH", "16"))
-LEARNING_RATE = float(os.environ.get("FUTUREVIEW_AE_LR", "0.001"))
-OUTPUT = os.environ.get("FUTUREVIEW_AE_OUTPUT", "strategy1-profitability-autoencoder.csv")
+SEED = int(os.environ.get("FUTUREVIEW_AE_SEED", "7"))
+
+
+@dataclass(frozen=True)
+class WindowSpec:
+    start: int
+    end: int
+    path_count: int
+    lower: float
+    upper: float
 
 
 def _seed_everything(seed: int) -> None:
@@ -36,270 +42,265 @@ def _seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def _histogram(values: np.ndarray, edges: np.ndarray) -> np.ndarray:
-    if len(values) == 0:
-        return np.zeros(len(edges) - 1, dtype=np.float32)
-    idx = np.searchsorted(edges, values, side="right") - 1
-    idx = np.clip(idx, 0, len(edges) - 2)
-    return np.bincount(idx, minlength=len(edges) - 1).astype(np.float32)
+def _window_specs(path_table, window: int) -> list[WindowSpec]:
+    returns_by_entry = {
+        int(entry): group["campaign_return"].to_numpy(dtype=np.float64)
+        for entry, group in path_table.groupby("entry_index", sort=False)
+    }
+    last_entry = int(path_table["entry_index"].max())
+    specs: list[WindowSpec] = []
+    for start in range(0, last_entry - window + 2):
+        pieces = [
+            returns_by_entry[i]
+            for i in range(start, start + window)
+            if i in returns_by_entry
+        ]
+        if not pieces:
+            continue
+        r = np.concatenate(pieces)
+        specs.append(
+            WindowSpec(
+                start=start,
+                end=start + window - 1,
+                path_count=int(len(r)),
+                lower=float(r.min()),
+                upper=float(r.max()),
+            )
+        )
+    return specs
 
 
-class WindowDataset(Dataset):
-    def __init__(
-        self,
-        io,
-        indices: np.ndarray,
-        edges: np.ndarray,
-        profit_mean: float,
-        profit_std: float,
-    ) -> None:
-        self.io = io
-        self.indices = np.asarray(indices, dtype=np.int64)
-        self.edges = edges
-        self.profit_mean = float(profit_mean)
-        self.profit_std = float(max(profit_std, 1e-8))
+class ProfitabilityWindowDataset(Dataset):
+    """Lazily build one fixed-calendar Strategy-1 window.
+
+    The standardized sample contains the path execution sequence, realized profit,
+    and legality mask. Missing path slots stay masked; a legal zero-return path is
+    therefore distinct from an absent path. The target is a raw-count realized-
+    profit histogram for this pilot only; binning is not a frozen research choice.
+    """
+
+    def __init__(self, path_table, specs: list[WindowSpec], window: int, edges: np.ndarray):
+        self.specs = specs
+        self.window = int(window)
+        self.edges = np.asarray(edges, dtype=np.float64)
+        self.by_entry_category: dict[tuple[int, int], list[tuple[np.ndarray, float]]] = {}
+        max_slot = 1
+        for (entry, category), group in path_table.groupby(["entry_index", "category"], sort=False):
+            rows: list[tuple[np.ndarray, float]] = []
+            for row in group.itertuples(index=False):
+                rows.append((np.asarray(row.sequence, dtype=np.float32), float(row.campaign_return)))
+            self.by_entry_category[(int(entry), int(category))] = rows
+            max_slot = max(max_slot, len(rows))
+        self.max_slot = int(max_slot)
 
     def __len__(self) -> int:
-        return len(self.indices)
+        return len(self.specs)
 
-    def __getitem__(self, item: int):
-        i = int(self.indices[item])
-        seq = self.io.sequence[i]  # [category, calendar, slot, campaign]
-        profit = self.io.profit[i]
-        mask = self.io.mask[i].astype(np.float32)
+    def __getitem__(self, idx: int):
+        spec = self.specs[idx]
+        seq = np.zeros((N_CATEGORIES, self.window, self.max_slot, HORIZON), dtype=np.float32)
+        profit = np.zeros((N_CATEGORIES, self.window, self.max_slot), dtype=np.float32)
+        mask = np.zeros((N_CATEGORIES, self.window, self.max_slot), dtype=np.float32)
+        returns: list[float] = []
 
-        # Stable channel organization: category x slot; spatial axes are
-        # regime-calendar time x campaign-execution time.
-        seq_ch = np.transpose(seq, (0, 2, 1, 3)).reshape(-1, seq.shape[1], seq.shape[3])
-        mask_ch = np.transpose(mask, (0, 2, 1)).reshape(-1, mask.shape[1])
-        profit_ch = np.transpose(profit, (0, 2, 1)).reshape(-1, profit.shape[1])
-        profit_ch = ((profit_ch - self.profit_mean) / self.profit_std) * mask_ch
+        for cal, entry in enumerate(range(spec.start, spec.end + 1)):
+            for category in range(N_CATEGORIES):
+                rows = self.by_entry_category.get((entry, category), ())
+                for slot, (s, r) in enumerate(rows):
+                    seq[category, cal, slot] = s
+                    profit[category, cal, slot] = r
+                    mask[category, cal, slot] = 1.0
+                    returns.append(r)
 
-        campaign = seq.shape[3]
-        profit_map = np.repeat(profit_ch[:, :, None], campaign, axis=2)
-        mask_map = np.repeat(mask_ch[:, :, None], campaign, axis=2)
-        x = np.concatenate([seq_ch, profit_map, mask_map], axis=0).astype(np.float32)
-
-        valid_profit = profit[mask.astype(bool)]
-        y = _histogram(valid_profit.astype(np.float64), self.edges)
-        return torch.from_numpy(x), torch.from_numpy(y), i
+        hist, _ = np.histogram(np.asarray(returns, dtype=np.float64), bins=self.edges)
+        return (
+            torch.from_numpy(seq),
+            torch.from_numpy(profit),
+            torch.from_numpy(mask),
+            torch.from_numpy(hist.astype(np.float32)),
+            torch.tensor(spec.lower, dtype=torch.float32),
+            torch.tensor(spec.upper, dtype=torch.float32),
+            torch.tensor(spec.path_count, dtype=torch.float32),
+        )
 
 
 class ProfitabilityAutoencoder(nn.Module):
-    def __init__(self, in_channels: int, latent_dim: int, n_bins: int) -> None:
+    """Small structured CNN encoder -> latent z -> profit-distribution decoder."""
+
+    def __init__(self, latent_dim: int, hist_bins: int):
         super().__init__()
-        self.encoder_conv = nn.Sequential(
-            nn.Conv2d(in_channels, 32, kernel_size=3, padding=1),
+        self.path_cnn = nn.Sequential(
+            nn.Conv1d(1, 8, kernel_size=5, padding=2),
             nn.ReLU(),
-            nn.Conv2d(32, 32, kernel_size=3, stride=2, padding=1),
+            nn.Conv1d(8, 8, kernel_size=5, padding=2),
             nn.ReLU(),
-            nn.Conv2d(32, 16, kernel_size=3, stride=2, padding=1),
-            nn.ReLU(),
-            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.AdaptiveAvgPool1d(1),
         )
-        self.encoder_fc = nn.Linear(16, latent_dim)
+        # For each category/calendar cell: 8 path-embedding values + mean profit + count.
+        self.calendar_cnn = nn.Sequential(
+            nn.Conv1d(N_CATEGORIES * 10, 32, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.Conv1d(32, 16, kernel_size=5, padding=2),
+            nn.ReLU(),
+            nn.AdaptiveAvgPool1d(1),
+        )
+        self.to_latent = nn.Linear(16, latent_dim)
         self.decoder = nn.Sequential(
             nn.Linear(latent_dim, 32),
             nn.ReLU(),
-            nn.Linear(32, n_bins),
+            nn.Linear(32, hist_bins),
             nn.Softplus(),
         )
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
-        h = self.encoder_conv(x).flatten(1)
-        return self.encoder_fc(h)
+    def encode(self, sequence: torch.Tensor, profit: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        # sequence [B, category, calendar, slot, campaign]
+        b, c, w, s, h = sequence.shape
+        path = sequence.reshape(b * c * w * s, 1, h)
+        emb = self.path_cnn(path).squeeze(-1).reshape(b, c, w, s, 8)
+        m = mask.unsqueeze(-1)
+        count = mask.sum(dim=3, keepdim=True)
+        denom = count.clamp_min(1.0)
+        emb_mean = (emb * m).sum(dim=3) / denom
+        profit_mean = (profit * mask).sum(dim=3, keepdim=True) / denom
+        cell = torch.cat([emb_mean, profit_mean, count], dim=-1)  # [B,C,W,10]
+        x = cell.permute(0, 1, 3, 2).reshape(b, c * 10, w)
+        h_calendar = self.calendar_cnn(x).squeeze(-1)
+        return self.to_latent(h_calendar)
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        z = self.encode(x)
+    def forward(self, sequence: torch.Tensor, profit: torch.Tensor, mask: torch.Tensor):
+        z = self.encode(sequence, profit, mask)
         return self.decoder(z), z
 
 
-def _collect_latent(model: nn.Module, loader: DataLoader) -> tuple[np.ndarray, np.ndarray]:
-    zs: list[np.ndarray] = []
-    ids: list[np.ndarray] = []
-    model.eval()
-    with torch.no_grad():
-        for x, _, idx in loader:
-            z = model.encode(x)
-            zs.append(z.cpu().numpy())
-            ids.append(idx.cpu().numpy())
-    return np.concatenate(zs), np.concatenate(ids)
+def _chronological_split(specs: list[WindowSpec], window: int):
+    # Purged chronological split: train/test windows share no calendar sessions.
+    max_end = max(s.end for s in specs)
+    cutoff = int(round(0.70 * max_end))
+    train = [s for s in specs if s.end < cutoff]
+    test = [s for s in specs if s.start >= cutoff]
+    if len(train) < 20 or len(test) < 20:
+        raise RuntimeError(f"insufficient split W={window} train={len(train)} test={len(test)}")
+    return train, test, cutoff
 
 
-def _auc(scores: np.ndarray, labels: np.ndarray) -> float:
-    pos = scores[labels == 1]
-    neg = scores[labels == 0]
-    if len(pos) == 0 or len(neg) == 0:
-        return float("nan")
-    cmp = pos[:, None] - neg[None, :]
-    return float(np.mean((cmp > 0).astype(np.float64) + 0.5 * (cmp == 0)))
+def _centroid_distance(z: np.ndarray, values: np.ndarray) -> tuple[float, float, float, int, int]:
+    p10, p90 = np.quantile(values, [0.10, 0.90])
+    low = values <= p10
+    high = values >= p90
+    a = z[low].mean(axis=0)
+    b = z[high].mean(axis=0)
+    return float(np.linalg.norm(a - b)), float(p10), float(p90), int(low.sum()), int(high.sum())
 
 
-def _probe(
-    z_train: np.ndarray,
-    y_train: np.ndarray,
-    z_test: np.ndarray,
-    y_test: np.ndarray,
-) -> tuple[float, str]:
-    if len(np.unique(y_train)) < 2 or len(np.unique(y_test)) < 2:
-        return float("nan"), "insufficient_classes"
+def _run_window(path_table, window: int, device: torch.device) -> None:
+    specs = _window_specs(path_table, window)
+    train_specs, test_specs, cutoff = _chronological_split(specs, window)
 
-    _seed_everything(SEED)
-    probe = nn.Linear(z_train.shape[1], 1)
-    opt = torch.optim.Adam(probe.parameters(), lr=0.02)
-    loss_fn = nn.BCEWithLogitsLoss()
-    xtr = torch.from_numpy(z_train.astype(np.float32))
-    ytr = torch.from_numpy(y_train.astype(np.float32))[:, None]
-    for _ in range(300):
-        opt.zero_grad()
-        logits = probe(xtr)
-        loss = loss_fn(logits, ytr)
-        loss.backward()
-        opt.step()
+    # Pilot-only linear profit axis, derived from historical realized-return support.
+    # The axis and bin count are diagnostic choices, not frozen research definitions.
+    all_returns = path_table["campaign_return"].to_numpy(dtype=np.float64)
+    pad = max(1e-6, 0.01 * float(all_returns.max() - all_returns.min()))
+    edges = np.linspace(float(all_returns.min() - pad), float(all_returns.max() + pad), HIST_BINS + 1)
 
-    with torch.no_grad():
-        scores = torch.sigmoid(probe(torch.from_numpy(z_test.astype(np.float32)))).squeeze(1).numpy()
-    return _auc(scores, y_test), "ok"
-
-
-def _anchor_labels(lower: np.ndarray, upper: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    labels: list[int] = []
-    keep: list[int] = []
-    for i in indices:
-        if np.isfinite(upper[i]) and upper[i] < 0:
-            keep.append(int(i))
-            labels.append(0)
-        elif np.isfinite(lower[i]) and lower[i] > 0:
-            keep.append(int(i))
-            labels.append(1)
-    return np.asarray(keep, dtype=np.int64), np.asarray(labels, dtype=np.int64)
-
-
-def _fit_one(events, path_table, window: int) -> dict[str, object]:
-    _seed_everything(SEED)
-    io = build_profitability_io(events, path_table, window, stride=1)
-    n = len(io.window_start)
-    split = int(np.floor(0.70 * n))
-    train_stop = max(1, split - window)  # purge shared calendar entries across the boundary
-    train_idx = np.arange(0, train_stop, dtype=np.int64)
-    test_idx = np.arange(split, n, dtype=np.int64)
-
-    train_profit = io.profit[train_idx]
-    train_mask = io.mask[train_idx].astype(bool)
-    train_values = train_profit[train_mask].astype(np.float64)
-    if len(train_values) == 0:
-        raise RuntimeError(f"W={window}: no training profits")
-    pmin = float(train_values.min())
-    pmax = float(train_values.max())
-    if not pmax > pmin:
-        raise RuntimeError(f"W={window}: degenerate training profit range")
-    edges = np.linspace(pmin, pmax, N_BINS + 1, dtype=np.float64)
-    profit_mean = float(train_values.mean())
-    profit_std = float(train_values.std(ddof=0))
-
-    train_ds = WindowDataset(io, train_idx, edges, profit_mean, profit_std)
-    test_ds = WindowDataset(io, test_idx, edges, profit_mean, profit_std)
+    train_ds = ProfitabilityWindowDataset(path_table, train_specs, window, edges)
+    test_ds = ProfitabilityWindowDataset(path_table, test_specs, window, edges)
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-    train_eval_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
     test_loader = DataLoader(test_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
-    x0, _, _ = train_ds[0]
-    model = ProfitabilityAutoencoder(x0.shape[0], LATENT_DIM, N_BINS)
-    opt = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    loss_fn = nn.MSELoss()
+    model = ProfitabilityAutoencoder(LATENT_DIM, HIST_BINS).to(device)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    loss_fn = nn.SmoothL1Loss()
 
-    last_train_loss = float("nan")
+    first_loss = None
+    last_loss = None
     for _ in range(EPOCHS):
         model.train()
         total = 0.0
-        count = 0
-        for x, y, _ in train_loader:
-            opt.zero_grad()
-            pred, _ = model(x)
-            loss = loss_fn(pred, y)
+        n = 0
+        for seq, profit, mask, target, *_ in train_loader:
+            seq, profit, mask, target = seq.to(device), profit.to(device), mask.to(device), target.to(device)
+            pred, _ = model(seq, profit, mask)
+            loss = loss_fn(pred, target)
+            opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
-            total += float(loss.detach()) * len(x)
-            count += len(x)
-        last_train_loss = total / max(count, 1)
+            total += float(loss.detach()) * len(seq)
+            n += len(seq)
+        epoch_loss = total / max(n, 1)
+        if first_loss is None:
+            first_loss = epoch_loss
+        last_loss = epoch_loss
 
     model.eval()
-    total = 0.0
-    count = 0
+    test_total = 0.0
+    test_n = 0
+    z_all: list[np.ndarray] = []
+    l_all: list[np.ndarray] = []
+    u_all: list[np.ndarray] = []
+    n_all: list[np.ndarray] = []
     with torch.no_grad():
-        for x, y, _ in test_loader:
-            pred, _ = model(x)
-            loss = loss_fn(pred, y)
-            total += float(loss) * len(x)
-            count += len(x)
-    test_loss = total / max(count, 1)
+        for seq, profit, mask, target, lower, upper, path_count in test_loader:
+            seq, profit, mask, target = seq.to(device), profit.to(device), mask.to(device), target.to(device)
+            pred, z = model(seq, profit, mask)
+            loss = loss_fn(pred, target)
+            test_total += float(loss) * len(seq)
+            test_n += len(seq)
+            z_all.append(z.cpu().numpy())
+            l_all.append(lower.numpy())
+            u_all.append(upper.numpy())
+            n_all.append(path_count.numpy())
 
-    z_train_all, id_train_all = _collect_latent(model, train_eval_loader)
-    z_test_all, id_test_all = _collect_latent(model, test_loader)
-    train_pos = {int(v): j for j, v in enumerate(id_train_all)}
-    test_pos = {int(v): j for j, v in enumerate(id_test_all)}
+    z = np.concatenate(z_all)
+    lower = np.concatenate(l_all)
+    upper = np.concatenate(u_all)
+    path_count = np.concatenate(n_all)
+    l_dist, l10, l90, l_low_n, l_high_n = _centroid_distance(z, lower)
+    u_dist, u10, u90, u_low_n, u_high_n = _centroid_distance(z, upper)
+    latent_scale = float(np.mean(np.std(z, axis=0)))
 
-    anchor_train_idx, anchor_train_y = _anchor_labels(io.lower, io.upper, train_idx)
-    anchor_test_idx, anchor_test_y = _anchor_labels(io.lower, io.upper, test_idx)
-    z_anchor_train = np.stack([z_train_all[train_pos[int(i)]] for i in anchor_train_idx]) if len(anchor_train_idx) else np.empty((0, LATENT_DIM))
-    z_anchor_test = np.stack([z_test_all[test_pos[int(i)]] for i in anchor_test_idx]) if len(anchor_test_idx) else np.empty((0, LATENT_DIM))
-
-    probe_auc, probe_status = _probe(z_anchor_train, anchor_train_y, z_anchor_test, anchor_test_y)
-
-    result = {
-        "window": window,
-        "windows": n,
-        "train_windows": len(train_idx),
-        "test_windows": len(test_idx),
-        "max_paths_per_cell": io.max_paths_per_cell,
-        "train_loss": last_train_loss,
-        "test_loss": test_loss,
-        "train_anchor_bad": int(np.sum(anchor_train_y == 0)),
-        "train_anchor_good": int(np.sum(anchor_train_y == 1)),
-        "test_anchor_bad": int(np.sum(anchor_test_y == 0)),
-        "test_anchor_good": int(np.sum(anchor_test_y == 1)),
-        "probe_auc": probe_auc,
-        "probe_status": probe_status,
-        "profit_min_train": pmin,
-        "profit_max_train": pmax,
-        "profit_mean_train": profit_mean,
-        "profit_std_train": profit_std,
-    }
-
-    del model, train_loader, test_loader, train_eval_loader, train_ds, test_ds, io
-    gc.collect()
-    return result
+    print(
+        "S1 PROFITABILITY_AE DATA "
+        f"W={window} train={len(train_ds)} test={len(test_ds)} cutoff={cutoff} "
+        f"max_slot={train_ds.max_slot} bins={HIST_BINS} latent={LATENT_DIM}"
+    )
+    print(
+        "S1 PROFITABILITY_AE TRAIN "
+        f"W={window} first_loss={first_loss:.6f} last_loss={last_loss:.6f} epochs={EPOCHS}"
+    )
+    print(
+        "S1 PROFITABILITY_AE TEST "
+        f"W={window} loss={test_total / max(test_n, 1):.6f} "
+        f"path_count_median={np.median(path_count):.1f} latent_scale={latent_scale:.6f}"
+    )
+    print(
+        "S1 PROFITABILITY_AE POSTHOC_L "
+        f"W={window} p10={l10:.8f} p90={l90:.8f} centroid_distance={l_dist:.6f} "
+        f"low_n={l_low_n} high_n={l_high_n} labels_used_in_training=false"
+    )
+    print(
+        "S1 PROFITABILITY_AE POSTHOC_U "
+        f"W={window} p10={u10:.8f} p90={u90:.8f} centroid_distance={u_dist:.6f} "
+        f"low_n={u_low_n} high_n={u_high_n} labels_used_in_training=false"
+    )
 
 
 def main() -> None:
-    print(
-        "S1 PROFITABILITY_AE CONFIG "
-        f"windows={PILOT_WINDOWS} epochs={EPOCHS} latent={LATENT_DIM} bins={N_BINS} "
-        f"batch={BATCH_SIZE} lr={LEARNING_RATE} seed={SEED} research_frozen=false"
-    )
+    _seed_everything(SEED)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     df = download_ticker_daily(TICKER, period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
     events = add_strategy1_events(df).reset_index(drop=True)
     path_table = build_path_table(events)
+
     print(
-        f"S1 PROFITABILITY_AE DATA ticker={TICKER} rows={audit.rows} "
-        f"paths={len(path_table)} entries={path_table['entry_index'].nunique()}"
+        "S1 PROFITABILITY_AE START "
+        f"ticker={TICKER} rows={audit.rows} paths={len(path_table)} "
+        f"windows={','.join(map(str, WINDOWS))} device={device} pilot=true "
+        "L_U_descriptive_posthoc_only=true"
     )
-
-    results: list[dict[str, object]] = []
-    for window in PILOT_WINDOWS:
-        result = _fit_one(events, path_table, window)
-        results.append(result)
-        print(
-            "S1 PROFITABILITY_AE RESULT "
-            f"W={window} train_loss={result['train_loss']:.6f} test_loss={result['test_loss']:.6f} "
-            f"train_bad={result['train_anchor_bad']} train_good={result['train_anchor_good']} "
-            f"test_bad={result['test_anchor_bad']} test_good={result['test_anchor_good']} "
-            f"probe_auc={result['probe_auc']} probe_status={result['probe_status']}"
-        )
-
-    pd.DataFrame(results).to_csv(OUTPUT, index=False)
-    print(f"S1 PROFITABILITY_AE COMPLETE output={OUTPUT}")
+    for window in WINDOWS:
+        _run_window(path_table, window, device)
+    print("S1 PROFITABILITY_AE COMPLETE pilot=true research_hyperparameters_frozen=false")
 
 
 if __name__ == "__main__":
