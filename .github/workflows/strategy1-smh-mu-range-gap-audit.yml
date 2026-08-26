@@ -1,0 +1,46 @@
+name: Strategy 1 SMH Mu Range Gap Audit
+
+on:
+  push:
+    branches: [cnn-trend-reset]
+    paths:
+      - 'src/futureview/strategy1_smh_mu_range_gap_audit.py'
+      - '.github/workflows/strategy1-smh-mu-range-gap-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  smh-mu-range-gap-audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
+          python -m pip install -e . --no-deps
+      - name: Run SMH mu-range-gap audit
+        env:
+          FUTUREVIEW_WORKERS: '1'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_smh_mu_range_gap_audit 2>&1 | tee strategy1-smh-mu-range-gap-audit.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — SMH Mu / Range / Gap Audit'
+            echo
+            echo '```text'
+            grep -E '^S1 SMH_MRG (DATA|DEF|DIST|CUTS|CELL|CASE|EXAMPLE|COMPLETE)' strategy1-smh-mu-range-gap-audit.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-smh-mu-range-gap-audit-${{ github.run_number }}
+          path: strategy1-smh-mu-range-gap-audit.log
+          retention-days: 30
