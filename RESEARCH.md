@@ -377,7 +377,57 @@ The important object of study is not merely reconstruction accuracy. It is wheth
 
 This remains a research hypothesis rather than a validated model. In particular, the exact decoder representation, reconstruction loss, latent dimension, and profit-axis construction remain open and must be tested rather than assumed.
 
-## 15. Withdrawn exploratory formulation
+## 15. External L/U anchor test for latent economic meaning
+
+The first validation test for the Strategy-profitability autoencoder uses `L` and `U` as **external economic anchors**, not as autoencoder training targets.
+
+For each fixed interval `W`, after constructing its realized profit distribution `D_W`, define the two unambiguous extreme cases:
+
+```text
+U(W) < 0 -> every legal Strategy-1 path lost money -> clearly unfavorable anchor
+L(W) > 0 -> every legal Strategy-1 path made money -> clearly favorable anchor
+```
+
+These labels are intentionally withheld from autoencoder training. The autoencoder learns only from the Layer-1 historical representation and its distribution-reconstruction objective.
+
+After training:
+
+```text
+X_W -> encoder -> z_W
+```
+
+we attach the external anchor label only for evaluation:
+
+```text
+y_W = 0 if U(W) < 0
+y_W = 1 if L(W) > 0
+```
+
+and test whether the learned latent representation contains enough economic information to separate the two extremes. A simple downstream probe such as logistic regression may be used strictly as a diagnostic:
+
+```text
+z_W -> simple probe -> favorable / unfavorable anchor
+```
+
+The probe is **not** the Layer-1 model and the anchor label is **not** the autoencoder target. Its purpose is to answer one question:
+
+> Does the unsupervised/representation-learning output `z_W` preserve an economically meaningful Strategy-1 profitability direction at all?
+
+This provides a strong sanity check because the two anchor conditions require almost no subjective profitability definition: all observed legal outcomes are negative versus all observed legal outcomes are positive.
+
+The first test should therefore proceed in stages:
+
+```text
+Stage A: train the Strategy-profitability autoencoder without L/U labels.
+Stage B: extract z_W for every eligible interval.
+Stage C: evaluate only the extreme anchors U<0 versus L>0 with a simple held-out probe.
+Stage D: inspect whether the anchor groups separate in latent space and whether separation is stable.
+Stage E: only if the anchor sanity check succeeds, examine the mixed region L<0<U, especially intervals with P(R>0) approximately 0.5.
+```
+
+A failure to distinguish even `U<0` from `L>0` would be evidence that the current representation/objective is not capturing the intended profitability meaning and should be revised before adding complexity. Successful separation is necessary evidence of economic meaning, but it is **not sufficient proof** that the latent space has discovered a useful ordering inside mixed regimes.
+
+## 16. Withdrawn exploratory formulation
 
 The earlier exploratory baseline:
 
@@ -388,7 +438,7 @@ normalized price/volume -> partial-exit yes/no classifier
 
 is not the current Layer-1 definition. Add-on and partial-exit labels describe realized execution and remain useful for explanation, but they do not themselves define whether a regime is suitable for Strategy 1.
 
-## 16. Historical reference bounds and C/Q terminology
+## 17. Historical reference bounds and C/Q terminology
 
 For one Entry's legal realized campaign-return set:
 
@@ -414,7 +464,7 @@ Q -> quality-gap ratio; lower is better / more efficient
 
 For Layer 1, `L` and `U` are economically interpretable realized bounds, but they do not solve the internal mixed-distribution problem. The downstream C/Q problem is unchanged during the present Layer-1 research.
 
-## 17. Validation principles
+## 18. Validation principles
 
 Any eventual predictive evaluation must be chronological and causal:
 
@@ -428,7 +478,9 @@ No random train/test split is allowed for the final predictive pre-filter/Entry 
 
 The immediate Layer-1 autoencoder is a historical representation-learning experiment, not yet a causal live predictor. Realized profits can therefore participate in this historical representation. They must not later be confused with causal live inputs to a deployable pre-filter.
 
-## 18. Immediate research sequence
+For the L/U anchor diagnostic, train/test separation for the downstream probe must also avoid treating heavily overlapping rolling windows as independent evidence. Exact split/purge mechanics remain to be specified with the selected `W`.
+
+## 19. Immediate research sequence
 
 ```text
 1. Keep Strategy 1 mechanics and campaign-return semantics fixed.
@@ -439,12 +491,14 @@ The immediate Layer-1 autoencoder is a historical representation-learning experi
 6. Preserve N(W) = sum(w) as genuine regime information.
 7. Retain add-on/exit/reference labels as interpretation metadata, not redundant sequence inputs.
 8. Use a CNN/autoencoder as the first simple Layer-1 representation-learning experiment.
-9. Test a decoder target that reconstructs the interval-level Strategy-1 profit distribution rather than a hand-defined good/bad scalar.
-10. Keep the distribution representation, loss, latent dimension, and W length as explicit research variables rather than silently freezing them.
-11. Evaluate whether z_W separates economically distinct profitability structures, especially neutral/mixed intervals with similar win probability.
-12. Only after Layer 1 is understood should causal price/volume prediction and downstream C/Q selection be revisited.
+9. Decode the interval-level Strategy-1 profit distribution rather than a hand-defined good/bad scalar.
+10. Train without L/U good/bad labels.
+11. Use U<0 and L>0 only after training as external extreme anchors for a simple latent-space diagnostic.
+12. Require the extreme-anchor sanity check to succeed before interpreting mixed/neutral latent structure.
+13. Keep distribution representation, loss, latent dimension, and W length as explicit research variables.
+14. Only after Layer 1 is understood should causal price/volume prediction and downstream C/Q selection be revisited.
 ```
 
-## 19. Current concise definition
+## 20. Current concise definition
 
-> **Layer 1 asks only how profitable Strategy 1 is capable of being within a fixed historical calendar interval, not why. Every legal path is represented by its execution/capital-exposure sequence, realized campaign profit, and legality mask, while path count remains genuine regime information. The current first model hypothesis is a Strategy-profitability CNN autoencoder: encode the many path-level outcomes into a low-dimensional latent representation `z_W`, then decode them into the interval's Strategy-1 profit distribution rather than an arbitrary good/bad label or single conventional statistic. The distribution has direct economic meaning; the latent variables are not assigned meaning in advance. The central empirical test is whether this representation distinguishes economically different profitability structures—especially neutral/mixed regimes that look similar by win probability—without attempting to explain their price/volume cause.**
+> **Layer 1 asks only how profitable Strategy 1 is capable of being within a fixed historical calendar interval, not why. Every legal path is represented by its execution/capital-exposure sequence, realized campaign profit, and legality mask, while path count remains genuine regime information. The current first model hypothesis is a Strategy-profitability CNN autoencoder: encode the many path-level outcomes into a low-dimensional latent representation `z_W`, then decode them into the interval's Strategy-1 profit distribution rather than an arbitrary good/bad label or single conventional statistic. The first economic sanity check is deliberately external to training: intervals with `U<0` are unambiguously unfavorable and intervals with `L>0` are unambiguously favorable. If the learned `z_W` cannot distinguish these extremes with a simple held-out probe, the representation/objective should be revised. If it can, the next research target is the mixed region `L<0<U`, especially cases with approximately neutral win probability.**
