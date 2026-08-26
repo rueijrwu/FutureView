@@ -15,7 +15,7 @@ def _q(x: np.ndarray, p: float) -> float:
 
 def _stats(name: str, arr: np.ndarray) -> None:
     print(
-        f"S1 SMH_MRG DIST metric={name} mean={np.mean(arr):.6f} "
+        f"S1 SMH_ME DIST metric={name} mean={np.mean(arr):.6f} "
         f"p10={_q(arr,0.10):.6f} p25={_q(arr,0.25):.6f} p50={_q(arr,0.50):.6f} "
         f"p75={_q(arr,0.75):.6f} p90={_q(arr,0.90):.6f}"
     )
@@ -41,69 +41,69 @@ def main() -> None:
     U = np.asarray(ds.entry_upper, dtype=float)[keep]
     dates = pd.to_datetime(np.asarray(ds.dates)[keep])
 
-    R = U - L
-    G = U - mu
-    valid = np.isfinite(L) & np.isfinite(mu) & np.isfinite(U) & (R >= 0) & (G >= -1e-12)
-    L, mu, U, R, G, dates = [x[valid] for x in (L, mu, U, R, G, dates)]
+    span = U - L
+    valid = np.isfinite(L) & np.isfinite(mu) & np.isfinite(U) & (span > 1e-12)
+    L, mu, U, span, dates = [x[valid] for x in (L, mu, U, span, dates)]
+    E = (mu - L) / span
 
     print(
-        "S1 SMH_MRG DATA "
+        "S1 SMH_ME DATA "
         f"ticker={TICKER} period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
         f"history_entries={len(mu)} horizon={HORIZON} "
         f"live_holdout_start={pd.Timestamp(live_start).date()} live_holdout_end={pd.Timestamp(live_end).date()} "
         "history_rule=target_end_strictly_before_live_start"
     )
-    print("S1 SMH_MRG DEF mu=expected_return R=U-L G=U-mu no_composite_indicator=true")
+    print("S1 SMH_ME DEF mu=expected_return E=(mu-L)/(U-L) no_composite_indicator=true")
 
-    for name, arr in (("L",L),("mu",mu),("U",U),("R",R),("G",G)):
+    for name, arr in (("L",L),("mu",mu),("U",U),("E",E)):
         _stats(name, arr)
 
-    # 3 x 3 descriptive grid: R tertile x G tertile.
-    r_cut = np.quantile(R, [1/3, 2/3])
-    g_cut = np.quantile(G, [1/3, 2/3])
-    r_bin = np.digitize(R, r_cut, right=True) + 1
-    g_bin = np.digitize(G, g_cut, right=True) + 1
-    print(f"S1 SMH_MRG CUTS R33={r_cut[0]:.6f} R67={r_cut[1]:.6f} G33={g_cut[0]:.6f} G67={g_cut[1]:.6f}")
+    mu_cut = np.quantile(mu, [1/3, 2/3])
+    e_cut = np.quantile(E, [1/3, 2/3])
+    mu_bin = np.digitize(mu, mu_cut, right=True) + 1
+    e_bin = np.digitize(E, e_cut, right=True) + 1
+    print(f"S1 SMH_ME CUTS mu33={mu_cut[0]:.6f} mu67={mu_cut[1]:.6f} E33={e_cut[0]:.6f} E67={e_cut[1]:.6f}")
 
-    for rb in (1,2,3):
-        for gb in (1,2,3):
-            m = (r_bin == rb) & (g_bin == gb)
+    for mb in (1,2,3):
+        for eb in (1,2,3):
+            m = (mu_bin == mb) & (e_bin == eb)
             if not np.any(m):
                 continue
             print(
-                f"S1 SMH_MRG CELL Rbin={rb} Gbin={gb} n={int(m.sum())} "
-                f"mu_mean={np.mean(mu[m]):.6f} mu_median={np.median(mu[m]):.6f} mu_positive_rate={np.mean(mu[m]>0):.6f} "
-                f"L_mean={np.mean(L[m]):.6f} U_mean={np.mean(U[m]):.6f} R_mean={np.mean(R[m]):.6f} G_mean={np.mean(G[m]):.6f}"
+                f"S1 SMH_ME CELL mubin={mb} Ebin={eb} n={int(m.sum())} "
+                f"mu_mean={np.mean(mu[m]):.6f} mu_median={np.median(mu[m]):.6f} "
+                f"E_mean={np.mean(E[m]):.6f} E_median={np.median(E[m]):.6f} "
+                f"L_mean={np.mean(L[m]):.6f} U_mean={np.mean(U[m]):.6f} "
+                f"mu_positive_rate={np.mean(mu[m] > 0):.6f}"
             )
 
-    # Direct economic cases.
     cases = {
-        "POS_MU_HIGH_R_LOW_G": (mu > 0) & (r_bin == 3) & (g_bin == 1),
-        "NEG_MU_HIGH_R_LOW_G": (mu <= 0) & (r_bin == 3) & (g_bin == 1),
-        "POS_MU_HIGH_R_HIGH_G": (mu > 0) & (r_bin == 3) & (g_bin == 3),
-        "POS_MU_LOW_R_LOW_G": (mu > 0) & (r_bin == 1) & (g_bin == 1),
+        "HIGH_MU_HIGH_E": (mu_bin == 3) & (e_bin == 3),
+        "HIGH_MU_LOW_E": (mu_bin == 3) & (e_bin == 1),
+        "LOW_MU_HIGH_E": (mu_bin == 1) & (e_bin == 3),
+        "LOW_MU_LOW_E": (mu_bin == 1) & (e_bin == 1),
     }
     for label, m in cases.items():
         if not np.any(m):
-            print(f"S1 SMH_MRG CASE name={label} n=0")
+            print(f"S1 SMH_ME CASE name={label} n=0")
             continue
         print(
-            f"S1 SMH_MRG CASE name={label} n={int(m.sum())} mu_mean={np.mean(mu[m]):.6f} "
-            f"L_mean={np.mean(L[m]):.6f} U_mean={np.mean(U[m]):.6f} R_mean={np.mean(R[m]):.6f} G_mean={np.mean(G[m]):.6f}"
+            f"S1 SMH_ME CASE name={label} n={int(m.sum())} "
+            f"mu_mean={np.mean(mu[m]):.6f} E_mean={np.mean(E[m]):.6f} "
+            f"L_mean={np.mean(L[m]):.6f} U_mean={np.mean(U[m]):.6f}"
         )
 
-    # Examples: largest positive mu, and high-R/low-G examples.
     for label, idxs in (
         ("TOP_MU", np.argsort(mu)[-5:][::-1]),
-        ("HIGH_R_LOW_G", np.flatnonzero((r_bin==3)&(g_bin==1))[:5]),
+        ("TOP_E", np.argsort(E)[-5:][::-1]),
     ):
         for rank, j in enumerate(idxs, start=1):
             print(
-                f"S1 SMH_MRG EXAMPLE side={label} rank={rank} date={pd.Timestamp(dates[j]).date()} "
-                f"L={L[j]:.6f} mu={mu[j]:.6f} U={U[j]:.6f} R={R[j]:.6f} G={G[j]:.6f}"
+                f"S1 SMH_ME EXAMPLE side={label} rank={rank} date={pd.Timestamp(dates[j]).date()} "
+                f"L={L[j]:.6f} mu={mu[j]:.6f} U={U[j]:.6f} E={E[j]:.6f}"
             )
 
-    print("S1 SMH_MRG COMPLETE")
+    print("S1 SMH_ME COMPLETE")
 
 
 if __name__ == "__main__":
