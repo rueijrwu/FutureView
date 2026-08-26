@@ -6,37 +6,47 @@ This is the canonical research document for FutureView. It consolidates the conc
 
 ## 1. Current research question
 
-FutureView is currently being simplified around two distinct learning problems rather than one monolithic model.
+The current work is deliberately simplified. We are not adding another model layer. We are revisiting the **pre-filter / gate** in the existing FutureView training framework.
+
+The central question is:
+
+> Given the complete set of known historical Strategy 1 paths and their realized campaign profits in a historical interval, can the profitability structure of that interval be represented as a small number of useful states/classes without manually declaring that one summary statistic means "good" or "bad"?
+
+The motivation is the earlier pre-filter bottleneck. A historical interval may contain many legal Entries or very few, and each Entry may have one or more legal realized paths. Mean return, win rate, standard deviation, Entry count, μ, or another single statistic may fail to represent the full economic structure of the interval. We therefore do not want to define the gate by an arbitrary threshold on one such statistic before examining the full path-level outcome data.
+
+A central methodological rule remains: no new threshold, window, maturity rule, normalization, derived statistic, class weighting, resampling rule, or other modeling assumption is introduced silently. Descriptive statistics may be used to understand the data, but are not automatically model inputs, labels, or trading rules.
+
+## 2. Existing model framework
+
+The intended overall framework remains conceptually simple:
 
 ```text
-Stage / Model 1: strategy-state classification / gate
-Stage / Model 2: entry-quality ranking using C and Q
+normalized causal price/volume
+        -> pre-filter / gate
+        -> C/Q entry-quality model
 ```
 
-The two models answer different questions and should not be conflated.
+The present research concerns only the **pre-filter**. We are not introducing an additional historical-analysis layer, refine layer, planning layer, or extra sequential CNN into the production architecture.
 
-The first model asks whether the recent historical Strategy 1 outcome structure resembles a state in which the strategy should be allowed through the gate. The second model asks, conditional on considering an Entry, how favorable its opportunity/ranking characteristics are.
+The later C/Q model remains a separate entry-quality problem. The present task is to determine what the pre-filter should mean and how historical Strategy 1 profitability should define its states.
 
-A central methodological rule is that no new threshold, window, maturity rule, normalization, derived statistic, loss weighting, or other modeling assumption is to be introduced silently. Such choices must first be discussed and explicitly accepted. Descriptive statistics may be used to understand the data without becoming model inputs or trading rules.
+## 3. Strategy-relative research object
 
-## 2. Strategy-relative research object
+Strategy 1 defines the legal trading/campaign space. Historical realized data then provides the observed outcomes of those legal campaigns.
 
-FutureView does not begin by inventing a universal trend score. Strategy 1 defines the legal trading/campaign space; historical realized data then reveals the outcomes of those legal campaigns.
+The basic research object is therefore not a manually constructed technical indicator. It is the collection of legal realized Strategy 1 paths and their realized campaign returns.
 
-The working decomposition is:
+For a historical interval `W`:
 
 ```text
-Symbol   -> shapes the realized opportunity distribution
-Strategy -> defines legal Entry/add-on/exit mechanics
-History  -> reveals realized campaign outcomes
-Model 1  -> classifies historical strategy state / gate
-Model 2  -> ranks current Entry quality using C and Q
-Planning -> later converts model outputs into trade/no-trade/sizing decisions
+P(W) = {(path_i, R_i)}
 ```
 
-These effects are not assumed to be perfectly separable.
+where `path_i` is one unique legal realized Strategy 1 execution path and `R_i` is its realized campaign return.
 
-## 3. Frozen Strategy 1 research mechanics
+The unresolved pre-filter problem is how the full structure of `P(W)` should determine the profitability state/class of interval `W`.
+
+## 4. Frozen Strategy 1 research mechanics
 
 Strategy 1 is long-only and uses daily close information. The current formal research version uses three equal capital tranches and one campaign per evaluation window.
 
@@ -56,32 +66,50 @@ The campaign begins with one one-third-capital Entry. Depending on the legal his
 
 The exact executable semantics are documented in `IMPLEMENT.md`.
 
-## 4. Campaign return: current definition
+## 5. Campaign return and path-level data unit
 
 For one legal realized campaign, initial capital is normalized to 1.0. Entry/add-on purchases convert the relevant one-third capital tranche into shares at the realized execution price. Partial/full exits convert shares back into cash.
 
-The realized campaign return is therefore:
+The realized campaign return is:
 
 ```text
 CampaignReturn = final_cash - 1.0
 ```
 
-This is a portfolio-level return on the initial normalized capital, not simply `(exit price - first entry price) / first entry price`.
+This is a portfolio-level return on initial normalized capital, not simply `(exit price - first entry price) / first entry price`.
 
-Consequently, two legal configurations beginning from the same formal Entry can have different realized returns because they can trigger different legal add-on behavior while following the same Strategy 1 execution rules.
+The fundamental historical data unit is now explicitly:
 
-The historical set associated with one Entry should therefore be understood as the set of realized campaign returns generated by the legal add-on/reference configurations for that Entry, not as arbitrary alternative exit dates.
+```text
+one unique realized legal path = one independent historical observation
+```
 
-## 5. Historical campaign-structure analysis — SMH
+The same formal Entry may therefore appear in multiple independent path observations when different legal reference/add-on configurations produce different realized execution paths. This is intentional and is not treated as a duplicate-data error.
+
+Each path retains its own factual labels/metadata, including where applicable:
+
+```text
+Entry
+reference/add-on configuration
+executed add-on count
+partial-exit occurrence
+terminal exit
+campaign return
+execution sequence / event locations
+```
+
+These factual path labels are preserved so that later analysis can determine which execution structures are associated with which profitability states. They are not automatically input features and are not themselves definitions of "good" or "bad".
+
+## 6. Historical campaign-structure analysis — SMH
 
 A five-year descriptive scan of the current SMH Strategy 1 implementation produced:
 
 ```text
 347 formal legal Entries
-807 unique realized campaign paths/configurations
+807 unique realized campaign paths
 ```
 
-This analysis is descriptive only. The following statistics are not approved model inputs or thresholds.
+This analysis is descriptive only. The statistics below are not approved gate inputs or thresholds.
 
 ### By realized add-on count
 
@@ -91,9 +119,9 @@ This analysis is descriptive only. The following statistics are not approved mod
 | 1 | 446 | 223 | +0.606% | -0.140% | 47.1% |
 | 2 | 14 | 13 | +1.586% | -0.951% | 42.9% |
 
-The two-add-on group is rare, but its observed payoff range is very wide (approximately -8.67% to +10.86%). Its positive mean together with negative median shows that a few very large outcomes matter strongly.
+The two-add-on group is rare, but its observed payoff range is very wide, approximately -8.67% to +10.86%. Its positive mean together with negative median demonstrates why a single summary statistic can be misleading: a small number of economically large outcomes can coexist with a negative typical outcome.
 
-This rarity is not automatically a reason to discard the group. A rare but economically large outcome may itself be a useful classification target if a model can distinguish the conditions under which it occurs. For the immediate simplified experiment, however, no special rare-event architecture is introduced yet.
+Rarity is therefore not automatically evidence that a state is unimportant. Rare but economically large paths are retained rather than discarded merely because their count is small.
 
 ### By partial-exit occurrence
 
@@ -102,107 +130,119 @@ This rarity is not automatically a reason to discard the group. A rare but econo
 | No | 253 | 146 | -1.377% | -1.031% | 11.9% |
 | Yes | 554 | 264 | +1.421% | +1.239% | 66.1% |
 
-This is a strong descriptive association, not a causal claim that partial exit creates profit. The same future price path that determines profit also determines whether the partial-exit condition is reached.
+This is a strong descriptive association, not a causal claim that partial exit creates profit. The same realized future price path affects both campaign return and whether a partial-exit event occurs.
+
+Partial exit is therefore retained as factual path metadata useful for interpreting discovered profitability states, rather than being declared in advance to be a "good" class.
 
 ### Terminal exit
 
-806 of 807 realized paths ended through the normal full-exit mechanism; only one ended at the horizon. Terminal-exit type therefore does not currently justify a separate detailed classification.
+806 of 807 realized paths ended through the normal full-exit mechanism; only one ended at the horizon. Terminal-exit type therefore currently contains little independent variation.
 
-## 6. Important interpretation of sparse groups
+## 7. The pre-filter problem
 
-Data sparsity should not automatically be treated as evidence that a state is unimportant.
+The earlier pre-filter work attempted to summarize historical strategy quality through quantities such as μ or related fixed statistical rules. The current concern is that this may impose the answer before the model has seen the full structure of the realized outcomes.
 
-The two-add-on group illustrates the issue:
-
-```text
-few observations
-+ very wide payoff range
-+ occasional very large profits
-```
-
-One possible purpose of a classifier is precisely to learn whether causal structure distinguishes such uncommon but economically important states. Therefore the research should preserve rare outcomes rather than erase them merely to balance classes.
-
-At the same time, the present phase is intentionally simplified. We will first establish whether a coarse independent classifier has learnable OOS signal before introducing special treatment for rare classes, weighting, resampling, or additional class subdivisions.
-
-## 7. Model 1 — independent strategy-state classifier / gate
-
-The first model is conceptually independent from the later C/Q ranking model.
-
-Its intended form is:
+For an interval `W`, suppose the known historical Strategy 1 outcomes are:
 
 ```text
-historical Strategy 1 realized-outcome representation
-        -> CNN classifier
-        -> strategy-state / gate probabilities
+P(W) = {(p_1, R_1), (p_2, R_2), ..., (p_n, R_n)}
 ```
 
-The purpose is classification, not return regression and not direct C/Q prediction.
-
-The historical representation should preserve the realized Strategy 1 outcome structure as directly as practical. Descriptive quantities such as mean, standard deviation, IQR, win rate, L, or U may be calculated to inspect and understand the dataset, but they should not automatically be duplicated as classifier inputs when the underlying outcome representation already contains that information.
-
-Non-legal Entry days may eventually be represented as zero in a daily representation, but the exact time window, outcome encoding, availability timing, binning/quantization, and normalization are not yet frozen. These are modeling assumptions and must be discussed before implementation.
-
-### Current simplification
-
-Do not initially create a large Cartesian product of add-on count × partial exit × terminal exit × other events. The descriptive analysis shows that this would create unnecessarily sparse cells.
-
-The first classifier experiment should use a small, interpretable class structure. The exact class labels remain to be explicitly agreed before training. Rare high-payoff cases, especially two-add-on campaigns, should be retained in the dataset even if initially absorbed into a coarser class.
-
-## 8. Model 2 — C/Q entry-quality model
-
-The second model remains a different problem. It receives the causal normalized price/volume representation and learns entry quality in terms of C and Q.
-
-Current terminology:
+A conventional approach might first reduce these data to:
 
 ```text
-C = U - L
-Q = (U - μ) / (U - L)
+mean(R)
+standard deviation(R)
+win rate
+median(R)
+Entry count
+path count
 ```
 
-Interpretation:
+and then define a gate such as `mean(R) > threshold`.
+
+That is not the current intended direction. Such quantities remain useful for inspection, but we do not yet know which statistic, combination of statistics, or threshold correctly represents whether Strategy 1 is suitable in an interval.
+
+The research goal is instead to preserve enough of the complete path/profit structure for distinct profitability states to be identified from the data.
+
+## 8. Profitability-state classification
+
+The intended pre-filter target is a **profitability state/class of a historical interval**, not an add-on class and not a partial-exit class.
+
+Conceptually:
 
 ```text
-C -> opportunity/capacity range; larger is better when usable
-Q -> quality-gap ratio; lower is better / more efficient
+all known Strategy 1 paths + realized profits in interval W
+        -> profitability structure/state of W
 ```
 
-The intended second-stage objective is therefore to identify Entries with larger C and smaller Q, rather than asking Model 1 to solve this ranking problem.
-
-Price and volume inputs are normalized/dimensionless representations using the previously discussed multiple horizons (5, 10, 20, and 60 sessions). This input representation is separate from the historical strategy-outcome representation used by Model 1.
-
-## 9. Why Model 1 and Model 2 are separated
-
-The separation is deliberate:
+The classes should not initially be defined by an arbitrary rule such as:
 
 ```text
-Model 1 asks:
-What strategy state are we in / should the gate allow this environment?
-
-Model 2 asks:
-Among candidate Entries, which ones have favorable C/Q structure?
+mean return > x  => good
+win rate > y     => good
+μ > z            => good
 ```
 
-A classifier can learn qualitatively different historical campaign states, including uncommon states with unusually large economic outcomes. A C/Q ranker instead learns relative Entry quality. Combining these objectives prematurely risks forcing one model to solve two different problems.
+because that would simply encode a human-selected statistic into the gate.
 
-The eventual planning layer may combine the outputs, but the models should first be validated independently.
-
-## 10. Historical outcome distributions are for understanding before modeling
-
-Before fixing the classifier representation, the full realized campaign-return sets should be inspected directly.
-
-For each formal historical Entry `e`, retain the realized return set:
+Instead, the current research question is whether the complete path/profit structure naturally supports a small number of economically distinct states. Possible structures could include, purely as examples and not predefined labels:
 
 ```text
-D(e) = {campaign return from each legal add-on/reference configuration}
+consistently poor outcomes
+mixed / low-information outcomes
+broadly favorable outcomes
+rare but very high-payoff outcomes
 ```
 
-Summary statistics such as min, max, mean, median, standard deviation, IQR, quantiles, and fraction positive are permitted as descriptive diagnostics only. They are not automatically features, labels, filters, or thresholds.
+These examples are explanatory only. The number of classes and their boundaries are not yet frozen.
 
-A key representation problem is that an Entry with only one legal realized configuration should not be mistaken for a genuinely narrow, well-supported distribution. A future representation should preserve both outcome location/shape and the amount of support/configuration multiplicity without manually replacing the underlying data with summary statistics.
+After states are identified, existing path labels such as add-on count and partial-exit occurrence can be used to interpret them. For example, we may ask whether a discovered high-profitability state contains disproportionate numbers of partial-exit paths or rare two-add-on paths. That is post-hoc interpretation of a state, not the definition of the state itself.
 
-Histogram/density-style or other direct empirical representations are candidates, but no bin count, range, normalization, or lookback window has yet been approved.
+## 9. Important distinction: historical state definition vs causal prediction
 
-## 11. Historical reference bounds and terminology
+The current work is first concerned with defining and understanding the pre-filter target from known historical outcomes.
+
+This should not be confused with the later causal prediction problem.
+
+Historical target-definition question:
+
+```text
+known realized Strategy 1 paths + profits
+        -> what profitability state did this interval actually represent?
+```
+
+Later pre-filter prediction question:
+
+```text
+information available at decision time
+        -> can the model predict that profitability state?
+```
+
+These are two stages of studying the same pre-filter, not two additional production model layers.
+
+The eventual gate still belongs in the original framework:
+
+```text
+causal normalized price/volume -> pre-filter state/probability -> C/Q model
+```
+
+## 10. Withdrawn exploratory formulation
+
+The exploratory baseline:
+
+```text
+normalized price/volume -> add-on 0/1/2 classifier
+normalized price/volume -> partial-exit yes/no classifier
+```
+
+is not the current pre-filter definition.
+
+That experiment collapsed to majority-class predictions and, more importantly, answered a different question. Add-on count and partial exit describe realized path execution; they do not by themselves define whether the historical interval was suitable for Strategy 1.
+
+The experiment is retained only as exploratory evidence and should not guide further class weighting, oversampling, or architecture tuning at this stage.
+
+## 11. Historical reference bounds and C/Q terminology
 
 For one Entry's legal realized campaign-return set, define:
 
@@ -212,9 +252,7 @@ U = maximum realized campaign return
 μ = mean realized campaign return
 ```
 
-These remain useful descriptors of the realized set.
-
-For the current C/Q terminology:
+For the current entry-quality terminology:
 
 ```text
 C = U - L
@@ -223,11 +261,40 @@ Q = (U - μ) / (U - L)
 
 when the denominator is well-defined.
 
-L, U, μ and other statistics remain valuable for analysis, but the present first-stage classifier direction intentionally avoids assuming that any one manually selected statistic is the correct gate.
+Interpretation:
 
-## 12. Validation principles
+```text
+C -> opportunity/capacity range; larger is better when usable
+Q -> quality-gap ratio; lower is better / more efficient
+```
 
-Formal evaluation must be chronological and causal:
+L, U, μ, C, Q and other statistics remain valuable for analysis. However, the current pre-filter research deliberately avoids assuming that any one of them is the correct definition of historical strategy suitability.
+
+The C/Q entry-quality problem remains downstream and is not being redesigned in the present step.
+
+## 12. Representation remains an open question
+
+We have not yet frozen how all path/profit observations within a historical interval should be represented computationally.
+
+Candidates may include direct empirical distributions, set-based representations, histogram/density representations, CNN-compatible representations, or other methods capable of retaining information that a single summary statistic discards.
+
+No method is assumed superior in advance. In particular, a CNN is a candidate tool for learning structure, not a justification for inventing labels or statistical definitions.
+
+The representation should ideally preserve information such as:
+
+```text
+where realized profits occur
+how broadly or narrowly outcomes are distributed
+how much support exists for different outcomes
+rare but economically large outcomes
+path multiplicity / amount of historical evidence
+```
+
+without requiring us to decide beforehand that mean, standard deviation, win rate, or another fixed statistic is the correct gate statistic.
+
+## 13. Validation principles
+
+Any eventual predictive evaluation must be chronological and causal:
 
 ```text
 past -> train
@@ -235,38 +302,33 @@ purge future-label overlap where required by the defined target
 later data -> validation/test
 ```
 
-No random train/test split.
+No random train/test split for the final predictive pre-filter.
 
-However, the exact rule governing when a historical campaign outcome becomes available to a live Model-1 input has not yet been frozen. A previous diagnostic introduced a `maturity` condition without prior discussion; conclusions depending on that unapproved condition are withdrawn. The availability rule must be explicitly defined before Model-1 training.
+However, the immediate task is still target/representation definition from historical realized data. The exact interval length, availability rule, state count, and computational representation are not yet frozen and must be discussed before they are used in a predictive experiment.
 
-Repeated tuning on the same OOS period converts that period into development data and must not be presented as fresh validation.
-
-## 13. Prior model evidence retained as background
-
-Earlier Daily CNN experiments established that causal price/volume CNNs can show reproducible OOS ranking signal in some earlier target formulations. Earlier MAE-vs-ranking results also showed that lower prediction error can coexist with worse ranking, so point error alone is not accepted as a sufficient model-quality definition.
-
-Earlier fixed-summary fusion and post-hoc gate experiments are retained as warnings against unnecessary hand-engineered features and threshold engineering. They do not define the new Model-1 classifier.
+A previous diagnostic introduced a `maturity` condition without prior discussion; conclusions depending on that unapproved condition remain withdrawn.
 
 ## 14. Immediate research sequence
 
-The current sequence is deliberately simplified:
+The current sequence is intentionally narrow:
 
 ```text
-1. Freeze/document the Strategy 1 campaign-return semantics.
-2. Preserve and inspect historical realized campaign outcomes.
-3. Define a small, explicit Model-1 classification target.
-4. Define the direct historical-outcome representation for Model 1.
-5. Train/evaluate Model 1 independently with chronological OOS validation.
-6. Separately return to Model 2: normalized price/volume -> C/Q ranking.
-7. Only after both models are independently understood, discuss how planning combines them.
+1. Keep the existing Strategy 1 mechanics and campaign-return definition fixed.
+2. Keep one unique realized legal path as one historical observation.
+3. Preserve each path's factual execution labels and realized campaign return.
+4. Group the known historical paths by historical interval without first reducing them to a manually selected "good/bad" statistic.
+5. Determine whether the complete path/profit structure supports useful profitability states/classes for the existing pre-filter.
+6. Use descriptive statistics and execution labels only to interpret those states, not to define them automatically.
+7. Once the pre-filter target is understood, test whether causal normalized price/volume can predict it chronologically OOS.
+8. Leave the downstream C/Q entry-quality model unchanged during this work.
 ```
 
-Do not introduce additional filters, statistical features, thresholds, bootstrap/resampling, rare-class weighting, or representation hyperparameters without explicit discussion.
+Do not introduce additional model layers, thresholds, statistical features, bootstrap/resampling, rare-class weighting, or representation hyperparameters without explicit discussion.
 
 ## 15. Current concise conclusion
 
-FutureView is moving toward a two-model decomposition.
+FutureView is not currently adding another CNN layer. The active problem is the original pre-filter.
 
-> Model 1 is an independent CNN classifier intended to learn strategy-state/gate information from historical realized Strategy 1 outcomes. Model 2 is a separate normalized price/volume model intended to rank current Entries using larger C and smaller Q. Historical campaign analysis shows that zero- and one-add-on outcomes are common, while two-add-on outcomes are rare but can be economically extreme. Rare outcomes should therefore be preserved as potentially learnable targets rather than automatically discarded, while the first experiment remains intentionally coarse and simple.
+> We know all legal historical Strategy 1 paths and each path's realized campaign profit. The goal is to use the full path-level outcome structure within a historical interval to identify the interval's profitability state/class without first declaring that a human-selected statistic such as mean return, win rate, standard deviation, or μ defines "good" or "bad." Add-on, partial-exit, and other execution labels remain available for interpreting the discovered states. Once a meaningful pre-filter target exists, the existing causal price/volume model can be evaluated on its ability to predict that state; the downstream C/Q model remains a separate, unchanged entry-quality problem.
 
-The next decision is not a new threshold. It is the explicit definition of the small set of classes for the first independent classifier.
+The next unresolved question is therefore narrowly defined: **how should the set of path-level realized outcomes within one historical interval be represented so that economically distinct profitability states can be identified without manually imposing the state definition?**
