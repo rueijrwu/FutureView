@@ -1,0 +1,47 @@
+name: Strategy 1 C/Q L-U Fold Diagnostic
+
+on:
+  push:
+    branches: [cnn-trend-reset]
+    paths:
+      - 'src/futureview/strategy1_cq_lu_fold_diagnostic.py'
+      - '.github/workflows/strategy1-cq-lu-fold-diagnostic.yml'
+  workflow_dispatch:
+
+jobs:
+  lu-fold-diagnostic:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "torch>=2.4" "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
+          python -m pip install -e . --no-deps
+      - name: Run L-U fold diagnostic
+        env:
+          CUDA_VISIBLE_DEVICES: ''
+          FUTUREVIEW_WORKERS: '1'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_cq_lu_fold_diagnostic 2>&1 | tee strategy1-cq-lu-fold-diagnostic.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — L/U Fold Diagnostic'
+            echo
+            echo '```text'
+            grep -E '^S1 LU_DIAG (DATA|FOLD|TEST|GEOMETRY|COMPARE|COMPLETE)' strategy1-cq-lu-fold-diagnostic.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-cq-lu-fold-diagnostic-${{ github.run_number }}
+          path: strategy1-cq-lu-fold-diagnostic.log
+          retention-days: 30
