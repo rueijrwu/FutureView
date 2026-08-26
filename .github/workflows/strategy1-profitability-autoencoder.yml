@@ -28,7 +28,7 @@ jobs:
           CUDA_VISIBLE_DEVICES: ''
           FUTUREVIEW_WORKERS: '1'
           FUTUREVIEW_AE_WINDOWS: '20,30,60'
-          FUTUREVIEW_AE_EPOCHS: '20'
+          FUTUREVIEW_AE_EPOCHS: '5'
           FUTUREVIEW_AE_LATENT: '8'
           FUTUREVIEW_AE_BINS: '41'
           FUTUREVIEW_AE_BATCH: '16'
