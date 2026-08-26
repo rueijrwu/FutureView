@@ -12,10 +12,6 @@ on:
 jobs:
   pilot:
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        latent: [1, 2, 4, 8]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,31 +23,31 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "torch>=2.4" "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
           python -m pip install -e . --no-deps
-      - name: Run latent-dimension ablation
+      - name: Run d1 no-N pilot
         env:
           CUDA_VISIBLE_DEVICES: ''
           FUTUREVIEW_WORKERS: '1'
           FUTUREVIEW_AE_WINDOWS: '20,30,60'
           FUTUREVIEW_AE_EPOCHS: '5'
-          FUTUREVIEW_AE_LATENT: '${{ matrix.latent }}'
+          FUTUREVIEW_AE_LATENT: '1'
           FUTUREVIEW_AE_BINS: '41'
           FUTUREVIEW_AE_BATCH: '16'
         run: |
           set -o pipefail
-          python -m futureview.strategy1_profitability_autoencoder 2>&1 | tee strategy1-profitability-autoencoder-latent-${{ matrix.latent }}.log
+          python -m futureview.strategy1_profitability_autoencoder 2>&1 | tee strategy1-profitability-autoencoder-d1-no-n.log
       - name: Summary
         if: always()
         run: |
           {
-            echo '## Strategy 1 — Latent Ablation d=${{ matrix.latent }}'
+            echo '## Strategy 1 — d=1, explicit N removed'
             echo
             echo '```text'
-            grep -E '^S1 PROFITABILITY_AE (START|DATA|TRAIN|TEST|POSTHOC_L|POSTHOC_U|INTERP|COMPLETE)' strategy1-profitability-autoencoder-latent-${{ matrix.latent }}.log || true
+            grep -E '^S1 PROFITABILITY_AE (START|DATA|TRAIN|TEST|POSTHOC_L|POSTHOC_U|INTERP|COMPLETE)' strategy1-profitability-autoencoder-d1-no-n.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: strategy1-profitability-autoencoder-latent-${{ matrix.latent }}-${{ github.run_number }}
-          path: strategy1-profitability-autoencoder-latent-${{ matrix.latent }}.log
+          name: strategy1-profitability-autoencoder-d1-no-n-${{ github.run_number }}
+          path: strategy1-profitability-autoencoder-d1-no-n.log
           retention-days: 30
