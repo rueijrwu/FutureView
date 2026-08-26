@@ -10,20 +10,16 @@ The current work is deliberately simplified. We are not adding another productio
 
 The clearest current definition is:
 
-> **Layer 1 measures how favorable a fixed historical regime is to Strategy 1 from the realized outcomes of all legal Strategy 1 paths in that calendar interval. It describes the strategy's realized profitability environment but does not attempt to explain which price/volume structure caused that environment. Layer 2 is most useful when Layer 1 is neutral/mixed: it uses causal price/volume information to distinguish Entries and seek outcomes closer to the best available legal outcomes.**
+> **Layer 1 asks only about the profitability capability of Strategy 1 within a fixed historical calendar interval. It summarizes what the strategy's complete set of legal realized paths actually produced in that interval; it does not attempt to explain why the result occurred or which price/volume structure caused it. Layer 2 later addresses the causal price/volume selection problem.**
 
-The immediate Layer-1 research problem is now narrower:
-
-> **Given a fixed-calendar window containing the legal Strategy 1 execution paths and their realized profits, what training target/objective should a CNN/autoencoder use so that the learned representation captures the economically meaningful profitability structure of the regime without manually imposing a conventional statistic as the answer?**
-
-The input representation is now substantially defined. The **target/objective is intentionally not yet frozen**.
+The immediate Layer-1 research problem is therefore a representation problem: can the many legal path-level realized outcomes in one interval be encoded into a compact representation of the interval's Strategy-1 profitability distribution without first imposing a conventional statistic or arbitrary good/bad class as the answer?
 
 A central methodological rule remains: no new threshold, window length, maturity rule, normalization, derived statistic, class weighting, resampling rule, or target definition is introduced silently.
 
 ## 2. Two-layer conceptual framework
 
 ```text
-Layer 1: Strategy-1-specific regime suitability / pre-filter
+Layer 1: Strategy-1-specific regime profitability / pre-filter meaning
         -> Layer 2: causal price/volume Entry selection
         -> C/Q entry-quality objective
 ```
@@ -31,7 +27,7 @@ Layer 1: Strategy-1-specific regime suitability / pre-filter
 Layer 1 asks:
 
 ```text
-How favorable is this regime to Strategy 1 itself?
+Under Strategy 1, what is the profitability capability of this fixed interval?
 ```
 
 Layer 2 asks:
@@ -251,13 +247,13 @@ P(W) = {(S_p, R_p, w_p)}
 
 for the legal-path organization of that interval.
 
-The central economic quantity remains the realized profitability distribution:
+The central economic quantity is the realized profitability distribution:
 
 ```text
 D_W = {R_p : w_p = 1}
 ```
 
-but the model is allowed to retain the associated path sequence and path density rather than reducing the regime to one hand-selected scalar statistic.
+The associated execution sequences and path density provide the context from which that distribution arose under Strategy 1, but Layer 1 does not attempt to infer the external market cause.
 
 Zero return is the natural economic reference:
 
@@ -274,29 +270,7 @@ U = max(D_W)
 
 provide clear realized profitability bounds.
 
-If:
-
-```text
-U < 0
-```
-
-then every observed legal path lost money and the historical opportunity set is unambiguously unfavorable.
-
-If:
-
-```text
-L > 0
-```
-
-then every observed legal path was profitable and the historical opportunity set is unambiguously favorable.
-
-The difficult and most informative case is:
-
-```text
-L < 0 < U
-```
-
-where profitable and unprofitable legal paths coexist.
+If `U < 0`, every observed legal path lost money and the historical opportunity set is unambiguously unfavorable. If `L > 0`, every observed legal path was profitable and the historical opportunity set is unambiguously favorable. The difficult and most informative case is `L < 0 < U`, where profitable and unprofitable legal paths coexist.
 
 ## 11. Central statistical problem: neutral/mixed profitability
 
@@ -348,34 +322,60 @@ What observable causal price/volume structure distinguishes the better legal opp
 
 Normalized causal price/volume therefore belongs to Layer 2. It is not required to define the historical realized profitability state in Layer 1.
 
-## 14. CNN and autoencoder status
+## 14. Strategy-profitability autoencoder: current hypothesis
 
-A CNN remains the preferred simple model family to investigate Layer 1 because the representation contains structured sequences and calendar organization.
+The current Layer-1 hypothesis is now more specific. The CNN/autoencoder is not primarily intended to reconstruct path mechanics. It is intended to compress the many legal path-level outcomes in one fixed interval into a compact **Strategy-1 profitability representation**.
 
-An **autoencoder is retained as a candidate Layer-1 architecture**:
-
-```text
-Layer-1 input
-    -> CNN encoder
-    -> latent representation z_W
-    -> decoder / training objective
-```
-
-The motivation is to allow a learned representation without first imposing arbitrary good/bad class labels.
-
-However, an ordinary reconstruction autoencoder is **not yet accepted as the final objective**. Reconstruction alone may encourage the network to preserve execution patterns that are easy to reconstruct without necessarily learning the statistical meaning of profitability that Layer 1 is intended to measure.
-
-Therefore the architecture and the target are deliberately separated:
+Conceptually:
 
 ```text
-Architecture candidate: CNN / autoencoder       -> retained
-Layer-1 input representation                    -> substantially defined
-Layer-1 training target / objective              -> NOT YET DEFINED
+many path-level observations in W
+(S_p, R_p, w_p)
+        -> CNN encoder
+        -> latent profitability representation z_W
+        -> decoder
+        -> reconstructed Strategy-1 profit distribution D_hat_W
 ```
 
-The next research question is specifically the target/objective. We must determine what the model should be optimized to learn so that `z_W` represents Strategy-1 profitability meaning rather than merely compressing path mechanics.
+The decoder output is therefore proposed to represent the **profit distribution of Strategy 1 in the interval**, not a manually assigned `good / neutral / bad` class and not a single mean-profit or win-rate scalar.
 
-No good/bad label, reconstruction loss, mean-profit target, win-rate target, `L/U` target, or composite score should be adopted as the answer until this question is explicitly evaluated.
+A fixed profit axis may be used to represent the decoder output as a distribution vector:
+
+```text
+Y_W = [y_1, y_2, ..., y_K]
+```
+
+where each `y_k` represents the observed mass/count of legal Strategy-1 path returns in a corresponding profit region. The exact binning/density representation is **not yet frozen**.
+
+Importantly, the distribution should not automatically be normalized to unit mass, because:
+
+```text
+sum(Y_W) = N(W)
+```
+
+can preserve the amount of legal Strategy-1 opportunity in the interval. Two intervals with the same normalized payoff shape but very different numbers of legal paths need not represent the same Strategy-1 environment.
+
+The economic meanings are separated deliberately:
+
+```text
+Y_W / D_W     -> observed Strategy-1 profitability distribution; directly interpretable
+D_hat_W       -> decoder reconstruction/estimate of that distribution
+z_W           -> learned low-dimensional representation; no economic meaning is imposed in advance
+```
+
+The intended role of `z_W` is to retain enough information to describe differences in Strategy-1 profitability distributions, especially differences that conventional win probability or mean return may hide.
+
+This is effectively a **Strategy-profitability autoencoder**:
+
+```text
+complex legal path outcomes
+        -> compact profitability representation
+        -> reconstructed profit distribution
+```
+
+The important object of study is not merely reconstruction accuracy. It is whether the learned latent space organizes intervals according to economically meaningful differences in Strategy-1 profitability, including neutral/mixed intervals with similar `P(R > 0)` but materially different upside/downside structure.
+
+This remains a research hypothesis rather than a validated model. In particular, the exact decoder representation, reconstruction loss, latent dimension, and profit-axis construction remain open and must be tested rather than assumed.
 
 ## 15. Withdrawn exploratory formulation
 
@@ -426,7 +426,7 @@ later data -> validation/test
 
 No random train/test split is allowed for the final predictive pre-filter/Entry model.
 
-The immediate task is not yet live prediction. It is to define the historical Strategy-1-specific regime representation and its correct learning target.
+The immediate Layer-1 autoencoder is a historical representation-learning experiment, not yet a causal live predictor. Realized profits can therefore participate in this historical representation. They must not later be confused with causal live inputs to a deployable pre-filter.
 
 ## 18. Immediate research sequence
 
@@ -438,12 +438,13 @@ The immediate task is not yet live prediction. It is to define the historical St
 5. Pair each path with realized campaign profit R_p and legality/existence mask w.
 6. Preserve N(W) = sum(w) as genuine regime information.
 7. Retain add-on/exit/reference labels as interpretation metadata, not redundant sequence inputs.
-8. Retain CNN/autoencoder as the simple first Layer-1 architecture candidate.
-9. Do NOT yet freeze the autoencoder target/objective.
-10. Next determine what target/objective makes the learned representation express Strategy-1 profitability meaning, especially in neutral/mixed regimes.
-11. Only after Layer 1 is defined should causal price/volume prediction and downstream C/Q selection be revisited.
+8. Use a CNN/autoencoder as the first simple Layer-1 representation-learning experiment.
+9. Test a decoder target that reconstructs the interval-level Strategy-1 profit distribution rather than a hand-defined good/bad scalar.
+10. Keep the distribution representation, loss, latent dimension, and W length as explicit research variables rather than silently freezing them.
+11. Evaluate whether z_W separates economically distinct profitability structures, especially neutral/mixed intervals with similar win probability.
+12. Only after Layer 1 is understood should causal price/volume prediction and downstream C/Q selection be revisited.
 ```
 
 ## 19. Current concise definition
 
-> **Layer 1 uses a fixed calendar regime window and preserves every legal Strategy 1 opportunity through its execution/capital-exposure sequence, realized campaign profit, and legality mask. The number of legal paths is itself regime information and must not be normalized away by selecting a fixed path count. Add-on/exit labels remain metadata for interpretation because their timing information is already encoded by the execution sequence. A CNN/autoencoder is retained as the simplest learned Layer-1 representation, but its training target is deliberately unresolved: the next question is what objective will make the latent representation capture the economically meaningful Strategy-1 profitability structure—particularly when win probability is neutral—rather than merely reconstructing execution mechanics.**
+> **Layer 1 asks only how profitable Strategy 1 is capable of being within a fixed historical calendar interval, not why. Every legal path is represented by its execution/capital-exposure sequence, realized campaign profit, and legality mask, while path count remains genuine regime information. The current first model hypothesis is a Strategy-profitability CNN autoencoder: encode the many path-level outcomes into a low-dimensional latent representation `z_W`, then decode them into the interval's Strategy-1 profit distribution rather than an arbitrary good/bad label or single conventional statistic. The distribution has direct economic meaning; the latent variables are not assigned meaning in advance. The central empirical test is whether this representation distinguishes economically different profitability structures—especially neutral/mixed regimes that look similar by win probability—without attempting to explain their price/volume cause.**
