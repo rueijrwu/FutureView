@@ -3,11 +3,14 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .data import download_ticker_daily, validate_daily_ohlcv
 from . import strategy1_reference_distribution as base
 from .strategy1 import add_strategy1_events
 from .strategy1_cq_data import HORIZON, REFERENCE_LOOKBACK, ADDON2_SPACING_TOLERANCE
 from .strategy1_reference_distribution_fast import _simulate_path_fast
 
+TICKER = "SMH"
+DATA_PERIOD = "5y"
 LOOKBACKS = (60, 120, 180)
 GRID_Q = np.linspace(0.0, 1.0, 11)
 
@@ -30,7 +33,6 @@ def _daily_map(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     dates = pd.to_datetime(events["date"]).to_numpy()
     n = len(events)
     out = np.zeros((n, len(GRID_Q)), dtype=np.float32)
-    is_legal = np.zeros(n, dtype=bool)
     maturity = np.full(n, -1, dtype=int)
 
     for entry in np.flatnonzero(events["entry_candidate"].to_numpy(dtype=bool)):
@@ -41,23 +43,20 @@ def _daily_map(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if returns.size == 0 or not np.all(np.isfinite(returns)):
             continue
         out[int(entry)] = np.quantile(returns, GRID_Q).astype(np.float32)
-        is_legal[int(entry)] = True
         maturity[int(entry)] = end
     return dates, out, maturity
 
 
 def main() -> None:
-    df = base._download_history("SMH")
+    df = download_ticker_daily(TICKER, period=DATA_PERIOD)
+    audit = validate_daily_ohlcv(df, minimum_rows=1000)
     dates, daily, maturity = _daily_map(df)
 
-    # Match prior 3-fold chronology on the last 123 matured legal entries approximately.
     legal_idx = np.flatnonzero(maturity >= 0)
-    legal_idx = legal_idx[maturity[legal_idx] < len(df)]
-    # last 123 entries split 41/41/41 to align prior entry-distribution diagnostic
     legal_idx = legal_idx[-123:]
     folds = np.array_split(legal_idx, 3)
 
-    print(f"S1 DAILY_MAP DATA ticker=SMH rows={len(df)} legal_entries={len(legal_idx)} qgrid={len(GRID_Q)}")
+    print(f"S1 DAILY_MAP DATA ticker={TICKER} rows={audit.rows} legal_entries={len(legal_idx)} qgrid={len(GRID_Q)}")
     for fi, test_entries in enumerate(folds, start=1):
         start = int(test_entries[0]); end = int(test_entries[-1])
         print(f"S1 DAILY_MAP FOLD fold={fi} test_dates={dates[start]}..{dates[end]} n_test_entries={len(test_entries)}")
@@ -67,7 +66,6 @@ def main() -> None:
             matured_counts = []
             for t in test_entries:
                 a = max(0, int(t)-lb)
-                # only outcomes already matured strictly before decision date t
                 idx = np.arange(a, int(t))
                 usable = idx[(maturity[idx] >= 0) & (maturity[idx] < int(t))]
                 window = np.zeros((lb, daily.shape[1]), dtype=np.float32)
