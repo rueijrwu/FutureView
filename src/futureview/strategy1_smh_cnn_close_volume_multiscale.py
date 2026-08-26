@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import math
+import itertools
 
 import numpy as np
 import pandas as pd
@@ -9,14 +9,13 @@ from torch import nn
 
 from .data import download_ticker_daily, validate_daily_ohlcv
 from .strategy1_success_training import DATA_PERIOD, HORIZON, make_success_dataset
-from .strategy1_smh_ridge_lmu import _make_folds, _spearman, _bucket_metrics
+from .strategy1_smh_ridge_lmu import _make_folds
 
 TICKER = "SMH"
 LOOKBACK = 60
 SCALES = (5, 10, 20, 60)
-TOP_FRACTION = 0.20
 SEEDS = (20260823, 20260824, 20260825)
-EPOCHS = 80
+EPOCHS = 100
 LEARNING_RATE = 1e-3
 WEIGHT_DECAY = 1e-4
 
@@ -26,19 +25,19 @@ def make_close_volume_multiscale_features(df: pd.DataFrame) -> pd.DataFrame:
     close = out["close"].astype(float)
     volume = out["volume"].astype(float)
     for n in SCALES:
-        close_ma = close.rolling(n, min_periods=n).mean()
-        volume_ma = volume.rolling(n, min_periods=n).mean()
-        out[f"close_ma{n}_ratio"] = close / close_ma
-        out[f"volume_ma{n}_ratio"] = volume / volume_ma
+        close_sum = close.rolling(n, min_periods=n).sum()
+        volume_sum = volume.rolling(n, min_periods=n).sum()
+        out[f"close_sum{n}_ratio"] = close / close_sum
+        out[f"volume_sum{n}_ratio"] = volume / volume_sum
     cols = [
         "date",
-        *[f"close_ma{n}_ratio" for n in SCALES],
-        *[f"volume_ma{n}_ratio" for n in SCALES],
+        *[f"close_sum{n}_ratio" for n in SCALES],
+        *[f"volume_sum{n}_ratio" for n in SCALES],
     ]
     return out.loc[:, cols].replace([np.inf, -np.inf], np.nan)
 
 
-class ScalarTargetCNN(nn.Module):
+class PreferenceCNN(nn.Module):
     def __init__(self, in_channels: int) -> None:
         super().__init__()
         self.branches = nn.ModuleList([
@@ -57,33 +56,49 @@ class ScalarTargetCNN(nn.Module):
         return self.head(self.fusion(z)).squeeze(1)
 
 
-def _fit_cnn(x_train: torch.Tensor, y_train: np.ndarray, x_test: torch.Tensor, seed: int) -> np.ndarray:
+def _make_preference_pairs(C: np.ndarray, Q: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    better: list[int] = []
+    worse: list[int] = []
+    for i, j in itertools.combinations(range(len(C)), 2):
+        if C[i] > C[j] and Q[i] < Q[j]:
+            better.append(i)
+            worse.append(j)
+        elif C[j] > C[i] and Q[j] < Q[i]:
+            better.append(j)
+            worse.append(i)
+    return np.asarray(better, dtype=int), np.asarray(worse, dtype=int)
+
+
+def _fit_ranker(x_train: torch.Tensor, C_train: np.ndarray, Q_train: np.ndarray, seed: int) -> PreferenceCNN:
     torch.manual_seed(seed)
     np.random.seed(seed)
-    y_train = np.asarray(y_train, dtype=float)
-    y_mean = float(np.mean(y_train))
-    y_std = float(np.std(y_train))
-    if y_std < 1e-8:
-        y_std = 1.0
-    target = torch.from_numpy(((y_train - y_mean) / y_std).astype(np.float32))
-    model = ScalarTargetCNN(x_train.shape[1]).cpu()
+    better, worse = _make_preference_pairs(C_train, Q_train)
+    if len(better) == 0:
+        raise RuntimeError("no Pareto-dominant preference pairs in training fold")
+
+    model = PreferenceCNN(x_train.shape[1]).cpu()
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    loss_fn = nn.HuberLoss(delta=1.0)
+    loss_fn = nn.Softplus()
+
+    xb = x_train[better]
+    xw = x_train[worse]
     model.train()
     for _ in range(EPOCHS):
         optimizer.zero_grad(set_to_none=True)
-        pred = model(x_train)
-        loss = loss_fn(pred, target)
+        sb = model(xb)
+        sw = model(xw)
+        loss = loss_fn(-(sb - sw)).mean()
         loss.backward()
         optimizer.step()
-    model.eval()
-    with torch.no_grad():
-        z = model(x_test).cpu().numpy().astype(float)
-    return y_mean + y_std * z
+    return model
 
 
-def _fmt(value: float) -> str:
-    return "nan" if not np.isfinite(value) else f"{value:.6f}"
+def _pair_accuracy(scores: np.ndarray, C: np.ndarray, Q: np.ndarray) -> tuple[int, int, float]:
+    better, worse = _make_preference_pairs(C, Q)
+    if len(better) == 0:
+        return 0, 0, float("nan")
+    correct = int(np.sum(scores[better] > scores[worse]))
+    return correct, len(better), correct / len(better)
 
 
 def main() -> None:
@@ -95,9 +110,9 @@ def main() -> None:
     feats = make_close_volume_multiscale_features(df).copy()
     feats["date"] = pd.to_datetime(feats["date"])
     feats = feats.set_index("date")
+    raw_dates = pd.to_datetime(df["date"]).reset_index(drop=True)
     event_dates = pd.to_datetime(np.asarray(ds.dates))
 
-    raw_dates = pd.to_datetime(df["date"]).reset_index(drop=True)
     live_end = raw_dates.iloc[-1]
     live_start = live_end - pd.DateOffset(months=3)
     holdout_positions = np.flatnonzero(raw_dates.to_numpy() >= np.datetime64(live_start))
@@ -105,7 +120,7 @@ def main() -> None:
     target_end = np.asarray(ds.raw_indices, dtype=int) + HORIZON - 1
     base_history_idx = np.flatnonzero(target_end < holdout_start)
 
-    channel_cols = [f"close_ma{n}_ratio" for n in SCALES] + [f"volume_ma{n}_ratio" for n in SCALES]
+    channel_cols = [f"close_sum{n}_ratio" for n in SCALES] + [f"volume_sum{n}_ratio" for n in SCALES]
     xs: list[np.ndarray] = []
     kept_ds_idx: list[int] = []
     for ds_idx in base_history_idx:
@@ -123,75 +138,84 @@ def main() -> None:
         kept_ds_idx.append(int(ds_idx))
 
     if not xs:
-        raise RuntimeError("no SMH history samples survived close-volume multiscale construction")
+        raise RuntimeError("no SMH history samples survived feature construction")
 
     kept = np.asarray(kept_ds_idx, dtype=int)
     x = torch.from_numpy(np.stack(xs))
     raw_indices = np.asarray(ds.raw_indices, dtype=int)[kept]
     dates = event_dates[kept]
-    targets = {
-        "L": np.asarray(ds.entry_lower, dtype=float)[kept],
-        "mu": np.asarray(ds.net_expected_return, dtype=float)[kept],
-        "U": np.asarray(ds.entry_upper, dtype=float)[kept],
-    }
+    L = np.asarray(ds.entry_lower, dtype=float)[kept]
+    mu = np.asarray(ds.net_expected_return, dtype=float)[kept]
+    U = np.asarray(ds.entry_upper, dtype=float)[kept]
+    C = U - L
+    Q = np.divide(U - mu, C, out=np.full_like(C, np.nan), where=np.abs(C) > 1e-12)
+    valid = np.isfinite(mu) & np.isfinite(C) & np.isfinite(Q) & (C > 1e-12)
+    x = x[valid]
+    raw_indices = raw_indices[valid]
+    dates = dates[valid]
+    mu = mu[valid]
+    C = C[valid]
+    Q = Q[valid]
+
     folds = _make_folds(raw_indices)
 
     print(
-        "S1 SMH_CVMS DATA "
+        "S1 SMH_CQ_RANK DATA "
         f"ticker={TICKER} period={DATA_PERIOD} rows={audit.rows} start={audit.start} end={audit.end} "
-        f"history_entries={len(kept)} folds={len(folds)} lookback={LOOKBACK} horizon={HORIZON} "
-        f"live_holdout_start={pd.Timestamp(live_start).date()} live_holdout_end={pd.Timestamp(live_end).date()} "
-        "history_rule=target_end_strictly_before_live_start"
+        f"history_entries={len(mu)} folds={len(folds)} lookback={LOOKBACK} horizon={HORIZON} "
+        f"live_holdout_start={pd.Timestamp(live_start).date()} live_holdout_end={pd.Timestamp(live_end).date()}"
     )
     print(
-        "S1 SMH_CVMS INPUT source=close,volume only scales=5,10,20,60 "
-        "channels=close/MA5,close/MA10,close/MA20,close/MA60,volume/MA5,volume/MA10,volume/MA20,volume/MA60 "
-        "sequence_length=60 no_open=true no_high=true no_low=true no_rsi=true no_macd=true no_atr=true"
+        "S1 SMH_CQ_RANK INPUT source=close,volume only scales=5,10,20,60 "
+        "normalization=current_value/rolling_sum_N channels=8 sequence_length=60 "
+        "no_open=true no_high=true no_low=true no_ma_feature=true no_return=true no_rsi=true no_macd=true no_atr=true"
     )
     print(
-        "S1 SMH_CVMS MODEL name=SCALAR_TARGET_CNN targets=L,mu,U independent_models=true "
-        f"epochs={EPOCHS} lr={LEARNING_RATE} weight_decay={WEIGHT_DECAY} seeds={','.join(map(str, SEEDS))} "
-        "target_standardization=train_only no_Q=true no_composite_score=true"
-    )
-    print(
-        "S1 SMH_CVMS EVAL chronological=true purge_raw_sessions=60 top_fraction=0.20 "
-        "metrics=spearman,realized_target_top20,bottom20,top_minus_bottom"
+        "S1 SMH_CQ_RANK TARGET stage1=mu_gate stage2=pairwise_preference "
+        "preference_rule=C_higher_and_Q_lower no_scalar_composite=true no_L_mu_U_regression=true"
     )
 
-    aggregate: dict[str, list[tuple[float, float, float, float]]] = {k: [] for k in targets}
+    fold_accs: list[float] = []
     for fold_id, (train, test) in enumerate(folds, start=1):
-        gap = int(raw_indices[test[0]] - raw_indices[train[-1]] - 1)
+        # Gate threshold is learned from training only: keep the upper half of training mu.
+        # This is intentionally simple for the first experiment and avoids peeking at test/holdout.
+        mu_gate = float(np.median(mu[train]))
+        train_gate = train[mu[train] >= mu_gate]
+        test_gate = test[mu[test] >= mu_gate]
         print(
-            f"S1 SMH_CVMS FOLD id={fold_id} n_train={len(train)} n_test={len(test)} "
-            f"train_first={pd.Timestamp(dates[train[0]]).date()} train_last={pd.Timestamp(dates[train[-1]]).date()} "
-            f"test_first={pd.Timestamp(dates[test[0]]).date()} test_last={pd.Timestamp(dates[test[-1]]).date()} raw_session_gap={gap}"
+            f"S1 SMH_CQ_RANK FOLD id={fold_id} n_train={len(train)} n_test={len(test)} "
+            f"mu_gate={mu_gate:.6f} n_train_gate={len(train_gate)} n_test_gate={len(test_gate)}"
         )
-        for name, y in targets.items():
-            seed_rows = []
-            for seed in SEEDS:
-                pred = _fit_cnn(x[train], y[train], x[test], seed)
-                rho = _spearman(y[test], pred)
-                top, bottom, spread = _bucket_metrics(y[test], pred)
-                seed_rows.append((rho, top, bottom, spread))
-                print(
-                    f"S1 SMH_CVMS FOLD_TARGET id={fold_id} target={name} seed={seed} "
-                    f"spearman={_fmt(rho)} realized_top20_mean={top:.6f} "
-                    f"realized_bottom20_mean={bottom:.6f} top_minus_bottom={spread:.6f}"
-                )
-            arr = np.asarray(seed_rows, dtype=float)
-            aggregate[name].append(tuple(np.nanmean(arr, axis=0)))
+        if len(train_gate) < 4 or len(test_gate) < 2:
+            print(f"S1 SMH_CQ_RANK FOLD_RESULT id={fold_id} skipped=true reason=insufficient_gated_samples")
+            continue
 
-    for name, rows in aggregate.items():
-        arr = np.asarray(rows, dtype=float)
+        seed_accs = []
+        for seed in SEEDS:
+            model = _fit_ranker(x[train_gate], C[train_gate], Q[train_gate], seed)
+            model.eval()
+            with torch.no_grad():
+                scores = model(x[test_gate]).cpu().numpy().astype(float)
+            correct, total, acc = _pair_accuracy(scores, C[test_gate], Q[test_gate])
+            seed_accs.append(acc)
+            print(
+                f"S1 SMH_CQ_RANK FOLD_RESULT id={fold_id} seed={seed} "
+                f"pairs={total} correct={correct} pair_accuracy={acc:.6f}"
+            )
+        valid_accs = [a for a in seed_accs if np.isfinite(a)]
+        if valid_accs:
+            fold_accs.append(float(np.mean(valid_accs)))
+
+    if fold_accs:
         print(
-            f"S1 SMH_CVMS SUMMARY target={name} folds={len(rows)} "
-            f"spearman_mean={_fmt(float(np.nanmean(arr[:,0])))} "
-            f"spearman_positive_folds={int(np.sum(arr[:,0] > 0.0))}/{len(rows)} "
-            f"realized_top20_mean={np.mean(arr[:,1]):.6f} realized_bottom20_mean={np.mean(arr[:,2]):.6f} "
-            f"top_minus_bottom_mean={np.mean(arr[:,3]):.6f} "
-            f"positive_separation_folds={int(np.sum(arr[:,3] > 0.0))}/{len(rows)}"
+            f"S1 SMH_CQ_RANK SUMMARY folds_scored={len(fold_accs)} "
+            f"pair_accuracy_mean={np.mean(fold_accs):.6f} "
+            f"pair_accuracy_median={np.median(fold_accs):.6f} "
+            f"better_than_random_folds={sum(a > 0.5 for a in fold_accs)}/{len(fold_accs)}"
         )
-    print("S1 SMH_CVMS COMPLETE")
+    else:
+        print("S1 SMH_CQ_RANK SUMMARY folds_scored=0")
+    print("S1 SMH_CQ_RANK COMPLETE")
 
 
 if __name__ == "__main__":
