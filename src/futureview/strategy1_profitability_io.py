@@ -19,8 +19,8 @@ DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "5y")
 REGIME_WINDOW = int(os.environ.get("FUTUREVIEW_REGIME_WINDOW", "60"))
 REGIME_STRIDE = int(os.environ.get("FUTUREVIEW_REGIME_STRIDE", "1"))
 OUTPUT = Path(os.environ.get("FUTUREVIEW_PROFITABILITY_IO_OUTPUT", "strategy1-profitability-io.npz"))
-META_OUTPUT = OUTPUT.with_suffix(".json")
 
+SCHEMA_VERSION = 1
 N_ADDON_CLASSES = 3
 N_EXIT_CLASSES = 2
 N_CATEGORIES = N_ADDON_CLASSES * N_EXIT_CLASSES
@@ -223,7 +223,7 @@ def save_profitability_io(io: ProfitabilityIO, output: Path, metadata: dict[str,
     metadata = dict(metadata)
     metadata.update(
         {
-            "schema_version": 1,
+            "schema_version": SCHEMA_VERSION,
             "sequence_shape": list(io.sequence.shape),
             "profit_shape": list(io.profit.shape),
             "mask_shape": list(io.mask.shape),
@@ -236,7 +236,9 @@ def save_profitability_io(io: ProfitabilityIO, output: Path, metadata: dict[str,
             "path_count_max": int(io.path_count.max()),
         }
     )
-    META_OUTPUT.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.with_suffix(".json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def main() -> None:
@@ -295,7 +297,9 @@ def main() -> None:
         "S1 PROFITABILITY_IO ANCHORS "
         f"U_lt_0={int(bad_anchor.sum())} L_gt_0={int(good_anchor.sum())} mixed={int(mixed.sum())}"
     )
-    print(f"S1 PROFITABILITY_IO OUTPUT npz={OUTPUT} metadata={META_OUTPUT}")
+    print(
+        f"S1 PROFITABILITY_IO OUTPUT npz={OUTPUT} metadata={OUTPUT.with_suffix('.json')}"
+    )
 
 
 if __name__ == "__main__":
