@@ -230,6 +230,74 @@ Tested CNN gates included absolute training-distribution P80, expanding causal r
 
 Planning/gate logic is currently downstream of the reduced L/μ/U research problem.
 
+### SMH daily Ridge L/μ/U audit — 2026-08-25
+
+Implementation:
+
+```text
+symbol = SMH
+frequency = daily
+input = existing causal 50-session x 5 feature tensor, flattened
+model = deterministic Ridge regression
+alpha = 10
+three separate targets = L, μ, U
+no Q target
+no composite score
+standardization = training-fold only
+history eligibility = complete 60-session label must end before 3-month live holdout
+validation = purged chronological folds
+purge = 60 raw sessions
+folds = 4
+fold test size = 30 entries
+```
+
+Evaluation is deliberately target-local. For each of `L`, `μ`, and `U`, the audit reports only:
+
+```text
+OOS Spearman(predicted target, realized target)
+realized target mean for predicted Top 20%
+realized target mean for predicted Bottom 20%
+Top20 - Bottom20 realized-target separation
+```
+
+Workflow:
+
+```text
+.github/workflows/strategy1-smh-ridge-lmu.yml
+```
+
+Module:
+
+```text
+python -m futureview.strategy1_smh_ridge_lmu
+```
+
+Run 1 (`32914790066`) completed successfully on commit `720fd7eb1fd3e85ae7a48718ead6d8f894f4b31c`.
+
+Observed four-fold summary:
+
+```text
+L:
+  mean Spearman = -0.164850
+  positive Spearman folds = 1/4
+  mean Top20 - Bottom20 = -0.016108
+  positive-separation folds = 1/4
+
+μ:
+  mean Spearman = -0.185762
+  positive Spearman folds = 1/4
+  mean Top20 - Bottom20 = -0.010018
+  positive-separation folds = 1/4
+
+U:
+  mean Spearman = -0.174416
+  positive Spearman folds = 0/4
+  mean Top20 - Bottom20 = -0.005436
+  positive-separation folds = 2/4
+```
+
+This implementation result means only that this first fixed Ridge configuration does not provide positive OOS ranking/separation evidence for the three targets. It must not be generalized into a claim that causal OHLCV contains no predictive information for L/μ/U.
+
 ## 10. Current implementation priorities
 
 The code should support the research sequence without prematurely adding planning complexity:
