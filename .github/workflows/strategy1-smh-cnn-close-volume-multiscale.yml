@@ -1,15 +1,16 @@
-name: Strategy 1 SMH CNN Close Volume Multiscale
+name: Strategy 1 SMH C/Q CNN Baseline
 
 on:
   push:
     branches: [cnn-trend-reset]
     paths:
       - 'src/futureview/strategy1_smh_cnn_close_volume_multiscale.py'
+      - 'src/futureview/strategy1_cq_data.py'
       - '.github/workflows/strategy1-smh-cnn-close-volume-multiscale.yml'
   workflow_dispatch:
 
 jobs:
-  smh-cnn-close-volume-multiscale:
+  smh-cq-cnn-baseline:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -22,26 +23,26 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "torch>=2.4" "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
           python -m pip install -e . --no-deps
-      - name: Run SMH close-volume multiscale CNN audit
+      - name: Run clean SMH C/Q CNN baseline
         env:
           CUDA_VISIBLE_DEVICES: ''
           FUTUREVIEW_WORKERS: '1'
         run: |
           set -o pipefail
-          python -m futureview.strategy1_smh_cnn_close_volume_multiscale 2>&1 | tee strategy1-smh-cnn-close-volume-multiscale.log
+          python -m futureview.strategy1_smh_cnn_close_volume_multiscale 2>&1 | tee strategy1-smh-cq-cnn-baseline.log
       - name: Summary
         if: always()
         run: |
           {
-            echo '## Strategy 1 — SMH Close/Volume Multiscale CNN'
+            echo '## Strategy 1 — SMH C/Q CNN Baseline'
             echo
             echo '```text'
-            grep -E '^S1 SMH_CVMS (DATA|INPUT|MODEL|EVAL|FOLD_TARGET|SUMMARY|COMPLETE)' strategy1-smh-cnn-close-volume-multiscale.log || true
+            grep -E '^S1 SMH_CQ_RANK (DATA|INPUT|LABELS|TARGET|SPLIT|FOLD|FOLD_RESULT|SUMMARY|COMPLETE)' strategy1-smh-cq-cnn-baseline.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: strategy1-smh-cnn-close-volume-multiscale-${{ github.run_number }}
-          path: strategy1-smh-cnn-close-volume-multiscale.log
+          name: strategy1-smh-cq-cnn-baseline-${{ github.run_number }}
+          path: strategy1-smh-cq-cnn-baseline.log
           retention-days: 30
