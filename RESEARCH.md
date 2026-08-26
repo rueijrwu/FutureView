@@ -1,39 +1,40 @@
 # FutureView — Research Definition, Evidence, and Current Direction
 
-Last consolidated: 2026-08-25
+Last consolidated: 2026-08-26
 
 This is the canonical research document for FutureView. It consolidates the conceptual framework, Strategy 1 definition, target definitions, historical evidence, and current research direction. Implementation details, commands, architecture, data-provider details, and CI mechanics belong in `IMPLEMENT.md`.
 
 ## 1. Current research question
 
-FutureView does not begin by inventing a universal trend score. The current question is deliberately smaller:
+FutureView is currently being simplified around two distinct learning problems rather than one monolithic model.
 
-> Given only causal price/volume information observable at a formal Strategy 1 Entry, can a model identify entries whose future legal Strategy 1 outcomes have higher profitability and better economic return?
+```text
+Stage / Model 1: strategy-state classification / gate
+Stage / Model 2: entry-quality ranking using C and Q
+```
+
+The two models answer different questions and should not be conflated.
+
+The first model asks whether the recent historical Strategy 1 outcome structure resembles a state in which the strategy should be allowed through the gate. The second model asks, conditional on considering an Entry, how favorable its opportunity/ranking characteristics are.
+
+A central methodological rule is that no new threshold, window, maturity rule, normalization, derived statistic, loss weighting, or other modeling assumption is to be introduced silently. Such choices must first be discussed and explicitly accepted. Descriptive statistics may be used to understand the data without becoming model inputs or trading rules.
+
+## 2. Strategy-relative research object
+
+FutureView does not begin by inventing a universal trend score. Strategy 1 defines the legal trading/campaign space; historical realized data then reveals the outcomes of those legal campaigns.
 
 The working decomposition is:
 
 ```text
 Symbol   -> shapes the realized opportunity distribution
-Strategy -> defines the legal trading/path space
-Model    -> estimates future properties of that legal-path distribution
-Planning -> later converts estimates into trade/no-trade/sizing decisions
+Strategy -> defines legal Entry/add-on/exit mechanics
+History  -> reveals realized campaign outcomes
+Model 1  -> classifies historical strategy state / gate
+Model 2  -> ranks current Entry quality using C and Q
+Planning -> later converts model outputs into trade/no-trade/sizing decisions
 ```
 
 These effects are not assumed to be perfectly separable.
-
-A central methodological rule is that model quality must not be confused with strategy headroom. Before asking whether a model can select good entries, we must ask whether the fixed strategy actually creates meaningful entry-to-entry outcome separation for that symbol.
-
-## 2. Why strategy-relative targets
-
-Earlier FutureView work investigated generic trend descriptors such as forward return, slope, R², directional persistence, efficiency ratio, curvature, MAE, MFE, Hurst exponent, and autocorrelation. These remain useful descriptive tools, but no arbitrary weighted combination is accepted as the primary target.
-
-The present approach instead uses quantities that are mechanically determined by:
-
-```text
-fixed strategy + realized future data
-```
-
-This avoids manufacturing a subjective score before we understand the economic object being predicted.
 
 ## 3. Frozen Strategy 1 research mechanics
 
@@ -51,312 +52,221 @@ MA10 > MA20
 
 All qualifying sessions are formal Entry candidates in the current entry-level research definition.
 
-Legal future paths may contain no add-on, one legal add-on reference, or two legal add-on references. The current formal add-on construction uses confirmed local maxima and requires legal spacing; the second add-on additionally requires approximately equal realized price spacing relative to the first leg. Execution priority remains full MA10 exit, then eligible MA5 half exit, then add-on. Three-session cooldown and horizon-end liquidation remain part of the strategy.
+The campaign begins with one one-third-capital Entry. Depending on the legal historical-reference/add-on configuration and subsequent realized prices, it may have zero, one, or two add-ons. Each add-on uses another one-third of initial capital. Execution priority remains full MA10 exit, then eligible MA5 half exit, then add-on. Three-session cooldown and horizon-end liquidation remain part of the current executable strategy.
 
-The exact executable semantics are documented in `IMPLEMENT.md`; this section defines the research object, not code structure.
+The exact executable semantics are documented in `IMPLEMENT.md`.
 
-## 4. Window-level Strategy bounds
+## 4. Campaign return: current definition
 
-For one realized future window `W`, let:
+For one legal realized campaign, initial capital is normalized to 1.0. Entry/add-on purchases convert the relevant one-third capital tranche into shares at the realized execution price. Partial/full exits convert shares back into cash.
 
-```text
-S(W) = all unique legal realized Strategy 1 paths available in W
-```
-
-Then:
+The realized campaign return is therefore:
 
 ```text
-LowerBound(W) = min(Return(p)) for p in S(W)
-UpperBound(W) = max(Return(p)) for p in S(W)
+CampaignReturn = final_cash - 1.0
 ```
 
-Preferred research names are Realized Strategy Lower Bound and Realized Strategy Upper Bound.
+This is a portfolio-level return on the initial normalized capital, not simply `(exit price - first entry price) / first entry price`.
 
-Interpretation:
+Consequently, two legal configurations beginning from the same formal Entry can have different realized returns because they can trigger different legal add-on behavior while following the same Strategy 1 execution rules.
+
+The historical set associated with one Entry should therefore be understood as the set of realized campaign returns generated by the legal add-on/reference configurations for that Entry, not as arbitrary alternative exit dates.
+
+## 5. Historical campaign-structure analysis — SMH
+
+A five-year descriptive scan of the current SMH Strategy 1 implementation produced:
 
 ```text
-L -> worst legal Strategy 1 outcome in the realized window
-U -> best legal Strategy 1 outcome in the realized window with hindsight
+347 formal legal Entries
+807 unique realized campaign paths/configurations
 ```
 
-`U` is a hindsight reference ceiling. It is not a live-achievable promise and the model is not expected to reproduce it.
+This analysis is descriptive only. The following statistics are not approved model inputs or thresholds.
 
-The realized path-selection spread is:
+### By realized add-on count
 
-```text
-StrategyOutcomeDispersion = U - L
-```
-
-A large `U-L` means legal path selection mattered substantially in that realized window. A small `U-L` means the strategy's legal paths produced similar outcomes. This is strategy-relative dispersion, not market volatility by definition.
-
-## 5. Entry-level future distribution: L, U, μ, Q
-
-For a formal Entry `e`, define:
-
-```text
-P(e,60) = all unique legal realized Strategy 1 paths beginning at e
-          over the 60-session future horizon
-```
-
-The four historical descriptors are:
-
-```text
-L(e)  = min(Return(path))
-U(e)  = max(Return(path))
-μ(e)  = mean(Return(path))
-Q(e)  = mean(Return(path) > 0)
-```
-
-Interpretation:
-
-```text
-L -> how bad was the worst legal execution from this Entry?
-U -> how large was the best legal opportunity from this Entry?
-μ -> what was the average legal-path return from this Entry?
-Q -> what fraction of legal paths from this Entry finished profitable?
-```
-
-All four are ex-post labels: historical future data is allowed to construct them during training/research, but live inference receives only causal past/current data.
-
-### Current priority
-
-The current discussion places `Q` aside temporarily. `Q` may later be useful as a robustness/sensitivity descriptor, especially when entry timing is allowed to shift by one or more sessions. For the present reduced problem, retain the full information but focus analysis on:
-
-```text
-L, μ, U
-```
-
-`μ` is the most natural central economic quantity because it is the mean realized return across all legal future executions from the Entry. `L` and `U` preserve downside and upside context.
-
-Do not compress `L, μ, U` into an arbitrary composite score yet. Any normalized position such as `(μ-L)/(U-L)` is derivable from the three raw quantities and can erase economically important absolute scale.
-
-## 6. Historical reference distributions must be symbol-specific
-
-A fixed absolute threshold is not assumed to mean the same thing across symbols. SPY, QQQ, and SMH have materially different payoff scales under Strategy 1.
-
-The current historical reference procedure therefore asks first:
-
-> For this symbol, where do the observed L, μ, and U values sit in that symbol's own historical distribution?
-
-Percentiles are descriptive references, not yet approved trading thresholds.
-
-### Holdout rule
-
-The most recent three months are treated as unknown OOS data. They cannot be used to define historical distributions or thresholds.
-
-Because each label requires a 60-session future path, an Entry belongs in the historical reference set only when its complete target horizon ends before the holdout begins:
-
-```text
-entry target end < holdout start
-```
-
-This creates a maturity gap between historical-reference samples and the live holdout and prevents future-label leakage.
-
-## 7. SPY / QQQ / SMH historical L, μ, U characteristics
-
-Using the same 60-session Strategy 1 entry-level definition and the same holdout isolation, the observed historical percentiles are:
-
-| Metric | SPY P50 | SPY P75 | SPY P90 | QQQ P50 | QQQ P75 | QQQ P90 | SMH P50 | SMH P75 | SMH P90 |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| L | -0.13% | +0.29% | +0.68% | -0.11% | +0.61% | +1.23% | -0.42% | +1.26% | +2.59% |
-| U | +0.10% | +0.73% | +1.49% | +0.17% | +1.19% | +2.52% | +0.10% | +2.17% | +4.54% |
-| μ | ~0.00% | +0.47% | +1.06% | ~0.00% | +0.86% | +1.90% | -0.20% | +1.67% | +3.39% |
-
-Historical mature Entry counts were approximately SPY 346, QQQ 316, and SMH 295 under this reference construction.
-
-Neutral interpretation:
-
-```text
-SPY -> narrower Strategy 1 payoff scale
-QQQ -> wider positive/negative separation
-SMH -> widest observed opportunity and downside scale
-```
-
-This is an empirical property of the current `symbol + Strategy 1 + sample` combination. It must not be generalized as a universal volatility law.
-
-### SPY
-
-The median `μ` is essentially zero and the upper percentiles rise relatively gradually. Good Strategy 1 entries therefore have smaller absolute separation than in QQQ/SMH.
-
-### QQQ
-
-Median `μ` is also near zero, but favorable entries have materially larger `μ` and `U`. Strategy 1 creates more economic separation between ordinary and strong entries than observed for SPY.
-
-### SMH
-
-Median `μ` is slightly negative while P75/P90 outcomes are much larger. Bad outcomes can also be substantially worse. This creates a broad strategy-relative opportunity space in which correct entry selection could have high economic value.
-
-## 8. Important discovery: strategy headroom vs model skill
-
-This is a central current finding.
-
-Earlier baseline comparisons showed that on SPY, a simple fixed periodic/DCA-style comparator can perform close to, and in some summaries exceed, Strategy 1's hindsight best-path return. This means SPY's narrow Strategy 1 opportunity range cannot automatically be interpreted as a model limitation.
-
-The correct decomposition is:
-
-```text
-Question A — Strategy headroom
-Does this symbol + fixed strategy create meaningful timing/entry-selection value
-relative to a simple non-predictive baseline?
-
-Question B — Model skill
-Given that headroom exists, can causal OHLCV identify the entries that realize
-better L, μ, U outcomes out of sample?
-```
-
-A model cannot manufacture separation that the strategy itself does not create.
-
-Therefore:
-
-```text
-small model separation on SPY
-!= automatically model failure
-```
-
-if Strategy 1 itself has little incremental timing value over a simple baseline.
-
-Conversely, wider L/μ/U distributions in QQQ or SMH are not proof of model skill. They only indicate that more outcome separation exists for a model to potentially learn.
-
-### Consequence for evaluation
-
-Before judging a model on a symbol, estimate the strategy's available optimization headroom against simple baselines. Useful reference comparisons include fixed periodic entry / DCA and always-on Strategy 1. This benchmark is not a model score; it tells us whether the learning problem has meaningful economic room.
-
-## 9. DCA/reference baseline
-
-The current fixed DCA comparator uses three equal entries at Day 0 / Day 20 / Day 40 and holds to Day 59.
-
-DCA is external to the formal Strategy 1 path set. Therefore it is not mathematically required to lie between Strategy 1 `L` and `U`, and it must never be used to define either bound.
-
-Five-year reference summaries previously observed:
-
-| Symbol | Profitable-opportunity rate | Mean U | Fixed DCA success rate | Fixed DCA mean return | Mean L |
+| Add-ons | Paths | Distinct Entries | Mean return | Median return | Fraction positive |
 |---|---:|---:|---:|---:|---:|
-| SPY | 92.1% | +1.34% | 72.2% | +1.86% | -1.95% |
-| QQQ | 89.8% | +2.09% | 67.4% | +2.43% | -2.30% |
-| SMH | 81.7% | +3.72% | 67.5% | +5.73% | -3.89% |
+| 0 | 347 | 347 | +0.423% | +0.056% | 51.9% |
+| 1 | 446 | 223 | +0.606% | -0.140% | 47.1% |
+| 2 | 14 | 13 | +1.586% | -0.951% | 42.9% |
 
-These numbers reinforce the need to separate opportunity frequency, absolute return magnitude, downside, and strategy-specific timing headroom.
+The two-add-on group is rare, but its observed payoff range is very wide (approximately -8.67% to +10.86%). Its positive mean together with negative median shows that a few very large outcomes matter strongly.
 
-## 10. What constitutes a good entry is not yet fixed
+This rarity is not automatically a reason to discard the group. A rare but economically large outcome may itself be a useful classification target if a model can distinguish the conditions under which it occurs. For the immediate simplified experiment, however, no special rare-event architecture is introduced yet.
 
-We have not approved rules such as:
+### By partial-exit occurrence
 
-```text
-μ > P75
-L > P50
-U > P75
-```
+| Partial exit occurred | Paths | Distinct Entries | Mean return | Median return | Fraction positive |
+|---|---:|---:|---:|---:|---:|
+| No | 253 | 146 | -1.377% | -1.031% | 11.9% |
+| Yes | 554 | 264 | +1.421% | +1.239% | 66.1% |
 
-Percentiles are currently used to understand each symbol's historical scale only. Thresholds/filters must be discussed and justified one metric at a time before they are admitted into evaluation or planning.
+This is a strong descriptive association, not a causal claim that partial exit creates profit. The same future price path that determines profit also determines whether the partial-exit condition is reached.
 
-The present order is:
+### Terminal exit
 
-```text
-1. understand μ
-2. understand L
-3. understand U
-4. only then consider a multidimensional rule or score if necessary
-```
+806 of 807 realized paths ended through the normal full-exit mechanism; only one ended at the horizon. Terminal-exit type therefore does not currently justify a separate detailed classification.
 
-A single scalar may never be necessary. A good entry may remain a multidimensional object.
+## 6. Important interpretation of sparse groups
 
-## 11. Model objective
+Data sparsity should not automatically be treated as evidence that a state is unimportant.
 
-At live inference time, the model does not know future `L`, `μ`, or `U`. It sees only causal information available at the Entry.
-
-The supervised-learning problem is therefore:
+The two-add-on group illustrates the issue:
 
 ```text
-past/current causal OHLCV structure
-        -> estimate/rank future entry-level L, μ, U characteristics
+few observations
++ very wide payoff range
++ occasional very large profits
 ```
 
-The model does not need to predict exact decimal values to be useful. A credible first capability may be stable OOS ranking: entries scored more favorably should subsequently exhibit better realized economic outcomes.
+One possible purpose of a classifier is precisely to learn whether causal structure distinguishes such uncommon but economically important states. Therefore the research should preserve rare outcomes rather than erase them merely to balance classes.
 
-Point-error metrics alone are insufficient for this purpose. Earlier experiments showed that lower MAE can coexist with worse ranking. MAE remains diagnostic rather than an automatically accepted primary score.
+At the same time, the present phase is intentionally simplified. We will first establish whether a coarse independent classifier has learnable OOS signal before introducing special treatment for rare classes, weighting, resampling, or additional class subdivisions.
 
-No model metric is accepted merely because it is conventional. Every evaluation metric must be justified against the actual research question.
+## 7. Model 1 — independent strategy-state classifier / gate
 
-## 12. Historical model evidence
+The first model is conceptually independent from the later C/Q ranking model.
 
-Earlier Strategy 1 work used raw Oracle Value/Q-oriented targets before the current reduction to L/μ/U. These experiments remain useful evidence about architecture and validation behavior, but they do not define the current target.
-
-### Daily CNN ranking
-
-For the earlier 30D raw Oracle Value problem, Daily CNN A with Sliding-260 history showed reproducible ranking evidence across five seeds:
+Its intended form is:
 
 ```text
-mean Spearman ≈ +0.234
-positive mean-Spearman seeds = 5/5
-mean top-20% Oracle lift ≈ +0.00419
-positive top-20% lift seeds = 5/5
+historical Strategy 1 realized-outcome representation
+        -> CNN classifier
+        -> strategy-state / gate probabilities
 ```
 
-The CNN ranked better than a fixed low-dimensional Summary Ridge on Spearman, but did not establish superior realized portfolio economics.
+The purpose is classification, not return regression and not direct C/Q prediction.
 
-### MAE lesson
+The historical representation should preserve the realized Strategy 1 outcome structure as directly as practical. Descriptive quantities such as mean, standard deviation, IQR, win rate, L, or U may be calculated to inspect and understand the dataset, but they should not automatically be duplicated as classifier inputs when the underlying outcome representation already contains that information.
 
-Earlier results included cases where models with better MAE had worse ranking. Therefore MAE is not treated as a sufficient definition of model quality for the present entry-selection problem.
+Non-legal Entry days may eventually be represented as zero in a daily representation, but the exact time window, outcome encoding, availability timing, binning/quantization, and normalization are not yet frozen. These are modeling assumptions and must be discussed before implementation.
 
-### Higher-frequency inputs
+### Current simplification
 
-A matched-feed multi-fold comparison did not establish a reproducible advantage from doubling observations from daily 50 bars to 100 intraday RTH observations. Daily input remains the primary validated baseline; higher-frequency input is on hold.
+Do not initially create a large Cartesian product of add-on count × partial exit × terminal exit × other events. The descriptive analysis shows that this would create unnecessarily sparse cells.
 
-### CNN + Summary20 fusion
+The first classifier experiment should use a small, interpretable class structure. The exact class labels remain to be explicitly agreed before training. Rare high-payoff cases, especially two-add-on campaigns, should be retained in the dataset even if initially absorbed into a coarser class.
 
-Directly concatenating the fixed Summary20 features into the CNN degraded OOS ranking despite improving MAE. This experiment failed its predeclared ranking gate. Summary Ridge remains useful as an independent baseline, not as a proven beneficial CNN fusion input.
+## 8. Model 2 — C/Q entry-quality model
 
-### Portfolio gate experiments
+The second model remains a different problem. It receives the causal normalized price/volume representation and learns entry quality in terms of C and Q.
 
-Earlier P80 gate experiments showed that restoring signal frequency through recent-OOS rank normalization did not improve economic selection; added campaigns were losing. This is a warning against post-hoc threshold engineering. Gate/portfolio optimization is downstream and should not drive the present definition work.
+Current terminology:
 
-## 13. Validation principles
+```text
+C = U - L
+Q = (U - μ) / (U - L)
+```
+
+Interpretation:
+
+```text
+C -> opportunity/capacity range; larger is better when usable
+Q -> quality-gap ratio; lower is better / more efficient
+```
+
+The intended second-stage objective is therefore to identify Entries with larger C and smaller Q, rather than asking Model 1 to solve this ranking problem.
+
+Price and volume inputs are normalized/dimensionless representations using the previously discussed multiple horizons (5, 10, 20, and 60 sessions). This input representation is separate from the historical strategy-outcome representation used by Model 1.
+
+## 9. Why Model 1 and Model 2 are separated
+
+The separation is deliberate:
+
+```text
+Model 1 asks:
+What strategy state are we in / should the gate allow this environment?
+
+Model 2 asks:
+Among candidate Entries, which ones have favorable C/Q structure?
+```
+
+A classifier can learn qualitatively different historical campaign states, including uncommon states with unusually large economic outcomes. A C/Q ranker instead learns relative Entry quality. Combining these objectives prematurely risks forcing one model to solve two different problems.
+
+The eventual planning layer may combine the outputs, but the models should first be validated independently.
+
+## 10. Historical outcome distributions are for understanding before modeling
+
+Before fixing the classifier representation, the full realized campaign-return sets should be inspected directly.
+
+For each formal historical Entry `e`, retain the realized return set:
+
+```text
+D(e) = {campaign return from each legal add-on/reference configuration}
+```
+
+Summary statistics such as min, max, mean, median, standard deviation, IQR, quantiles, and fraction positive are permitted as descriptive diagnostics only. They are not automatically features, labels, filters, or thresholds.
+
+A key representation problem is that an Entry with only one legal realized configuration should not be mistaken for a genuinely narrow, well-supported distribution. A future representation should preserve both outcome location/shape and the amount of support/configuration multiplicity without manually replacing the underlying data with summary statistics.
+
+Histogram/density-style or other direct empirical representations are candidates, but no bin count, range, normalization, or lookback window has yet been approved.
+
+## 11. Historical reference bounds and terminology
+
+For one Entry's legal realized campaign-return set, define:
+
+```text
+L = minimum realized campaign return
+U = maximum realized campaign return
+μ = mean realized campaign return
+```
+
+These remain useful descriptors of the realized set.
+
+For the current C/Q terminology:
+
+```text
+C = U - L
+Q = (U - μ) / (U - L)
+```
+
+when the denominator is well-defined.
+
+L, U, μ and other statistics remain valuable for analysis, but the present first-stage classifier direction intentionally avoids assuming that any one manually selected statistic is the correct gate.
+
+## 12. Validation principles
 
 Formal evaluation must be chronological and causal:
 
 ```text
 past -> train
-purge future-label overlap
+purge future-label overlap where required by the defined target
 later data -> validation/test
 ```
 
 No random train/test split.
 
-The newest three-month block is reserved as unknown OOS data for the current historical-reference work. Historical thresholds, normalization references, or model choices must not use it.
+However, the exact rule governing when a historical campaign outcome becomes available to a live Model-1 input has not yet been frozen. A previous diagnostic introduced a `maturity` condition without prior discussion; conclusions depending on that unapproved condition are withdrawn. The availability rule must be explicitly defined before Model-1 training.
 
 Repeated tuning on the same OOS period converts that period into development data and must not be presented as fresh validation.
 
-## 14. Current research sequence
+## 13. Prior model evidence retained as background
 
-The immediate sequence is intentionally narrow:
+Earlier Daily CNN experiments established that causal price/volume CNNs can show reproducible OOS ranking signal in some earlier target formulations. Earlier MAE-vs-ranking results also showed that lower prediction error can coexist with worse ranking, so point error alone is not accepted as a sufficient model-quality definition.
+
+Earlier fixed-summary fusion and post-hoc gate experiments are retained as warnings against unnecessary hand-engineered features and threshold engineering. They do not define the new Model-1 classifier.
+
+## 14. Immediate research sequence
+
+The current sequence is deliberately simplified:
 
 ```text
-Stage 0 — Strategy headroom
-For each symbol, quantify whether Strategy 1 creates meaningful entry-selection
-value relative to simple baselines.
-
-Stage 1 — Historical L/μ/U structure
-Understand symbol-specific distributions without inventing a score.
-
-Stage 2 — Predictability
-Test whether causal OHLCV can rank or estimate future μ, L, U OOS.
-
-Stage 3 — Entry-quality definition
-Only after predictability is understood, discuss justified thresholds/filters.
-
-Stage 4 — Planning
-Only then consider trade/no-trade, delayed entry, position sizing, portfolio overlap,
-frequency, capital efficiency, and symbol allocation.
+1. Freeze/document the Strategy 1 campaign-return semantics.
+2. Preserve and inspect historical realized campaign outcomes.
+3. Define a small, explicit Model-1 classification target.
+4. Define the direct historical-outcome representation for Model 1.
+5. Train/evaluate Model 1 independently with chronological OOS validation.
+6. Separately return to Model 2: normalized price/volume -> C/Q ranking.
+7. Only after both models are independently understood, discuss how planning combines them.
 ```
 
-`Q` remains available for later robustness/sensitivity research, especially if entry timing becomes flexible.
+Do not introduce additional filters, statistical features, thresholds, bootstrap/resampling, rare-class weighting, or representation hyperparameters without explicit discussion.
 
 ## 15. Current concise conclusion
 
-FutureView is presently testing a strategy-relative learning hypothesis, not a universal trend classifier.
+FutureView is moving toward a two-model decomposition.
 
-The strongest current conceptual statement is:
+> Model 1 is an independent CNN classifier intended to learn strategy-state/gate information from historical realized Strategy 1 outcomes. Model 2 is a separate normalized price/volume model intended to rank current Entries using larger C and smaller Q. Historical campaign analysis shows that zero- and one-add-on outcomes are common, while two-add-on outcomes are rare but can be economically extreme. Rare outcomes should therefore be preserved as potentially learnable targets rather than automatically discarded, while the first experiment remains intentionally coarse and simple.
 
-> Historical future data can mechanically define each Strategy 1 Entry by its legal-path lower bound `L`, mean return `μ`, and upper bound `U`. These quantities have materially different distributions across SPY, QQQ, and SMH. Before judging model skill, we must first determine how much timing/entry-selection headroom Strategy 1 itself creates for each symbol relative to simple baselines. Only then can we fairly ask whether causal OHLCV identifies entries with better future `L`, `μ`, and `U`.
-
-This separation between **strategy opportunity** and **model skill** is now a core FutureView research principle.
+The next decision is not a new threshold. It is the explicit definition of the small set of classes for the first independent classifier.
