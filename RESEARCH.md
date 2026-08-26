@@ -6,59 +6,67 @@ This is the canonical research document for FutureView. It consolidates the conc
 
 ## 1. Current research question
 
-The current work is deliberately simplified. We are not adding another production model layer. We are revisiting the **pre-filter / gate** in the existing FutureView framework.
+The current work is deliberately simplified. We are not adding another production model layer. We are revisiting the **first layer / pre-filter / gate** in the existing FutureView framework.
 
 The clearest current definition is:
 
-> **Layer 1 measures how favorable the current regime is to Strategy 1 itself from the realized return distribution of all legal historical Strategy 1 paths. It describes the strategy's realized profitability environment, but does not attempt to explain which price/volume structure caused that environment. Layer 2 is most useful when Layer 1 is neutral/mixed: it uses causal price/volume information to distinguish Entries and seek outcomes closer to the best available legal outcomes.**
+> **Layer 1 measures how favorable a fixed historical regime is to Strategy 1 from the realized outcomes of all legal Strategy 1 paths in that calendar interval. It describes the strategy's realized profitability environment but does not attempt to explain which price/volume structure caused that environment. Layer 2 is most useful when Layer 1 is neutral/mixed: it uses causal price/volume information to distinguish Entries and seek outcomes closer to the best available legal outcomes.**
 
-This distinction is fundamental. The first layer asks whether Strategy 1 has an attractive opportunity environment. The second asks which Entry is preferable inside that environment.
+The immediate Layer-1 research problem is now narrower:
 
-A central methodological rule remains: no new threshold, window, maturity rule, normalization, derived statistic, class weighting, resampling rule, or other modeling assumption is introduced silently. Descriptive statistics may be used to understand the data, but are not automatically model inputs, labels, or trading rules.
+> **Given a fixed-calendar window containing the legal Strategy 1 execution paths and their realized profits, what training target/objective should a CNN/autoencoder use so that the learned representation captures the economically meaningful profitability structure of the regime without manually imposing a conventional statistic as the answer?**
 
-## 2. Existing model framework
+The input representation is now substantially defined. The **target/objective is intentionally not yet frozen**.
 
-The intended overall framework remains conceptually simple:
+A central methodological rule remains: no new threshold, window length, maturity rule, normalization, derived statistic, class weighting, resampling rule, or target definition is introduced silently.
+
+## 2. Two-layer conceptual framework
 
 ```text
-Strategy-1-specific regime suitability / pre-filter
-        -> causal price/volume Entry selection
+Layer 1: Strategy-1-specific regime suitability / pre-filter
+        -> Layer 2: causal price/volume Entry selection
         -> C/Q entry-quality objective
 ```
 
-This is not a proposal to add a separate historical-analysis CNN followed by another production CNN. The historical path analysis defines and evaluates the target of the **existing pre-filter**.
-
-The two conceptual questions are:
+Layer 1 asks:
 
 ```text
-Layer 1 / pre-filter:
 How favorable is this regime to Strategy 1 itself?
-
-Layer 2 / Entry model:
-Given that opportunity environment, which legal Entry is most likely to approach the better available outcomes?
 ```
 
-The downstream Entry model remains based on C/Q and causal normalized price/volume. The present research concerns the first question.
-
-## 3. Strategy-relative regime
-
-The regime in this research is **strategy-specific**. It is not intended to be a generic bull/bear market label.
-
-Strategy 1 defines the legal trading/campaign space. Historical realized data provides the observed outcomes of those legal campaigns. Therefore the preference of a regime is defined relative to Strategy 1's actual legal opportunity set.
-
-For a historical interval `W`:
+Layer 2 asks:
 
 ```text
-P(W) = {(path_i, R_i)}
+Given that opportunity environment,
+which legal Entry is most likely to approach the better available outcomes?
 ```
 
-where `path_i` is one unique legal realized Strategy 1 execution path and `R_i` is its realized campaign return.
+The first layer does not explain the price/volume cause of a regime. The second layer is where causal normalized price/volume information is used.
 
-The return distribution of `P(W)` describes how Strategy 1 performed in that interval. Layer 1 does not need to know why that distribution occurred. The causal price/volume structure associated with the outcomes belongs to the later Entry-selection problem.
+The historical Layer-1 analysis is not an additional production layer. It defines the target/meaning of the existing pre-filter.
+
+## 3. Strategy-relative regime and fixed calendar window
+
+The regime is **strategy-specific**, not a generic bull/bear label.
+
+Strategy 1 defines the legal execution space. Historical realized data provides the observed outcomes of those legal executions. The preference of a regime is therefore defined relative to Strategy 1's actual opportunity set.
+
+The regime interval `W` must be a **fixed calendar/trading-session window**. It must not be defined as the most recent fixed number of legal paths.
+
+This distinction is important because Strategy 1 itself has regime preference. If a fixed number of recent paths were used, a regime with few legal opportunities would automatically reach farther backward in time and could mix information from a different regime. A fixed calendar window preserves the actual opportunity density of the strategy in that period.
+
+The exact length of `W` is not yet frozen. Existing implementation lengths have different meanings and must not be confused with `W`:
+
+```text
+60 sessions  -> current per-Entry future campaign/label horizon
+50 sessions  -> historical causal price/volume input context
+260 sessions -> historical sliding training policy
+W             -> Layer-1 fixed-calendar regime window; still to be selected
+```
 
 ## 4. Frozen Strategy 1 research mechanics
 
-Strategy 1 is long-only and uses daily close information. The current formal research version uses three equal capital tranches and one campaign per evaluation window.
+Strategy 1 is long-only and uses daily close information. The current formal research version uses three equal capital tranches.
 
 A formal Entry candidate satisfies:
 
@@ -70,47 +78,140 @@ MA5 > MA10
 MA10 > MA20
 ```
 
-All qualifying sessions are formal Entry candidates in the current entry-level research definition.
-
 The campaign begins with one one-third-capital Entry. Depending on the legal historical-reference/add-on configuration and subsequent realized prices, it may have zero, one, or two add-ons. Each add-on uses another one-third of initial capital. Execution priority remains full MA10 exit, then eligible MA5 half exit, then add-on. Three-session cooldown and horizon-end liquidation remain part of the current executable strategy.
 
 The exact executable semantics are documented in `IMPLEMENT.md`.
 
-## 5. Campaign return and path-level data unit
+## 5. Campaign return and unique path
 
 For one legal realized campaign, initial capital is normalized to 1.0. Entry/add-on purchases convert the relevant one-third capital tranche into shares at the realized execution price. Partial/full exits convert shares back into cash.
-
-The realized campaign return is:
 
 ```text
 CampaignReturn = final_cash - 1.0
 ```
 
-This is a portfolio-level return on initial normalized capital, not simply `(exit price - first entry price) / first entry price`.
-
-The fundamental historical data unit is:
+The fundamental historical observation remains:
 
 ```text
 one unique realized legal path = one independent historical observation
 ```
 
-The same formal Entry may appear in multiple path observations when different legal reference/add-on configurations produce different realized execution paths. This is intentional and is not treated as a duplicate-data error.
+The same formal Entry may have multiple independent realized paths when different legal reference/add-on configurations produce different execution sequences. This is intentional and is not a duplicate-data error.
 
-Each path retains factual labels/metadata such as:
+## 6. Path representation: execution sequence
+
+For Layer 1, a path is represented directly by its **execution/capital-exposure sequence**, rather than by separately feeding hand-described timing variables such as add-on count, exit count, or event-day vector.
+
+For the current 60-session campaign horizon, define for path `p`:
 
 ```text
-Entry
-reference/add-on configuration
-executed add-on count
-partial-exit occurrence
-terminal exit
-campaign return
-execution sequence / event locations
+S_p(t) = capital exposure / invested fraction at campaign session t
 ```
 
-These labels are for statistical interpretation and explanation. They do not define regime quality and are not automatically input features. For example, after a favorable profitability state is identified, we may inspect whether its paths disproportionately contain partial exits or particular add-on behavior. That is explanation after the fact, not the definition of the state.
+so:
 
-## 6. Historical campaign-structure analysis — SMH
+```text
+S_p in R^60
+```
+
+A schematic example is:
+
+```text
+[1/3, 1/3, 1/3, 2/3, 2/3, ..., 1/3, ..., 0, 0]
+```
+
+The sequence itself contains the execution-time structure:
+
+```text
+initial Entry
+add-on timing
+partial-exit timing
+full-exit timing
+holding duration
+capital exposure through time
+```
+
+Therefore add-on count, exit count, and explicit timing vector `D` should **not be redundantly added as Layer-1 model inputs** when the sequence already encodes them.
+
+Each legal path is paired with its realized campaign return:
+
+```text
+(S_p, R_p)
+```
+
+Path labels such as executed add-on count, partial-exit occurrence, terminal exit, and reference configuration are retained as metadata for later statistical interpretation of learned states. They do not define regime quality and are not automatically model inputs.
+
+## 7. Fixed input slots and legality mask
+
+A Layer-1 sample must have a fixed input shape even though the number of legal Strategy 1 paths varies by regime.
+
+The current structural proposal retains fixed calendar positions and path categories rather than selecting a fixed number of recent legal paths.
+
+The coarse execution categories remain:
+
+```text
+Add-on count: 0 / 1 / 2
+Exit count:   1 / 2
+```
+
+which gives six organizational path sets:
+
+```text
+(A0,E1) (A0,E2)
+(A1,E1) (A1,E2)
+(A2,E1) (A2,E2)
+```
+
+These categories primarily provide fixed organizational slots. The actual path representation is still the execution sequence.
+
+For every calendar position and applicable path slot, retain a legality/existence mask:
+
+```text
+w = 1 -> legal realized path exists in this slot
+w = 0 -> no legal realized path exists in this slot
+```
+
+This distinction is essential:
+
+```text
+R = 0, w = 1 -> legal path with neutral realized profit
+w = 0        -> no legal path; not a zero-profit observation
+```
+
+If `W` contains `T` trading sessions and the six coarse path sets are sufficient to index the required observations, the conceptual sequence tensor is:
+
+```text
+6 x T x 60
+```
+
+with corresponding profit and mask information.
+
+The exact handling of multiple unique paths that share the same calendar day and coarse `(Add-on, Exit)` category remains an implementation detail that must preserve the independent paths rather than silently averaging them.
+
+## 8. Path count is information, not a nuisance
+
+The number of legal paths in a fixed calendar regime is itself meaningful Strategy-1 information.
+
+With the legality mask:
+
+```text
+N(W) = sum(w)
+```
+
+Therefore the model can in principle learn not only the realized payoff distribution but also the **opportunity density** of Strategy 1 in the regime.
+
+We should not normalize every regime to a fixed number of legal paths, because doing so would remove this information and can force sparse regimes to borrow paths from earlier, different regimes.
+
+Layer 1 therefore preserves jointly:
+
+```text
+path execution structure
+realized profit
+legal-path occurrence/density
+calendar-time organization
+```
+
+## 9. Historical campaign-structure evidence — SMH
 
 A five-year descriptive scan of the current SMH Strategy 1 implementation produced:
 
@@ -118,8 +219,6 @@ A five-year descriptive scan of the current SMH Strategy 1 implementation produc
 347 formal legal Entries
 807 unique realized campaign paths
 ```
-
-This analysis is descriptive only. The statistics below are not approved gate inputs or thresholds.
 
 ### By realized add-on count
 
@@ -129,9 +228,7 @@ This analysis is descriptive only. The statistics below are not approved gate in
 | 1 | 446 | 223 | +0.606% | -0.140% | 47.1% |
 | 2 | 14 | 13 | +1.586% | -0.951% | 42.9% |
 
-The two-add-on group is rare, but its observed payoff range is very wide, approximately -8.67% to +10.86%. Its positive mean together with negative median demonstrates why a single summary statistic can be misleading: a small number of economically large outcomes can coexist with a negative typical outcome.
-
-Rarity is therefore not automatically evidence that a state is unimportant. Rare but economically large paths are retained rather than discarded merely because their count is small.
+The two-add-on group is rare, but its observed payoff range is wide, approximately -8.67% to +10.86%. A small number of economically large outcomes can therefore coexist with a negative typical outcome. Rare paths must not be discarded merely because their count is small.
 
 ### By partial-exit occurrence
 
@@ -140,40 +237,42 @@ Rarity is therefore not automatically evidence that a state is unimportant. Rare
 | No | 253 | 146 | -1.377% | -1.031% | 11.9% |
 | Yes | 554 | 264 | +1.421% | +1.239% | 66.1% |
 
-This is a strong descriptive association, not a causal claim that partial exit creates profit. The same realized future price path affects both campaign return and whether a partial-exit event occurs.
+This is descriptive association, not a causal claim. Partial exit remains metadata for interpreting learned states rather than a definition of a favorable state.
 
-Partial exit is therefore retained as factual path metadata useful for interpreting profitability states, rather than being declared in advance to be a favorable class.
+806 of 807 realized paths ended through the normal full-exit mechanism; only one ended at the horizon.
 
-### Terminal exit
+## 10. What Layer 1 measures
 
-806 of 807 realized paths ended through the normal full-exit mechanism; only one ended at the horizon. Terminal-exit type therefore currently contains little independent variation.
-
-## 7. What Layer 1 measures
-
-Layer 1 evaluates the **comprehensive realized profitability distribution of Strategy 1's legal paths within a historical interval**.
-
-For interval `W`:
+For fixed calendar interval `W`, Layer 1 evaluates the comprehensive realized Strategy-1 opportunity structure:
 
 ```text
-D_W = {R_1, R_2, ..., R_n}
+P(W) = {(S_p, R_p, w_p)}
 ```
 
-The objective is not merely to calculate a conventional scalar summary such as mean return, standard deviation, median, or win rate. Those statistics can be inspected, but we do not assume beforehand that any one of them correctly measures strategy suitability.
+for the legal-path organization of that interval.
 
-Instead, the aim is to determine whether the complete return distribution contains a more appropriate statistical meaning for the pre-filter.
-
-Zero return provides a natural economic reference:
+The central economic quantity remains the realized profitability distribution:
 
 ```text
-R = 0  -> neutral outcome
+D_W = {R_p : w_p = 1}
 ```
 
-The realized bounds also provide immediately interpretable information:
+but the model is allowed to retain the associated path sequence and path density rather than reducing the regime to one hand-selected scalar statistic.
+
+Zero return is the natural economic reference:
+
+```text
+R = 0 -> neutral realized outcome
+```
+
+and:
 
 ```text
 L = min(D_W)
 U = max(D_W)
 ```
+
+provide clear realized profitability bounds.
 
 If:
 
@@ -181,7 +280,7 @@ If:
 U < 0
 ```
 
-then every observed legal Strategy 1 path in the interval lost money. This is an unambiguously unfavorable historical opportunity set.
+then every observed legal path lost money and the historical opportunity set is unambiguously unfavorable.
 
 If:
 
@@ -189,9 +288,9 @@ If:
 L > 0
 ```
 
-then every observed legal Strategy 1 path was profitable. This is an unambiguously favorable historical opportunity set.
+then every observed legal path was profitable and the historical opportunity set is unambiguously favorable.
 
-The difficult and most informative case is generally:
+The difficult and most informative case is:
 
 ```text
 L < 0 < U
@@ -199,87 +298,39 @@ L < 0 < U
 
 where profitable and unprofitable legal paths coexist.
 
-## 8. The central statistical problem: neutral/mixed profitability
+## 11. Central statistical problem: neutral/mixed profitability
 
-A central motivation for the pre-filter research is that:
+A key motivation is:
 
 ```text
-P(R > 0) ≈ 0.5
+P(R > 0) approximately 0.5
 ```
 
 does **not** necessarily imply that Strategy 1 has no useful opportunity in the interval.
 
-Two intervals can have similar win probabilities while having very different payoff structures. One may contain roughly symmetric small gains and losses. Another may contain many ordinary losses but a smaller set of very large profitable legal paths. Their conventional win rates may both appear neutral even though their economic opportunity structures are different.
+Two regimes can have similar win probabilities while having very different payoff distributions. One may contain roughly symmetric small gains and losses. Another may contain ordinary losses together with a smaller number of very large profitable legal paths.
 
-Therefore the research question is:
+The research question is therefore:
 
-> When the probability of a profitable legal path is approximately neutral, does the rest of the realized return distribution contain structure indicating that the interval is nevertheless favorable or unfavorable to Strategy 1?
+> When profitable-path probability is approximately neutral, does the remaining path-conditioned realized-profit structure contain statistical information showing that the regime is nevertheless favorable or unfavorable to Strategy 1?
 
-This is where a learned representation such as a CNN may be useful: not to invent the Strategy 1 outcomes, but to learn which aspects of the complete realized profitability distribution carry useful statistical meaning beyond a manually selected single summary statistic.
+We deliberately do not answer this in advance with mean return, standard deviation, win rate, a fixed percentile, or another manually selected composite statistic.
 
-The exact representation, class count, and boundaries remain open research questions and are not yet frozen.
+## 12. Strategy preference and value of Layer 2
 
-## 9. Strategy preference and the value of Layer 2
+Conceptually, Strategy-1 regimes range from unfavorable through neutral/mixed to highly favorable. These are conceptual anchors, not frozen threshold classes.
 
-Layer 1 defines a **Strategy-1-specific regime preference**. Conceptually, regimes can range continuously from unfavorable through neutral/mixed to highly favorable. These descriptions are conceptual anchors, not yet fixed threshold classes.
-
-### Unfavorable regime
-
-Strategy 1's legal opportunity set itself is poor. The extreme example is:
-
-```text
-U < 0
-```
-
-where even the best observed legal path loses money.
-
-In such a regime there is little useful positive opportunity for the downstream Entry model to learn or select. Training or optimizing Entry selection primarily on these regimes may therefore have limited economic meaning.
-
-### Neutral / mixed regime
-
-The strategy has no overwhelming unconditional advantage, but legal paths contain materially different outcomes:
-
-```text
-L < 0 < U
-```
-
-and the positive probability may be near neutral.
-
-This is expected to be the regime where the downstream Entry model has its greatest potential value. The task becomes:
-
-```text
-Given a mixed opportunity set,
-use causal price/volume information to identify Entries
-that are more likely to approach the better available legal outcomes.
-```
-
-This is the principal role of the C/Q model.
-
-### Highly favorable regime
-
-Strategy 1 already performs well across much of its legal opportunity set. The extreme example is:
-
-```text
-L > 0
-```
-
-where every observed legal path is profitable.
-
-The downstream Entry-selection model may still improve efficiency or outcome quality, but its marginal value is smaller because the strategy already has a strong unconditional historical advantage in that regime.
-
-Thus the expected value of Layer 2 is not constant across regimes. Conceptually:
-
-| Strategy-1 regime | Opportunity set | Expected marginal value of Entry selection |
+| Strategy-1 regime | Opportunity set | Expected marginal value of Layer 2 |
 |---|---|---|
 | Strongly unfavorable | Few/no attractive legal outcomes | Low |
 | Neutral / mixed | Good and bad legal outcomes coexist | Highest |
 | Strongly favorable | Most legal outcomes already attractive | Lower |
 
-This is a conceptual research hypothesis, not yet an empirically validated rule or a hard gate threshold.
+In an unfavorable regime, there may be little positive opportunity worth selecting. In a neutral/mixed regime, selecting the right Entry can matter greatly. In a highly favorable regime, Strategy 1 already performs well across much of the opportunity set, so Entry selection may add less marginal value.
 
-## 10. Role of price/volume information
+This is a research hypothesis, not yet a hard gate rule.
 
-The separation between Layer 1 and Layer 2 is intentional.
+## 13. Role of price/volume information
 
 Layer 1 asks:
 
@@ -287,7 +338,7 @@ Layer 1 asks:
 What profitability environment did Strategy 1 experience?
 ```
 
-It uses the realized legal path return distribution and does not need to explain the market mechanism that produced it.
+It does not need to explain the market mechanism that produced it.
 
 Layer 2 asks:
 
@@ -295,112 +346,104 @@ Layer 2 asks:
 What observable causal price/volume structure distinguishes the better legal opportunities inside that environment?
 ```
 
-This is where normalized price/volume information becomes central.
+Normalized causal price/volume therefore belongs to Layer 2. It is not required to define the historical realized profitability state in Layer 1.
 
-The benefit of this separation is that the Entry model is not asked to learn from regimes in which Strategy 1 has no meaningful positive opportunity, while its principal usefulness is concentrated on neutral/mixed regimes where selection can potentially move realized performance toward the better part of the available outcome range.
+## 14. CNN and autoencoder status
 
-## 11. Withdrawn exploratory formulation
+A CNN remains the preferred simple model family to investigate Layer 1 because the representation contains structured sequences and calendar organization.
 
-The exploratory baseline:
+An **autoencoder is retained as a candidate Layer-1 architecture**:
+
+```text
+Layer-1 input
+    -> CNN encoder
+    -> latent representation z_W
+    -> decoder / training objective
+```
+
+The motivation is to allow a learned representation without first imposing arbitrary good/bad class labels.
+
+However, an ordinary reconstruction autoencoder is **not yet accepted as the final objective**. Reconstruction alone may encourage the network to preserve execution patterns that are easy to reconstruct without necessarily learning the statistical meaning of profitability that Layer 1 is intended to measure.
+
+Therefore the architecture and the target are deliberately separated:
+
+```text
+Architecture candidate: CNN / autoencoder       -> retained
+Layer-1 input representation                    -> substantially defined
+Layer-1 training target / objective              -> NOT YET DEFINED
+```
+
+The next research question is specifically the target/objective. We must determine what the model should be optimized to learn so that `z_W` represents Strategy-1 profitability meaning rather than merely compressing path mechanics.
+
+No good/bad label, reconstruction loss, mean-profit target, win-rate target, `L/U` target, or composite score should be adopted as the answer until this question is explicitly evaluated.
+
+## 15. Withdrawn exploratory formulation
+
+The earlier exploratory baseline:
 
 ```text
 normalized price/volume -> add-on 0/1/2 classifier
 normalized price/volume -> partial-exit yes/no classifier
 ```
 
-is not the current pre-filter definition.
+is not the current Layer-1 definition. Add-on and partial-exit labels describe realized execution and remain useful for explanation, but they do not themselves define whether a regime is suitable for Strategy 1.
 
-That experiment collapsed to majority-class predictions and, more importantly, answered a different question. Add-on count and partial exit describe realized path execution; they do not by themselves define whether the historical regime was suitable for Strategy 1.
+## 16. Historical reference bounds and C/Q terminology
 
-The experiment is retained only as exploratory evidence and should not guide further class weighting, oversampling, or architecture tuning at this stage.
-
-## 12. Historical reference bounds and C/Q terminology
-
-For one Entry's legal realized campaign-return set, define:
+For one Entry's legal realized campaign-return set:
 
 ```text
 L = minimum realized campaign return
 U = maximum realized campaign return
-μ = mean realized campaign return
+mu = mean realized campaign return
 ```
 
-For the current entry-quality terminology:
+For downstream entry-quality terminology:
 
 ```text
 C = U - L
-Q = (U - μ) / (U - L)
+Q = (U - mu) / (U - L)
 ```
 
 when the denominator is well-defined.
-
-Interpretation:
 
 ```text
 C -> opportunity/capacity range; larger is better when usable
 Q -> quality-gap ratio; lower is better / more efficient
 ```
 
-For Layer 1, `L` and `U` have direct descriptive meaning as the observed realized profitability bounds. They do not by themselves solve the mixed-distribution problem. In particular, when `L < 0 < U`, the internal structure of the distribution remains important.
+For Layer 1, `L` and `U` are economically interpretable realized bounds, but they do not solve the internal mixed-distribution problem. The downstream C/Q problem is unchanged during the present Layer-1 research.
 
-The C/Q Entry-quality problem remains downstream and is not being redesigned in the present step.
-
-## 13. Representation remains an open question
-
-We have not yet frozen how the path-level return distribution within a historical interval should be represented computationally.
-
-Candidates may include direct empirical distributions, set-based representations, histogram/density representations, CNN-compatible representations, or other methods capable of retaining information that a single summary statistic discards.
-
-A CNN is a candidate for learning the statistical meaning of the distribution; it is not a justification for inventing arbitrary good/bad labels.
-
-The representation should preserve, as directly as practical:
-
-```text
-location of realized profits relative to zero
-lower and upper realized opportunity bounds
-shape/asymmetry of the outcome distribution
-amount of historical support
-rare but economically large outcomes
-path multiplicity
-```
-
-without requiring us to decide beforehand that mean, standard deviation, win rate, or another fixed statistic is the correct gate statistic.
-
-Path execution labels remain available afterward to explain the learned states statistically.
-
-## 14. Validation principles
+## 17. Validation principles
 
 Any eventual predictive evaluation must be chronological and causal:
 
 ```text
 past -> train
-purge future-label overlap where required by the defined target
+purge future-label overlap where required
 later data -> validation/test
 ```
 
-No random train/test split for the final predictive pre-filter/Entry model.
+No random train/test split is allowed for the final predictive pre-filter/Entry model.
 
-The immediate task, however, is still to understand the Strategy-1-specific profitability regime from realized historical paths. The exact interval length, learned representation, and profitability-state parameterization are not yet frozen and must be discussed before they become predictive-model assumptions.
+The immediate task is not yet live prediction. It is to define the historical Strategy-1-specific regime representation and its correct learning target.
 
-A previous diagnostic introduced a `maturity` condition without prior discussion; conclusions depending on that unapproved condition remain withdrawn.
-
-## 15. Immediate research sequence
-
-The current sequence is intentionally narrow:
+## 18. Immediate research sequence
 
 ```text
 1. Keep Strategy 1 mechanics and campaign-return semantics fixed.
-2. Keep one unique realized legal path as one historical observation.
-3. Preserve each path's factual execution labels and realized campaign return.
-4. For each historical interval, construct the complete Strategy 1 legal-path return distribution.
-5. Use zero, L, and U as economically interpretable references/bounds, not as an arbitrary composite score.
-6. Study whether the full distribution provides a useful Strategy-1-specific profitability state, especially when positive probability is near neutral.
-7. Use path labels only to statistically explain learned profitability states.
-8. After the regime definition is understood, evaluate the causal price/volume Entry model primarily where selection has economic meaning, especially neutral/mixed regimes.
-9. Keep the downstream C/Q objective unchanged while this first-layer question is resolved.
+2. Keep one unique realized legal path as one independent historical observation.
+3. Use a fixed calendar/trading-session regime window W; do not use a fixed recent-path count.
+4. Represent each path by its 60-session capital-exposure/execution sequence S_p.
+5. Pair each path with realized campaign profit R_p and legality/existence mask w.
+6. Preserve N(W) = sum(w) as genuine regime information.
+7. Retain add-on/exit/reference labels as interpretation metadata, not redundant sequence inputs.
+8. Retain CNN/autoencoder as the simple first Layer-1 architecture candidate.
+9. Do NOT yet freeze the autoencoder target/objective.
+10. Next determine what target/objective makes the learned representation express Strategy-1 profitability meaning, especially in neutral/mixed regimes.
+11. Only after Layer 1 is defined should causal price/volume prediction and downstream C/Q selection be revisited.
 ```
 
-Do not introduce additional production model layers, arbitrary composite profitability scores, bootstrap/resampling, rare-class weighting, or new representation hyperparameters without explicit discussion.
+## 19. Current concise definition
 
-## 16. Current concise definition
-
-> **Layer 1 evaluates the realized profitability distribution of all legal Strategy 1 paths in a historical interval and determines how favorable that regime is to Strategy 1, without attempting to explain the underlying price/volume cause. Zero return is the natural neutral reference and L/U describe the observed profitability range; the key unresolved problem is whether the rest of the distribution contains useful strategy edge when win probability is approximately neutral. Layer 2 then uses causal price/volume information to select among legal opportunities, with its greatest expected value in neutral/mixed regimes where good and bad outcomes coexist. In strongly unfavorable regimes there may be little useful opportunity to learn, while in strongly favorable regimes the strategy already performs well and Entry selection has smaller marginal effect.**
+> **Layer 1 uses a fixed calendar regime window and preserves every legal Strategy 1 opportunity through its execution/capital-exposure sequence, realized campaign profit, and legality mask. The number of legal paths is itself regime information and must not be normalized away by selecting a fixed path count. Add-on/exit labels remain metadata for interpretation because their timing information is already encoded by the execution sequence. A CNN/autoencoder is retained as the simplest learned Layer-1 representation, but its training target is deliberately unresolved: the next question is what objective will make the latent representation capture the economically meaningful Strategy-1 profitability structure—particularly when win probability is neutral—rather than merely reconstructing execution mechanics.**
