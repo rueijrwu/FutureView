@@ -1,0 +1,44 @@
+name: Strategy 1 Campaign Structure Analysis
+
+on:
+  push:
+    branches: [cnn-trend-reset]
+    paths:
+      - 'src/futureview/strategy1_campaign_structure_analysis.py'
+      - '.github/workflows/strategy1-campaign-structure-analysis.yml'
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
+          python -m pip install -e . --no-deps
+      - name: Analyze campaign structure
+        env:
+          FUTUREVIEW_WORKERS: '1'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_campaign_structure_analysis 2>&1 | tee strategy1-campaign-structure-analysis.log
+      - name: Summary
+        run: |
+          {
+            echo '## Strategy 1 — Campaign Structure Analysis'
+            echo
+            echo '```text'
+            grep -E '^S1 STRUCT' strategy1-campaign-structure-analysis.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-campaign-structure-analysis-${{ github.run_number }}
+          path: strategy1-campaign-structure-analysis.log
+          retention-days: 30
