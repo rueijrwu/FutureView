@@ -73,6 +73,69 @@ mean OracleRegret(h) - OracleRegret(30D)
 fraction of events where h has lower regret than 30D
 ```
 
+## Important finding — strategy headroom must be separated from model skill
+
+The current research now distinguishes two different questions:
+
+```text
+1. Strategy headroom:
+   Given this symbol and the frozen Strategy 1 legal mechanics,
+   how much economically meaningful outcome separation exists to exploit?
+
+2. Model skill:
+   Given only causal information available at Entry,
+   can the model identify Entries associated with better future L / mu / U outcomes?
+```
+
+These questions must not be merged.
+
+A model cannot create predictive separation that does not exist inside the strategy-defined outcome space. If Strategy 1 itself provides little incremental timing value for a symbol, weak model separation on that symbol is not automatically evidence that the model failed. Conversely, a large Strategy 1 L/U spread does not by itself prove that the model can predict which side of the spread will occur from causal data.
+
+### Why this matters for SPY / QQQ / SMH
+
+The 5-year 60D fixed-entry comparison ending 2026-08-25 shows that the external fixed three-entry baseline can be competitive with, and in mean return can exceed, the formal Strategy 1 Upper Bound because the fixed baseline is outside the Strategy 1 legal path set.
+
+```text
+60D fixed three-entry baseline: Day 0 / Day 20 / Day 40, equal capital, hold to horizon
+Strategy Upper Bound: best formal legal realized Strategy 1 path
+```
+
+Observed mean returns:
+
+| Symbol | Strategy 1 Upper mean | Fixed three-entry mean | Upper beats fixed rate |
+|---|---:|---:|---:|
+| SPY | +1.34% | +1.85% | 35.2% |
+| QQQ | +2.08% | +2.42% | 40.8% |
+| SMH | +3.72% | +5.72% | 41.8% |
+
+This does **not** mean the fixed baseline is a new Upper Bound. It means the Strategy 1 Upper Bound is only an upper bound *inside Strategy 1's own legal path space*.
+
+Therefore:
+
+```text
+Strategy 1 Upper Bound != market opportunity ceiling
+Strategy 1 Upper Bound != best possible investment outcome
+Strategy 1 Upper Bound != model-achievable return
+```
+
+The result also means that observed SPY / QQQ / SMH differences cannot be attributed only to symbol volatility. The frozen Strategy 1 rules impose their own preferences and constraints, and those rules interact differently with each symbol.
+
+### Current interpretation
+
+SPY has a narrower Strategy 1 entry-value distribution and a simple fixed-entry baseline that is already highly competitive. This suggests that Strategy 1 may offer relatively limited incremental timing headroom on SPY under the current rules.
+
+QQQ and SMH show larger absolute L/U/mu outcome amplitudes, but this should not automatically be called greater model opportunity. Some of that spread can come from symbol volatility, and some from the way Strategy 1 interacts with those price paths.
+
+The correct research sequence is now:
+
+```text
+A. Measure symbol + Strategy 1 outcome structure.
+B. Measure strategy-relative timing headroom against simple external baselines.
+C. Only then evaluate whether a causal model captures that headroom OOS.
+```
+
+This distinction is a major interpretation rule for future model evaluation.
+
 ## Interpretation
 
 There is no arbitrary composite score. `30D` should only be called the most effective baseline horizon if the evidence is favorable across the economically relevant dimensions, especially:
