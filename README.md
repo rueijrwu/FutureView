@@ -1,81 +1,34 @@
-# FutureView CNN Trend Research
+# FutureView
 
-This branch is a clean restart focused on SPY price/volume trend prediction.
+FutureView studies whether causal price/volume structure can identify when a fixed trading strategy has favorable future economic outcomes.
 
-## Phase 0: CPU smoke validation
+## Canonical documentation
 
-The first run is for code debugging only. It is not a research result and should not be used to judge model quality.
+The project documentation is intentionally consolidated into two files:
 
-The canonical Phase-0 validation path is GitHub Actions on branch `cnn-trend-reset`.
+- `RESEARCH.md` — research question, Strategy 1 research definition, L / μ / U / Q semantics, SPY/QQQ/SMH evidence, strategy-headroom finding, validation principles, and current research direction.
+- `IMPLEMENT.md` — executable Strategy 1 semantics, label construction, data/holdout rules, model baselines, workflows, commands, reproducibility requirements, and historical implementation notes.
 
-Every push to `cnn-trend-reset` should trigger:
+Use `RESEARCH.md` as the source of truth for **what FutureView means and what has been learned**.
+
+Use `IMPLEMENT.md` as the source of truth for **how the repository implements and reproduces the research**.
+
+## Current reduced question
 
 ```text
-.github/workflows/cpu-smoke.yml
+Given only causal OHLCV information observable at a formal Strategy 1 Entry,
+can a model identify Entries whose future legal Strategy 1 paths have better
+L (lower outcome), μ (mean return), and U (upper opportunity)?
 ```
 
-The workflow intentionally runs CPU-only and executes the same package smoke test used in Codespaces.
+A key current principle is to distinguish:
 
-Manual Codespaces run:
-
-```bash
-python -m pip install -U pip
-python -m pip install -e .
-futureview-smoke
+```text
+strategy headroom != model skill
 ```
 
-Expected behavior:
+Before judging a model on SPY, QQQ, SMH, or another symbol, first establish how much entry-selection/timing value Strategy 1 itself creates relative to simple baselines.
 
-- PyTorch runs on `cpu`
-- Model A accepts `[batch, 5, 50]` OHLCV tensors
-- Model B splits price `[O,H,L,C]` and volume `[V]`, then fuses them
-- both models output 4 trend scores for 15/30/45/60 trading-day horizons
-- one Huber-loss forward/backward/optimizer step succeeds
-- gradients are finite
-- one optimizer step succeeds
-- final line prints `SMOKE PASS`
+## Documentation policy
 
-This smoke test intentionally uses synthetic tensors so model/code errors are isolated from data-download and preprocessing issues.
-
-## Current model definitions
-
-- **Model A:** joint OHLCV multi-scale 1D CNN
-- **Model B:** separate price and volume multi-scale 1D CNN branches with fusion
-- **Input lookback:** 50 trading sessions
-- **Outputs:** Trend15, Trend30, Trend45, Trend60
-- **Execution policy for Phase 0:** CPU only
-
-## Phase-0 acceptance rule
-
-Phase 0 passes only when the GitHub Actions CPU smoke job completes successfully on the current branch commit.
-
-A successful Phase-0 run proves only that the implementation is mechanically runnable. It does **not** prove predictive value, trend quality, or successful-rate improvement.
-
-After Phase 0 passes, the next implementation step is real SPY data ingestion, causal preprocessing, trend-label construction, and a small chronological walk-forward smoke test.
-
-GPU/CUDA remains deferred until repeated walk-forward training makes acceleration useful.
-
-## Current Strategy 1 frequency research
-
-The first matched-calendar frequency experiment found preliminary evidence that 100 intraday observations over the same 50-session history improve Model A ranking stability relative to 50 daily observations. The first run used only one 46-session OOS regime, so it is preliminary rather than a formal multi-fold pass.
-
-The current frequency-replication provider is **Alpaca IEX**, not Massive. Alpaca historical intraday data is cached locally under `.cache/futureview/alpaca/` and is never committed.
-
-Required environment variables:
-
-```bash
-export APCA_API_KEY_ID='...'
-export APCA_API_SECRET_KEY='...'
-```
-
-Run:
-
-```bash
-python -m pip install -e . --no-deps
-futureview-alpaca-data-smoke
-futureview-strategy1-frequency-compare
-```
-
-The default `futureview-strategy1-frequency-compare` command now routes to the Alpaca canonical multi-fold runner. The old Massive path remains available only as `futureview-strategy1-frequency-compare-massive` for historical reproducibility.
-
-See `STRATEGY1_FREQUENCY.md` for the exact limited-history results, caveats, and the fixed Alpaca replication gate.
+Do not create new root-level Markdown files for each experiment. Research conclusions should be added to `RESEARCH.md`; implementation/workflow details should be added to `IMPLEMENT.md`.
