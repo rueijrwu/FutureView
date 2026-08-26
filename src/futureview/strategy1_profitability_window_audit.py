@@ -46,12 +46,8 @@ def _audit_window(path_table, window: int) -> tuple[np.ndarray, np.ndarray, np.n
     return counts, lower, upper
 
 
-def _fmt_quantiles(values: np.ndarray) -> str:
-    q = np.quantile(values, QUANTILES)
-    return " ".join(
-        f"p{int(prob * 100):02d}={value:.6f}"
-        for prob, value in zip(QUANTILES, q, strict=True)
-    )
+def _q(values: np.ndarray, q: float) -> float:
+    return float(np.quantile(values, q))
 
 
 def main() -> None:
@@ -62,38 +58,48 @@ def main() -> None:
 
     print(
         f"S1 PROFITABILITY_WINDOW_AUDIT START ticker={TICKER} rows={audit.rows} "
-        f"paths={len(path_table)} entries={path_table['entry_index'].nunique()} "
-        f"pilot_windows={','.join(str(w) for w in WINDOWS)} research_window_frozen=false"
+        f"paths={len(path_table)} entries={path_table['entry_index'].nunique()}"
+    )
+    print(
+        "S1 PROFITABILITY_WINDOW_AUDIT PURPOSE "
+        "pilot_windows=20,30,60 L_U_statistics_descriptive=true extreme_definition_frozen=false"
     )
 
     for window in WINDOWS:
         path_count, lower, upper = _audit_window(path_table, window)
         valid = path_count > 0
-        valid_l = lower[valid]
-        valid_u = upper[valid]
+        lv = lower[valid]
+        uv = upper[valid]
+        mixed = valid & (lower < 0) & (upper > 0)
         all_negative = valid & (upper < 0)
         all_positive = valid & (lower > 0)
-        crosses_zero = valid & (lower < 0) & (upper > 0)
         empty = ~valid
 
         print(
             "S1 PROFITABILITY_WINDOW_AUDIT SUMMARY "
-            f"W={window} windows={len(path_count)} valid={int(valid.sum())} "
+            f"W={window} windows={len(path_count)} valid={int(valid.sum())} empty={int(empty.sum())} "
             f"path_p10={np.quantile(path_count, 0.10):.1f} "
             f"path_p50={np.quantile(path_count, 0.50):.1f} "
             f"path_p90={np.quantile(path_count, 0.90):.1f} "
             f"all_negative={int(all_negative.sum())} all_positive={int(all_positive.sum())} "
-            f"crosses_zero={int(crosses_zero.sum())} empty={int(empty.sum())}"
+            f"mixed={int(mixed.sum())}"
         )
-        if len(valid_l):
-            print(f"S1 PROFITABILITY_WINDOW_AUDIT L_DIST W={window} {_fmt_quantiles(valid_l)}")
-            print(f"S1 PROFITABILITY_WINDOW_AUDIT U_DIST W={window} {_fmt_quantiles(valid_u)}")
-            spread = valid_u - valid_l
-            print(f"S1 PROFITABILITY_WINDOW_AUDIT C_DIST W={window} {_fmt_quantiles(spread)}")
+        print(
+            "S1 PROFITABILITY_WINDOW_AUDIT L_STATS "
+            f"W={window} min={lv.min():.8f} "
+            + " ".join(f"p{int(q*100):02d}={_q(lv, q):.8f}" for q in QUANTILES)
+            + f" max={lv.max():.8f}"
+        )
+        print(
+            "S1 PROFITABILITY_WINDOW_AUDIT U_STATS "
+            f"W={window} min={uv.min():.8f} "
+            + " ".join(f"p{int(q*100):02d}={_q(uv, q):.8f}" for q in QUANTILES)
+            + f" max={uv.max():.8f}"
+        )
 
     print(
         "S1 PROFITABILITY_WINDOW_AUDIT COMPLETE "
-        "purpose=small_pilot_extreme_structure_scan extreme_definition_frozen=false"
+        "research_window_frozen=false extreme_definition_frozen=false"
     )
 
 
