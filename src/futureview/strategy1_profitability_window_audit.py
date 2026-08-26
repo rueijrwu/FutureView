@@ -12,9 +12,10 @@ TICKER = os.environ.get("FUTUREVIEW_TICKER", "SMH")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "5y")
 WINDOWS = tuple(
     int(x.strip())
-    for x in os.environ.get("FUTUREVIEW_REGIME_WINDOWS", "20,30,40,60,90,120").split(",")
+    for x in os.environ.get("FUTUREVIEW_REGIME_WINDOWS", "20,30,60").split(",")
     if x.strip()
 )
+QUANTILES = (0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95)
 
 
 def _audit_window(path_table, window: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -45,6 +46,14 @@ def _audit_window(path_table, window: int) -> tuple[np.ndarray, np.ndarray, np.n
     return counts, lower, upper
 
 
+def _fmt_quantiles(values: np.ndarray) -> str:
+    q = np.quantile(values, QUANTILES)
+    return " ".join(
+        f"p{int(prob * 100):02d}={value:.6f}"
+        for prob, value in zip(QUANTILES, q, strict=True)
+    )
+
+
 def main() -> None:
     df = download_ticker_daily(TICKER, period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
@@ -53,28 +62,39 @@ def main() -> None:
 
     print(
         f"S1 PROFITABILITY_WINDOW_AUDIT START ticker={TICKER} rows={audit.rows} "
-        f"paths={len(path_table)} entries={path_table['entry_index'].nunique()}"
+        f"paths={len(path_table)} entries={path_table['entry_index'].nunique()} "
+        f"pilot_windows={','.join(str(w) for w in WINDOWS)} research_window_frozen=false"
     )
-    print("S1 PROFITABILITY_WINDOW_AUDIT HEADER W windows path_p10 path_p50 path_p90 U_lt_0 L_gt_0 mixed empty")
 
     for window in WINDOWS:
         path_count, lower, upper = _audit_window(path_table, window)
         valid = path_count > 0
-        bad = valid & (upper < 0)
-        good = valid & (lower > 0)
-        mixed = valid & (lower < 0) & (upper > 0)
+        valid_l = lower[valid]
+        valid_u = upper[valid]
+        all_negative = valid & (upper < 0)
+        all_positive = valid & (lower > 0)
+        crosses_zero = valid & (lower < 0) & (upper > 0)
         empty = ~valid
+
         print(
-            "S1 PROFITABILITY_WINDOW_AUDIT ROW "
-            f"W={window} windows={len(path_count)} "
+            "S1 PROFITABILITY_WINDOW_AUDIT SUMMARY "
+            f"W={window} windows={len(path_count)} valid={int(valid.sum())} "
             f"path_p10={np.quantile(path_count, 0.10):.1f} "
             f"path_p50={np.quantile(path_count, 0.50):.1f} "
             f"path_p90={np.quantile(path_count, 0.90):.1f} "
-            f"U_lt_0={int(bad.sum())} L_gt_0={int(good.sum())} "
-            f"mixed={int(mixed.sum())} empty={int(empty.sum())}"
+            f"all_negative={int(all_negative.sum())} all_positive={int(all_positive.sum())} "
+            f"crosses_zero={int(crosses_zero.sum())} empty={int(empty.sum())}"
         )
+        if len(valid_l):
+            print(f"S1 PROFITABILITY_WINDOW_AUDIT L_DIST W={window} {_fmt_quantiles(valid_l)}")
+            print(f"S1 PROFITABILITY_WINDOW_AUDIT U_DIST W={window} {_fmt_quantiles(valid_u)}")
+            spread = valid_u - valid_l
+            print(f"S1 PROFITABILITY_WINDOW_AUDIT C_DIST W={window} {_fmt_quantiles(spread)}")
 
-    print("S1 PROFITABILITY_WINDOW_AUDIT COMPLETE research_window_frozen=false")
+    print(
+        "S1 PROFITABILITY_WINDOW_AUDIT COMPLETE "
+        "purpose=small_pilot_extreme_structure_scan extreme_definition_frozen=false"
+    )
 
 
 if __name__ == "__main__":
