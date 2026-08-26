@@ -122,6 +122,21 @@ def _latent_audit(window,z,stats):
         print(f"S1 PROFITABILITY_AE INTERP W={window} stat={name} max_abs_corr={abs(corrs[dim]):.6f} dim={dim} corr={corrs[dim]:.6f} vector={vector}")
 
 
+def _z_distribution_audit(window,z):
+    if z.shape[1] != 1:
+        print(f"S1 PROFITABILITY_AE ZDIST W={window} skipped=true reason=latent_dim_not_1 latent={z.shape[1]}")
+        return
+    z1=np.asarray(z[:,0],dtype=np.float64)
+    probs=np.asarray([0.00,0.01,0.05,0.10,0.20,0.25,0.40,0.50,0.60,0.75,0.80,0.90,0.95,0.99,1.00])
+    qs=np.quantile(z1,probs)
+    print(f"S1 PROFITABILITY_AE ZDIST W={window} n={len(z1)} mean={np.mean(z1):.6f} std={np.std(z1):.6f} min={np.min(z1):.6f} max={np.max(z1):.6f}")
+    print("S1 PROFITABILITY_AE ZQUANT W={} {}".format(window," ".join(f"p{int(round(p*100)):02d}={q:.6f}" for p,q in zip(probs,qs))))
+    edges=np.linspace(float(np.min(z1)),float(np.max(z1)),21)
+    counts,_=np.histogram(z1,bins=edges)
+    for i,count in enumerate(counts):
+        print(f"S1 PROFITABILITY_AE ZHIST W={window} bin={i+1:02d} left={edges[i]:.6f} right={edges[i+1]:.6f} count={int(count)} fraction={count/len(z1):.6f}")
+
+
 def _print_group(window,label,mask,z1,lower,upper,path_count,mean_return,win_rate,specs,path_table):
     if mask.sum()==0: return
     returns_by_entry={int(entry):group["campaign_return"].to_numpy(dtype=np.float64) for entry,group in path_table.groupby("entry_index",sort=False)}
@@ -183,6 +198,7 @@ def _run_window(path_table,window,device):
     print(f"S1 PROFITABILITY_AE POSTHOC_L W={window} p10={l10:.8f} p90={l90:.8f} centroid_distance={l_dist:.6f} low_n={l_low_n} high_n={l_high_n} labels_used_in_training=false")
     print(f"S1 PROFITABILITY_AE POSTHOC_U W={window} p10={u10:.8f} p90={u90:.8f} centroid_distance={u_dist:.6f} low_n={u_low_n} high_n={u_high_n} labels_used_in_training=false")
     _latent_audit(window,z,{"L":lower,"U":upper,"N":path_count,"mu":mean_return,"win_rate":win_rate})
+    _z_distribution_audit(window,z)
     _ordering_audit(window,z,lower,upper,path_count,mean_return,win_rate,spec_indices,test_specs,path_table)
 
 
