@@ -17,7 +17,7 @@ The conceptual separation is:
 followed by
 
 \[
-\boxed{\text{gate-passed price-volume context} \rightarrow \text{model future }p(C,Q\mid X)}.
+\boxed{\text{gate-passed price-volume context} \rightarrow \text{model future }p(C,Q\mid X,G)}.
 \]
 
 The model must not spend capacity relearning a state that can already be computed from completed historical data.
@@ -74,13 +74,29 @@ and Neutral otherwise.
 
 This state is descriptive. It is computed from known historical outcomes; there is no Layer-1 neural network.
 
-## Gate
+## Gate — locked pass rule
 
-The gate is a deterministic filter built from the historical state/statistics above. Its purpose is to remove contexts that do not meet the chosen historical-information criterion before C/Q model training.
+The gate is deterministic:
 
-The gate itself must remain explicit and auditable. It must never be replaced by a classifier that attempts to infer the already-computable historical state from price-volume data.
+\[
+\boxed{G_t=\text{High}\ \text{or}\ \text{Low} \Rightarrow \text{PASS}}
+\]
 
-The exact pass rule is treated separately from the model architecture so that changing the probabilistic model cannot silently change which data are considered eligible.
+\[
+\boxed{G_t=\text{Neutral} \Rightarrow \text{FILTER}}
+\]
+
+Thus the 40/60 rolling thresholds are used to remove the neutral/mixed region. Both tails are retained because they represent informative historical regimes of opposite direction.
+
+The gate state itself is retained as known conditioning information:
+
+\[
+\boxed{G_t\in\{\text{High},\text{Low}\}}.
+\]
+
+High and Low must not be silently pooled into one unlabeled pass state. The downstream model/audit should preserve this distinction and may estimate separate conditional future distributions.
+
+The gate is explicit and auditable. It must never be replaced by a classifier that attempts to infer the already-computable historical state from price-volume data.
 
 ## Price-volume context passed downstream
 
@@ -118,16 +134,16 @@ Layer 1 does not learn or predict:
 - optional Strategy actions;
 - future \(C\) or \(Q\).
 
-Its only job is to provide an explicit historical gate for the downstream probabilistic model.
+Its only job is to provide an explicit historical gate and known gate state for the downstream probabilistic model.
 
 ## Next layer
 
 For gate-passed historical contexts, training pairs a causal \(8\times60\) price-volume context with outcomes that occurred later historically. Because the historical record contains both sides, those future-at-the-time outcomes can be used as supervised targets.
 
-The next-layer target is not one deterministic future path. It is the conditional joint distribution
+The next-layer target is the conditional future distribution
 
 \[
-\boxed{p(C,Q\mid X,\ \text{gate passed})}.
+\boxed{p(C,Q\mid X,G)},\qquad G\in\{\text{High},\text{Low}\}.
 \]
 
-Derived quantities such as \(E[C\mid X]\), \(P(C>0\mid X)\), \(E[Q\mid X]\), or \(P(C>C^*,Q<Q^*\mid X)\) are summaries of this distribution, not separate Layer-1 labels.
+The first audit must therefore report High and Low separately before choosing a specific probabilistic model family.
