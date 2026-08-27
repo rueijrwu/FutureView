@@ -1,82 +1,90 @@
-# Strategy 1 Layer-1 State Model
+# Strategy 1 — Deterministic Gate
 
-## Objective
+## Purpose
 
-The first predictive question is deliberately narrow:
+Layer 1 is **not a learned classifier**.
 
-> Using only price-volume information available now, can the model distinguish a favorable Strategy state, a neutral state, and an unfavorable Strategy state?
+Its role is to use already-observed historical Strategy statistics to decide whether a historical/current context should be passed to the probabilistic C/Q model.
 
-The fixed Strategy is not changed or optimized.
+The fixed Strategy is never changed or optimized.
 
-## Outcome quantities
-
-For each retrospective evaluation window W of 30 trading sessions,
+The conceptual separation is:
 
 \[
-U_W=\max_{e\in I_W}E(e)
+\boxed{\text{known past statistics} \rightarrow \text{deterministic gate}}
 \]
 
-is the best realized outcome among all legal Entries in W under the fixed deterministic Strategy.
+followed by
 
-The periodic baseline is \(B_{p,W}\). The current excess-opportunity quantity is
+\[
+\boxed{\text{gate-passed price-volume context} \rightarrow \text{model future }p(C,Q\mid X)}.
+\]
+
+The model must not spend capacity relearning a state that can already be computed from completed historical data.
+
+## Known historical quantities
+
+For a retrospective evaluation window \(W\),
+
+\[
+U_W=\max_{e\in I_W}E(e),
+\]
+
+where every legal Entry \(e\) follows exactly one deterministic fixed-Strategy path.
+
+The periodic baseline is \(B_{p,W}\), and
 
 \[
 \boxed{C_W=U_W-B_{p,W}}.
 \]
 
-For a later Entry-level model, the normalized distance to the upper bound is
+For legal Entry \(e\), with realized fixed-Strategy outcome \(P_E=E(e)\),
 
 \[
-\boxed{Q=\frac{U-P_E}{C}},
+\boxed{Q_e=\frac{U_W-P_E}{C_W}}.
 \]
 
-where \(P_E\) is the realized deterministic Strategy profit for that legal Entry. Q is not a Layer-1 target yet.
+These are retrospective outcome quantities. Once their complete Strategy dependencies have finished historically, they are known data and may be used to characterize the historical environment. They are not model inputs for predicting their own future realization.
 
-## Layer-1 labels
+## Local historical state
 
-Thresholds are local percentile thresholds, never hard-coded return percentages.
-
-The current reference length is locked to
+The current local reference length is
 
 \[
-R=60\text{ trading sessions}=2W.
+\boxed{R=60\text{ trading sessions}=2W},\qquad W=30.
 \]
 
-For every target time t, construct a causal local reference set from historical Strategy-window outcomes whose complete outcome dependency is already observable before t. Within the preceding 60 trading sessions, compute
+At historical time \(t\), construct the reference set only from Strategy-window outcomes whose complete outcome dependency was already observable by \(t\). From completed outcomes in the preceding 60 trading sessions compute
 
 \[
-C_{40}(t),C_{60}(t),U_{40}(t),U_{60}(t).
+C_{40}(t),\ C_{60}(t),\ U_{40}(t),\ U_{60}(t).
 \]
 
-Then define
+The deterministic historical state is
 
 \[
-y_t=+1\quad\text{if}\quad C_t>C_{60}(t)\ \land\ U_t>U_{60}(t),
+\text{High}_t:\quad C_t>C_{60}(t)\ \land\ U_t>U_{60}(t),
 \]
 
 \[
-y_t=-1\quad\text{if}\quad C_t<C_{40}(t)\ \land\ U_t<U_{40}(t),
+\text{Low}_t:\quad C_t<C_{40}(t)\ \land\ U_t<U_{40}(t),
 \]
 
-and
+and Neutral otherwise.
 
-\[
-y_t=0\quad\text{otherwise}.
-\]
+This state is descriptive. It is computed from known historical outcomes; there is no Layer-1 neural network.
 
-Thus the classes are:
+## Gate
 
-- +1: favorable / high-opportunity state;
-- 0: neutral or mixed state;
-- -1: unfavorable / low-opportunity state.
+The gate is a deterministic filter built from the historical state/statistics above. Its purpose is to remove contexts that do not meet the chosen historical-information criterion before C/Q model training.
 
-The 40/60 percentiles deliberately make the neutral region narrower than the previous 25/75 definition.
+The gate itself must remain explicit and auditable. It must never be replaced by a classifier that attempts to infer the already-computable historical state from price-volume data.
 
-The reference thresholds are recomputed causally at each target time from the rolling 60-session historical reference set. Future outcomes are never used to define the current threshold.
+The exact pass rule is treated separately from the model architecture so that changing the probabilistic model cannot silently change which data are considered eligible.
 
-## Locked price-volume input
+## Price-volume context passed downstream
 
-Only the previously agreed causal normalization is used. For N in {5,10,20,60},
+For every gate-eligible modeling context, the only market input remains the locked causal normalization. For \(N\in\{5,10,20,60\}\),
 
 \[
 price_N(t)=\frac{P_t}{\sum_{i=1}^{N}P_{t-i}},
@@ -86,52 +94,40 @@ price_N(t)=\frac{P_t}{\sum_{i=1}^{N}P_{t-i}},
 volume_N(t)=\frac{V_t}{\sum_{i=1}^{N}V_{t-i}}.
 \]
 
-Each day has eight channels:
+The eight channels are
 
 ```text
 price_5, price_10, price_20, price_60,
 volume_5, volume_10, volume_20, volume_60
 ```
 
-The model input is the most recent 60 trading sessions:
+and the causal context is
 
 \[
-X_t\in\mathbb R^{8\times60}.
+\boxed{X_t\in\mathbb R^{8\times60}}.
 \]
 
-No future rows, technical indicators, U, C, Q, baseline values, or other label-derived quantities are inputs.
+No future price-volume rows, technical indicators, future \(U\), future \(C\), future \(Q\), or future baseline values may be included in \(X_t\).
 
-## Time alignment
+## What Layer 1 does not learn
 
-For a prediction made after session t closes, the input ends at t.
+Layer 1 does not learn or predict:
 
-The corresponding W=30 label window begins on the next session:
+- High / Neutral / Low;
+- whether the fixed Strategy is good;
+- optional Strategy actions;
+- future \(C\) or \(Q\).
+
+Its only job is to provide an explicit historical gate for the downstream probabilistic model.
+
+## Next layer
+
+For gate-passed historical contexts, training pairs a causal \(8\times60\) price-volume context with outcomes that occurred later historically. Because the historical record contains both sides, those future-at-the-time outcomes can be used as supervised targets.
+
+The next-layer target is not one deterministic future path. It is the conditional joint distribution
 
 \[
-W_t=[t+1,t+30].
+\boxed{p(C,Q\mid X,\ \text{gate passed})}.
 \]
 
-Therefore the 60-row input is entirely earlier than the outcome window.
-
-A historical U label can depend on a Strategy path beginning near the end of W and continuing for the fixed 60-session Strategy horizon. A historical outcome can enter the rolling reference set only after that complete dependency is observable. This rule keeps the rolling percentile labels causal.
-
-## Current execution order
-
-1. audit the 60-day rolling 40/60 state definition and its chronological class distribution;
-2. if all three states remain sufficiently represented, use the locked 8 x 60 price-volume input to test whether those states are learnable;
-3. start with a simple baseline classifier before increasing model capacity;
-4. only after Layer 1 is established, proceed to the later C/Q estimation layer.
-
-## Evaluation
-
-Accuracy alone is not sufficient. Report at least:
-
-- class counts and rates;
-- chronological class stability;
-- balanced accuracy;
-- macro F1;
-- per-class precision and recall;
-- confusion matrix;
-- high-state probability ranking diagnostics.
-
-Because stride-1 W=30 windows overlap strongly, rows are not independent trials. Metrics describe chronological discrimination on the historical sequence, not an independent-sample probability estimate.
+Derived quantities such as \(E[C\mid X]\), \(P(C>0\mid X)\), \(E[Q\mid X]\), or \(P(C>C^*,Q<Q^*\mid X)\) are summaries of this distribution, not separate Layer-1 labels.
