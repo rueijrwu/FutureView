@@ -101,7 +101,6 @@ def simulate_deterministic_path(
     exit5 = -1
     exit10 = -1
     horizon_exit = -1
-    exit_started = False
 
     local_max_mask = np.zeros(len(events), dtype=np.bool_)
     local_max_mask[local_maxs] = True
@@ -109,27 +108,29 @@ def simulate_deterministic_path(
     for i in range(entry + 1, end + 1):
         price = float(close[i])
 
-        # Exit takes priority over a same-session retrospective local-maximum candidate.
+        # Full 10-day exit ends the campaign and takes priority on the same session.
         if bool(events.at[i, "exit10_event"]):
             cash += shares * price
             shares = 0.0
             exit10 = i
             break
 
+        # The 5-day exit is used at most once. It reduces the current position by 40%,
+        # but the campaign remains active and later Addons are still allowed.
         if exit5 < 0 and bool(events.at[i, "exit5_event"]):
             sold = 0.40 * shares
             cash += sold * price
             shares -= sold
             exit5 = i
-            exit_started = True
             continue
 
         if (
-            not exit_started
-            and entries_used < 3
+            entries_used < 3
             and bool(local_max_mask[i])
             and price - last_buy_price > d_b
         ):
+            if cash + 1e-12 < tranche:
+                raise RuntimeError("Strategy attempted to exceed its fixed total-capital budget")
             shares += tranche / price
             cash -= tranche
             last_buy_price = price
