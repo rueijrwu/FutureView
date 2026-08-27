@@ -125,15 +125,22 @@ def build_cq_target_pairs(
 
         future_u = float(w.U)
         future_c = float(w.U - w.B_periodic)
-        if not np.isfinite(future_c) or abs(future_c) <= EPS:
-            counters["future_c_zero"] += 1
+        if not np.isfinite(future_c):
             continue
+        if abs(future_c) <= EPS:
+            counters["future_c_zero"] += 1
 
         for entry in entries:
             pe = float(path_by_entry.loc[int(entry)])
-            q = (future_u - pe) / future_c
+            q = future_u - pe
             if not np.isfinite(q):
                 continue
+            if q < -EPS:
+                raise RuntimeError(
+                    f"Q invariant violated: U={future_u:.12f} P_E={pe:.12f} Q={q:.12f} entry={entry}"
+                )
+            if abs(q) <= EPS:
+                q = 0.0
             rows.append(
                 {
                     "ticker": TICKER,
@@ -170,18 +177,14 @@ def _print_group(name: str, pairs: pd.DataFrame) -> None:
         f"pairs_per_anchor_mean={len(pairs)/anchors:.3f} pairs_per_anchor_median={pairs.groupby('anchor_index').size().median():.1f}"
     )
     print(
-        f"S1 CQ AUDIT C gate={name} positive_rate={(c > 0).mean():.6f} "
+        f"S1 CQ AUDIT C gate={name} mean={c.mean():.6f} "
         f"p10={_pct(c,0.10):.6f} p25={_pct(c,0.25):.6f} median={_pct(c,0.50):.6f} "
         f"p75={_pct(c,0.75):.6f} p90={_pct(c,0.90):.6f}"
     )
     print(
-        f"S1 CQ AUDIT Q gate={name} p01={_pct(q,0.01):.6f} p10={_pct(q,0.10):.6f} p25={_pct(q,0.25):.6f} "
-        f"median={_pct(q,0.50):.6f} p75={_pct(q,0.75):.6f} p90={_pct(q,0.90):.6f} p99={_pct(q,0.99):.6f}"
-    )
-    print(
-        f"S1 CQ AUDIT JOINT gate={name} "
-        f"C_gt_0_Q_lt_0.2={((pairs['future_C'] > 0) & (pairs['future_Q'] < 0.2)).mean():.6f} "
-        f"C_gt_0_Q_lt_0.5={((pairs['future_C'] > 0) & (pairs['future_Q'] < 0.5)).mean():.6f}"
+        f"S1 CQ AUDIT Q gate={name} mean={q.mean():.6f} min={q.min():.6f} "
+        f"p10={_pct(q,0.10):.6f} p25={_pct(q,0.25):.6f} median={_pct(q,0.50):.6f} "
+        f"p75={_pct(q,0.75):.6f} p90={_pct(q,0.90):.6f} max={q.max():.6f} zero_rate={(q == 0.0).mean():.6f}"
     )
 
 
@@ -211,7 +214,7 @@ def main() -> None:
     )
     print(
         "S1 CQ AUDIT DEFINITION gate=known_completed_history_high_or_low_pass_neutral_filter "
-        "target=future_joint_distribution_p(C,Q|X,gate_state) Q=(U-P_E)/C"
+        "target=future_joint_distribution_p(C,Q|X,gate_state) Q=U-P_E"
     )
     print("S1 CQ AUDIT GATE " + " ".join(f"{k}={v}" for k, v in counters.items()))
 
@@ -221,6 +224,9 @@ def main() -> None:
             print(f"S1 CQ AUDIT GROUP gate={name} anchors=0 pairs=0")
             continue
         _print_group(name, group)
+
+    if pairs["future_Q"].min() < -EPS:
+        raise RuntimeError("Q must be non-negative under Q=U-P_E")
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     pairs.to_csv(OUTPUT, index=False)
