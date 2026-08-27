@@ -1,0 +1,45 @@
+name: Strategy 1 Layer 2 Centered Train
+
+on:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'src/futureview/strategy1_layer2_centered_train.py'
+      - 'Layer1.md'
+      - 'Layer2.md'
+      - '.github/workflows/strategy1-layer2-centered-train.yml'
+  workflow_dispatch:
+
+jobs:
+  train:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61" "scikit-learn>=1.5" "torch>=2.6"
+          python -m pip install -e . --no-deps
+      - name: Train Layer 2 baseline
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 5y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_SHORT_REF: '90'
+          FUTUREVIEW_LONG_REF: '756'
+          FUTUREVIEW_EPOCHS: '120'
+          FUTUREVIEW_SEED: '20260827'
+        run: python -m futureview.strategy1_layer2_centered_train 2>&1 | tee strategy1-layer2-centered-train.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Layer 2 centered-2W training'
+            echo
+            echo '```text'
+            grep -E '^S1 L2 CENTER' strategy1-layer2-centered-train.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
