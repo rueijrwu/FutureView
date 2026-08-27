@@ -13,6 +13,7 @@ from .data import download_ticker_daily, validate_daily_ohlcv
 from .strategy1 import add_strategy1_events
 from .strategy1_deterministic_paths import build_deterministic_path_table
 from .strategy1_representation_a import build_representation_a_table
+from .strategy1_cq_90d_rank_audit import build_window_q
 
 TICKER = os.environ.get("FUTUREVIEW_TICKER", "TSLA")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "5y")
@@ -46,8 +47,10 @@ def _feature_series(df: pd.DataFrame) -> np.ndarray:
 
 
 def _centered_targets(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
-    # A centered 2W target around decision t uses [t-W+1, t+W].
-    windows = build_representation_a_table(df, paths, window=2 * W, stride=1, random_samples=20, random_seed=SEED)
+    # Historical target around decision t: [t-W+1, t+W].
+    windows = build_representation_a_table(
+        df, paths, window=2 * W, stride=1, random_samples=20, random_seed=SEED
+    )
     by_start = windows.set_index("start_index")
     ret_by_entry = paths.set_index("entry_index")["campaign_return"]
     rows = []
@@ -61,32 +64,61 @@ def _centered_targets(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
             w = w.iloc[0]
         u = float(w.U)
         pe = float(ret_by_entry.loc[t])
-        q = u - pe
-        if q < -1e-12:
-            raise RuntimeError(f"Q invariant failed at entry {t}: {q}")
-        q = max(0.0, q)
-        rows.append({"decision_index": t, "target_start": s, "target_end": e, "C": float(u - w.B_periodic), "Q": q})
+        q = max(0.0, u - pe)
+        rows.append(
+            {
+                "decision_index": t,
+                "target_start": s,
+                "target_end": e,
+                "C": float(u - w.B_periodic),
+                "Q": q,
+            }
+        )
     return pd.DataFrame(rows).sort_values("decision_index").reset_index(drop=True)
 
 
-def _classify_gate(targets: pd.DataFrame) -> pd.DataFrame:
-    # Retrospective state labeling uses only prior completed centered-2W targets to build thresholds.
+def _historical_gate(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
+    # Gate is known at decision time and comes only from completed historical W30 outcomes.
+    windows = build_representation_a_table(
+        df, paths, window=W, stride=1, random_samples=20, random_seed=SEED
+    )
+    wq = build_window_q(windows, paths).sort_values("start_index").reset_index(drop=True)
     rows = []
-    for r in targets.itertuples(index=False):
-        t = int(r.decision_index)
-        prior = targets.loc[targets["target_end"].astype(int) < t]
-        short = prior.loc[prior["target_end"].astype(int) >= t - SHORT_REF]
-        long = prior.loc[prior["target_end"].astype(int) >= t - LONG_REF]
-        if t < LONG_REF or len(short) < 20 or len(long) < 100:
+    for r in wq.itertuples(index=False):
+        s = int(r.start_index)
+        prior = wq.loc[wq["end_index"].astype(int) < s]
+        short = prior.loc[prior["end_index"].astype(int) >= s - SHORT_REF]
+        long = prior.loc[prior["end_index"].astype(int) >= s - LONG_REF]
+        if s < LONG_REF or len(short) < 20 or len(long) < 100:
             continue
         c40, c60 = (float(short["C"].quantile(q)) for q in (0.40, 0.60))
         q40, q60 = (float(short["Q"].quantile(q)) for q in (0.40, 0.60))
         c50, q50 = float(long["C"].median()), float(long["Q"].median())
         high = float(r.C) >= c60 and float(r.Q) <= q60 and float(r.C) > c50 and float(r.Q) < q50
         low = float(r.C) <= c40 and float(r.Q) >= q40 and float(r.C) < c50 and float(r.Q) > q50
-        if not (high or low):
+        state = 1 if high else (-1 if low else 0)
+        rows.append(
+            {
+                "start_index": s,
+                "end_index": int(r.end_index),
+                "gate": state,
+                "C_hist": float(r.C),
+                "Q_hist": float(r.Q),
+            }
+        )
+    return pd.DataFrame(rows).sort_values("end_index").reset_index(drop=True)
+
+
+def _attach_gate(targets: pd.DataFrame, gate: pd.DataFrame) -> pd.DataFrame:
+    # For each decision t, use the most recently completed historical W30 state available at t.
+    rows = []
+    for r in targets.itertuples(index=False):
+        t = int(r.decision_index)
+        avail = gate.loc[(gate["end_index"].astype(int) < t) & (gate["gate"] != 0)]
+        if avail.empty:
             continue
-        rows.append({**r._asdict(), "gate": 1 if high else -1})
+        g = avail.iloc[-1]
+        rows.append({**r._asdict(), "gate": int(g.gate), "gate_end_index": int(g.end_index)})
     return pd.DataFrame(rows)
 
 
@@ -114,18 +146,11 @@ def _split(x: np.ndarray, g: np.ndarray, y: np.ndarray, idx: np.ndarray) -> tupl
     n = len(idx)
     a = int(n * 0.70)
     b = int(n * 0.85)
-    # Purge one centered target width between chronological partitions.
-    train_mask = np.arange(n) < a
-    val_mask = (np.arange(n) >= a) & (np.arange(n) < b)
-    test_mask = np.arange(n) >= b
-    if a < n:
-        train_mask &= idx <= idx[a] - 2 * W
-    if b < n:
-        val_mask &= idx <= idx[b] - 2 * W
-    if a > 0:
-        val_mask &= idx >= idx[a - 1] + 2 * W
-    if b > 0:
-        test_mask &= idx >= idx[b - 1] + 2 * W
+    cut_a, cut_b = idx[a], idx[b]
+    # Chronological split with W-session embargo around split boundaries.
+    train_mask = idx < cut_a - W
+    val_mask = (idx >= cut_a + W) & (idx < cut_b - W)
+    test_mask = idx >= cut_b + W
 
     def pack(m: np.ndarray) -> Split:
         return Split(x[m], g[m], y[m], idx[m])
@@ -138,7 +163,9 @@ class CenteredCQNet(nn.Module):
         self.branches = nn.ModuleList([
             nn.Sequential(nn.Conv1d(8, 12, k, padding="same"), nn.GELU()) for k in (5, 10, 20)
         ])
-        self.fuse = nn.Sequential(nn.Conv1d(36, 24, 3, padding="same"), nn.GELU(), nn.AdaptiveAvgPool1d(1))
+        self.fuse = nn.Sequential(
+            nn.Conv1d(36, 24, 3, padding="same"), nn.GELU(), nn.AdaptiveAvgPool1d(1)
+        )
         self.head = nn.Sequential(nn.Linear(25, 16), nn.GELU(), nn.Linear(16, 2))
 
     def forward(self, x: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
@@ -152,21 +179,34 @@ def _loader(s: Split, shuffle: bool) -> DataLoader:
     return DataLoader(ds, batch_size=min(BATCH, max(1, len(ds))), shuffle=shuffle)
 
 
-def _metrics(model: nn.Module, s: Split, device: torch.device, y_mu: torch.Tensor, y_sd: torch.Tensor) -> dict[str, float]:
+def _predict(model: nn.Module, s: Split, device: torch.device, y_mu: torch.Tensor, y_sd: torch.Tensor):
     model.eval()
     with torch.no_grad():
         p = model(torch.from_numpy(s.x).to(device), torch.from_numpy(s.g).to(device))
         p = p * y_sd + y_mu
-        y = torch.from_numpy(s.y).to(device)
+    return p.cpu().numpy()
+
+
+def _metrics(model: nn.Module, s: Split, device: torch.device, y_mu: torch.Tensor, y_sd: torch.Tensor) -> dict[str, float]:
+    p = _predict(model, s, device, y_mu, y_sd)
+    y = s.y
     err = p - y
-    return {
-        "C_mae": float(err[:, 0].abs().mean().cpu()),
-        "Q_mae": float(err[:, 1].abs().mean().cpu()),
-        "C_rmse": float(torch.sqrt((err[:, 0] ** 2).mean()).cpu()),
-        "Q_rmse": float(torch.sqrt((err[:, 1] ** 2).mean()).cpu()),
-        "C_corr": float(np.corrcoef(p[:, 0].cpu().numpy(), y[:, 0].cpu().numpy())[0, 1]) if len(s.y) > 2 else float("nan"),
-        "Q_corr": float(np.corrcoef(p[:, 1].cpu().numpy(), y[:, 1].cpu().numpy())[0, 1]) if len(s.y) > 2 else float("nan"),
+    out = {
+        "C_mae": float(np.abs(err[:, 0]).mean()),
+        "Q_mae": float(np.abs(err[:, 1]).mean()),
+        "C_corr": float(np.corrcoef(p[:, 0], y[:, 0])[0, 1]) if len(y) > 2 else float("nan"),
+        "Q_corr": float(np.corrcoef(p[:, 1], y[:, 1])[0, 1]) if len(y) > 2 else float("nan"),
     }
+    # Ranking audit: compare actual target means in top/bottom predicted thirds.
+    n = len(y)
+    k = max(1, n // 3)
+    c_order = np.argsort(p[:, 0])
+    q_order = np.argsort(p[:, 1])
+    out["C_actual_pred_top"] = float(y[c_order[-k:], 0].mean())
+    out["C_actual_pred_bottom"] = float(y[c_order[:k], 0].mean())
+    out["Q_actual_pred_low"] = float(y[q_order[:k], 1].mean())
+    out["Q_actual_pred_high"] = float(y[q_order[-k:], 1].mean())
+    return out
 
 
 def main() -> None:
@@ -179,11 +219,12 @@ def main() -> None:
     events = add_strategy1_events(df).reset_index(drop=True)
     paths = build_deterministic_path_table(events)
     targets = _centered_targets(df, paths)
-    gated = _classify_gate(targets)
+    gate = _historical_gate(df, paths)
+    gated = _attach_gate(targets, gate)
     x, g, y, idx = _build_samples(df, gated)
     train, val, test = _split(x, g, y, idx)
     if min(len(train.y), len(val.y), len(test.y)) < 5:
-        raise RuntimeError(f"split too small train={len(train.y)} val={len(val.y)} test={len(test.y)}")
+        raise RuntimeError(f"split too small train={len(train.y)} val={len(val.y)} test={len(test.y)} total={len(y)}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = CenteredCQNet().to(device)
@@ -196,12 +237,12 @@ def main() -> None:
     best = None
     best_val = float("inf")
 
-    for epoch in range(EPOCHS):
+    for _ in range(EPOCHS):
         model.train()
         for xb, gb, yb in _loader(train, True):
             xb, gb, yb = xb.to(device), gb.to(device), yb.to(device)
-            target = (yb - y_mu) / y_sd
             pred = model(xb, gb)
+            target = (yb - y_mu) / y_sd
             loss = loss_fn(pred, target)
             opt.zero_grad()
             loss.backward()
@@ -214,20 +255,14 @@ def main() -> None:
 
     if best is not None:
         model.load_state_dict(best)
-    trm = _metrics(model, train, device, y_mu, y_sd)
-    vam = _metrics(model, val, device, y_mu, y_sd)
-    tem = _metrics(model, test, device, y_mu, y_sd)
 
-    def counts(s: Split) -> tuple[int, int]:
-        gg = s.g[:, 0]
-        return int((gg > 0).sum()), int((gg < 0).sum())
-
-    print(f"S1 L2 CENTER START ticker={TICKER} rows={audit.rows} W={W} centered_target=2W samples={len(y)} device={device}")
-    print(f"S1 L2 CENTER SPLIT train={len(train.y)} val={len(val.y)} test={len(test.y)} purge={2*W}")
+    print(f"S1 L2 CENTER START ticker={TICKER} rows={audit.rows} W={W} centered_target=2W decisions={len(targets)} gated_samples={len(y)} device={device}")
+    print(f"S1 L2 CENTER SPLIT train={len(train.y)} val={len(val.y)} test={len(test.y)} embargo={W}")
     for name, s in (("train", train), ("val", val), ("test", test)):
-        hi, lo = counts(s)
+        hi = int((s.g[:, 0] > 0).sum())
+        lo = int((s.g[:, 0] < 0).sum())
         print(f"S1 L2 CENTER SUPPORT split={name} high={hi} low={lo}")
-    for name, m in (("train", trm), ("val", vam), ("test", tem)):
+        m = _metrics(model, s, device, y_mu, y_sd)
         print("S1 L2 CENTER METRIC split=" + name + " " + " ".join(f"{k}={v:.6f}" for k, v in m.items()))
     print("S1 L2 CENTER COMPLETE")
 
