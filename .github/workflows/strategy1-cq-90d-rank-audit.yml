@@ -1,4 +1,4 @@
-name: Strategy 1 C Q 90D Rank Audit
+name: Strategy 1 C Q Rolling Rank Audit
 
 on:
   push:
@@ -21,14 +21,16 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61" "scikit-learn>=1.5"
           python -m pip install -e . --no-deps
-      - name: Run 90D C Q rank audit
+      - name: Run rolling C Q rank audit
         env:
           FUTUREVIEW_TICKER: TSLA
           FUTUREVIEW_DATA_PERIOD: 5y
           FUTUREVIEW_WINDOW: '30'
-          FUTUREVIEW_BLOCK: '90'
+          FUTUREVIEW_SHORT_REF: '90'
+          FUTUREVIEW_LONG_REF: '756'
           FUTUREVIEW_LOW_QTL: '0.40'
           FUTUREVIEW_HIGH_QTL: '0.60'
+          FUTUREVIEW_LONG_QTL: '0.50'
           FUTUREVIEW_A_RANDOM_SAMPLES: '20'
           FUTUREVIEW_A_RANDOM_SEED: '20260827'
         run: python -m futureview.strategy1_cq_90d_rank_audit 2>&1 | tee strategy1-cq-90d-rank-audit.log
@@ -36,9 +38,9 @@ jobs:
         if: always()
         run: |
           {
-            echo '## Strategy 1 — 90-session C/Q rank audit'
+            echo '## Strategy 1 — rolling 90D + 3Y C/Q rank audit'
             echo
             echo '```text'
-            grep -E '^S1 CQ90' strategy1-cq-90d-rank-audit.log || true
+            grep -E '^S1 CQROLL' strategy1-cq-90d-rank-audit.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
