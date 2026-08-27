@@ -50,11 +50,13 @@ Therefore Addon levels are **not enumerated as alternative reference configurati
 Exit logic is also deterministic. Once a campaign is active:
 
 - the first legal 5-day exit event sells 40% of the then-current position;
-- a legal 10-day exit event liquidates all remaining shares (the remaining 60% when the 5-day exit has already occurred);
-- no new Addon is allowed after the first exit event;
+- after that 5-day partial exit, the campaign remains active and later Addons are still allowed if they satisfy the same local-maximum and \(D_b\) conditions;
+- a legal 10-day exit event liquidates all remaining shares and terminates the campaign;
 - any position still open at the fixed campaign horizon is liquidated at the horizon close.
 
-Each Entry/Add-on purchase uses one third of the original total-capital denominator. Unused capital remains cash. Campaign profit is measured relative to that same total-capital denominator.
+The 5-day partial exit is used at most once in a campaign. It changes the current share count but does not change the fixed \(D_b\), does not reset the previous actual Entry/Addon reference price, and does not reset the maximum of three total capital deployments.
+
+Each Entry/Add-on purchase uses one third of the original total-capital denominator. Unused capital and cash released by partial exits remain cash until a later legal Addon or final liquidation. Campaign profit is measured relative to that same total-capital denominator.
 
 ## 3. Historical evaluation windows and Strategy outcomes
 
