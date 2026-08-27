@@ -47,10 +47,7 @@ def _feature_series(df: pd.DataFrame) -> np.ndarray:
 
 
 def _centered_targets(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
-    # Historical target around decision t: [t-W+1, t+W].
-    windows = build_representation_a_table(
-        df, paths, window=2 * W, stride=1, random_samples=20, random_seed=SEED
-    )
+    windows = build_representation_a_table(df, paths, window=2 * W, stride=1, random_samples=20, random_seed=SEED)
     by_start = windows.set_index("start_index")
     ret_by_entry = paths.set_index("entry_index")["campaign_return"]
     rows = []
@@ -64,24 +61,12 @@ def _centered_targets(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
             w = w.iloc[0]
         u = float(w.U)
         pe = float(ret_by_entry.loc[t])
-        q = max(0.0, u - pe)
-        rows.append(
-            {
-                "decision_index": t,
-                "target_start": s,
-                "target_end": e,
-                "C": float(u - w.B_periodic),
-                "Q": q,
-            }
-        )
+        rows.append({"decision_index": t, "target_start": s, "target_end": e, "C": float(u - w.B_periodic), "Q": max(0.0, u - pe)})
     return pd.DataFrame(rows).sort_values("decision_index").reset_index(drop=True)
 
 
 def _historical_gate(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
-    # Gate is known at decision time and comes only from completed historical W30 outcomes.
-    windows = build_representation_a_table(
-        df, paths, window=W, stride=1, random_samples=20, random_seed=SEED
-    )
+    windows = build_representation_a_table(df, paths, window=W, stride=1, random_samples=20, random_seed=SEED)
     wq = build_window_q(windows, paths).sort_values("start_index").reset_index(drop=True)
     rows = []
     for r in wq.itertuples(index=False):
@@ -96,28 +81,22 @@ def _historical_gate(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
         c50, q50 = float(long["C"].median()), float(long["Q"].median())
         high = float(r.C) >= c60 and float(r.Q) <= q60 and float(r.C) > c50 and float(r.Q) < q50
         low = float(r.C) <= c40 and float(r.Q) >= q40 and float(r.C) < c50 and float(r.Q) > q50
-        state = 1 if high else (-1 if low else 0)
-        rows.append(
-            {
-                "start_index": s,
-                "end_index": int(r.end_index),
-                "gate": state,
-                "C_hist": float(r.C),
-                "Q_hist": float(r.Q),
-            }
-        )
+        rows.append({"start_index": s, "end_index": int(r.end_index), "gate": 1 if high else (-1 if low else 0), "C_hist": float(r.C), "Q_hist": float(r.Q)})
     return pd.DataFrame(rows).sort_values("end_index").reset_index(drop=True)
 
 
 def _attach_gate(targets: pd.DataFrame, gate: pd.DataFrame) -> pd.DataFrame:
-    # For each decision t, use the most recently completed historical W30 state available at t.
+    # At decision t use the latest completed W30 state, including Neutral.
+    # Neutral means FILTER; never skip backward to an older High/Low state.
     rows = []
     for r in targets.itertuples(index=False):
         t = int(r.decision_index)
-        avail = gate.loc[(gate["end_index"].astype(int) < t) & (gate["gate"] != 0)]
+        avail = gate.loc[gate["end_index"].astype(int) < t]
         if avail.empty:
             continue
         g = avail.iloc[-1]
+        if int(g.gate) == 0:
+            continue
         rows.append({**r._asdict(), "gate": int(g.gate), "gate_end_index": int(g.end_index)})
     return pd.DataFrame(rows)
 
@@ -128,7 +107,7 @@ def _build_samples(df: pd.DataFrame, gated: pd.DataFrame) -> tuple[np.ndarray, n
     for r in gated.itertuples(index=False):
         t = int(r.decision_index)
         s = t - W + 1
-        x = feats[s : t + 1].T
+        x = feats[s:t + 1].T
         if x.shape != (8, W) or not np.isfinite(x).all():
             continue
         xs.append(x.astype(np.float32))
@@ -147,11 +126,9 @@ def _split(x: np.ndarray, g: np.ndarray, y: np.ndarray, idx: np.ndarray) -> tupl
     a = int(n * 0.70)
     b = int(n * 0.85)
     cut_a, cut_b = idx[a], idx[b]
-    # Chronological split with W-session embargo around split boundaries.
     train_mask = idx < cut_a - W
     val_mask = (idx >= cut_a + W) & (idx < cut_b - W)
     test_mask = idx >= cut_b + W
-
     def pack(m: np.ndarray) -> Split:
         return Split(x[m], g[m], y[m], idx[m])
     return pack(train_mask), pack(val_mask), pack(test_mask)
@@ -160,14 +137,9 @@ def _split(x: np.ndarray, g: np.ndarray, y: np.ndarray, idx: np.ndarray) -> tupl
 class CenteredCQNet(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.branches = nn.ModuleList([
-            nn.Sequential(nn.Conv1d(8, 12, k, padding="same"), nn.GELU()) for k in (5, 10, 20)
-        ])
-        self.fuse = nn.Sequential(
-            nn.Conv1d(36, 24, 3, padding="same"), nn.GELU(), nn.AdaptiveAvgPool1d(1)
-        )
+        self.branches = nn.ModuleList([nn.Sequential(nn.Conv1d(8, 12, k, padding="same"), nn.GELU()) for k in (5, 10, 20)])
+        self.fuse = nn.Sequential(nn.Conv1d(36, 24, 3, padding="same"), nn.GELU(), nn.AdaptiveAvgPool1d(1))
         self.head = nn.Sequential(nn.Linear(25, 16), nn.GELU(), nn.Linear(16, 2))
-
     def forward(self, x: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
         z = torch.cat([b(x) for b in self.branches], dim=1)
         z = self.fuse(z).squeeze(-1)
@@ -191,13 +163,7 @@ def _metrics(model: nn.Module, s: Split, device: torch.device, y_mu: torch.Tenso
     p = _predict(model, s, device, y_mu, y_sd)
     y = s.y
     err = p - y
-    out = {
-        "C_mae": float(np.abs(err[:, 0]).mean()),
-        "Q_mae": float(np.abs(err[:, 1]).mean()),
-        "C_corr": float(np.corrcoef(p[:, 0], y[:, 0])[0, 1]) if len(y) > 2 else float("nan"),
-        "Q_corr": float(np.corrcoef(p[:, 1], y[:, 1])[0, 1]) if len(y) > 2 else float("nan"),
-    }
-    # Ranking audit: compare actual target means in top/bottom predicted thirds.
+    out = {"C_mae": float(np.abs(err[:, 0]).mean()), "Q_mae": float(np.abs(err[:, 1]).mean()), "C_corr": float(np.corrcoef(p[:, 0], y[:, 0])[0, 1]) if len(y) > 2 else float("nan"), "Q_corr": float(np.corrcoef(p[:, 1], y[:, 1])[0, 1]) if len(y) > 2 else float("nan")}
     n = len(y)
     k = max(1, n // 3)
     c_order = np.argsort(p[:, 0])
@@ -223,6 +189,7 @@ def main() -> None:
     gated = _attach_gate(targets, gate)
     x, g, y, idx = _build_samples(df, gated)
     train, val, test = _split(x, g, y, idx)
+    print(f"S1 L2 CENTER COUNTS decisions={len(targets)} latest_state_pass={len(gated)} finite_samples={len(y)} gate_high={int((g[:,0]>0).sum())} gate_low={int((g[:,0]<0).sum())}")
     if min(len(train.y), len(val.y), len(test.y)) < 5:
         raise RuntimeError(f"split too small train={len(train.y)} val={len(val.y)} test={len(test.y)} total={len(y)}")
 
@@ -236,7 +203,6 @@ def main() -> None:
     loss_fn = nn.SmoothL1Loss()
     best = None
     best_val = float("inf")
-
     for _ in range(EPOCHS):
         model.train()
         for xb, gb, yb in _loader(train, True):
@@ -244,24 +210,18 @@ def main() -> None:
             pred = model(xb, gb)
             target = (yb - y_mu) / y_sd
             loss = loss_fn(pred, target)
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
+            opt.zero_grad(); loss.backward(); opt.step()
         vm = _metrics(model, val, device, y_mu, y_sd)
         score = vm["C_mae"] + vm["Q_mae"]
         if score < best_val:
             best_val = score
             best = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-
     if best is not None:
         model.load_state_dict(best)
-
     print(f"S1 L2 CENTER START ticker={TICKER} rows={audit.rows} W={W} centered_target=2W decisions={len(targets)} gated_samples={len(y)} device={device}")
     print(f"S1 L2 CENTER SPLIT train={len(train.y)} val={len(val.y)} test={len(test.y)} embargo={W}")
     for name, s in (("train", train), ("val", val), ("test", test)):
-        hi = int((s.g[:, 0] > 0).sum())
-        lo = int((s.g[:, 0] < 0).sum())
-        print(f"S1 L2 CENTER SUPPORT split={name} high={hi} low={lo}")
+        print(f"S1 L2 CENTER SUPPORT split={name} high={int((s.g[:,0]>0).sum())} low={int((s.g[:,0]<0).sum())}")
         m = _metrics(model, s, device, y_mu, y_sd)
         print("S1 L2 CENTER METRIC split=" + name + " " + " ".join(f"{k}={v:.6f}" for k, v in m.items()))
     print("S1 L2 CENTER COMPLETE")
