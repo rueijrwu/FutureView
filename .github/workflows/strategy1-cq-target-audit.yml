@@ -1,0 +1,57 @@
+name: Strategy 1 C Q Target Audit
+
+on:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'Layer1.md'
+      - 'Layer2.md'
+      - 'src/futureview/strategy1_cq_target_audit.py'
+      - '.github/workflows/strategy1-cq-target-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
+          python -m pip install -e . --no-deps
+      - name: Run gated C Q target audit
+        env:
+          FUTUREVIEW_TICKER: 'TSLA'
+          FUTUREVIEW_DATA_PERIOD: '5y'
+          FUTUREVIEW_LAYER1_WINDOW: '30'
+          FUTUREVIEW_LAYER1_REFERENCE_DAYS: '60'
+          FUTUREVIEW_LAYER1_LOW_Q: '0.40'
+          FUTUREVIEW_LAYER1_HIGH_Q: '0.60'
+          FUTUREVIEW_A_RANDOM_SAMPLES: '20'
+          FUTUREVIEW_A_RANDOM_SEED: '20260827'
+          FUTUREVIEW_CQ_AUDIT_OUTPUT: 'strategy1-cq-target-audit.csv'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_cq_target_audit 2>&1 | tee strategy1-cq-target-audit.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Gated C/Q target audit'
+            echo
+            echo '```text'
+            grep -E '^S1 CQ AUDIT (START|DEFINITION|GATE|SUPPORT|C |Q |JOINT|OUTPUT|COMPLETE)' strategy1-cq-target-audit.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-cq-target-audit-${{ github.run_number }}
+          path: |
+            strategy1-cq-target-audit.log
+            strategy1-cq-target-audit.csv
+          retention-days: 30
