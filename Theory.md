@@ -10,19 +10,79 @@ Before attempting any CNN or raw price-volume prediction problem, the current re
 
 No CNN, gate, or predictive mapping from price-volume is assumed at this stage.
 
-## 2. Historical Strategy outcomes
+## 2. Deterministic Strategy path definition
 
-For a fixed historical evaluation window \(W\), let
+All Strategy calculations in the current historical experiment use **daily close prices only**.
+
+Over the complete five-year historical sample, first identify:
+
+- all legal Entry dates under the fixed Strategy Entry rule;
+- all legal 5-day and 10-day Exit events under the fixed Strategy Exit rule;
+- the complete union of 5-day and 10-day local minima;
+- the complete union of 5-day and 10-day local maxima.
+
+For this retrospective outcome-space experiment, a 5-day local extremum is a close that is the extremum relative to the preceding five and following five trading sessions. A 10-day local extremum is defined analogously using the preceding ten and following ten trading sessions. This retrospective definition is used only to define historical outcomes; any later tradable/predictive experiment must separately handle confirmation delay.
+
+For a legal Entry at index \(e\) with close \(P_e\), let \(m_b\) be the most recent 5-day or 10-day local minimum before \(e\). Define the campaign's fixed base distance
 
 \[
-\mathcal E_W=\{E_1,E_2,\ldots,E_n\}
+D_b=P_e-P_{m_b}.
 \]
 
-be the realized profits of the legal Strategy outcomes observed in that window.
+A campaign is eligible for deterministic path construction only when such a prior local minimum exists and \(D_b>0\).
 
-These outcomes are consequences of applying the fixed Strategy to the historical price-volume environment. They are not manually selected examples.
+The initial Entry deploys one third of the total campaign capital.
 
-## 3. Profitability bounds and normalized path position
+After Entry, Addon candidates are restricted to the chronological union of **5-day and 10-day local maxima**. An Addon may occur only at a candidate local maximum \(a_i\) whose close is more than \(D_b\) above the previous actual Entry/Addon price:
+
+\[
+P_{a_i}-P_{i-1}>D_b.
+\]
+
+The first chronological candidate satisfying this inequality becomes the next Addon. The same fixed \(D_b\) is reused for every Addon. Each Addon deploys another one third of total campaign capital, and the Strategy permits at most three total capital deployments:
+
+\[
+\text{Entry}+\text{Addon1}+\text{Addon2}.
+\]
+
+Therefore Addon levels are **not enumerated as alternative reference configurations**. For a given legal Entry, the Strategy produces one deterministic Addon sequence.
+
+Exit logic is also deterministic. Once a campaign is active:
+
+- the first legal 5-day exit event sells 40% of the then-current position;
+- a legal 10-day exit event liquidates all remaining shares (the remaining 60% when the 5-day exit has already occurred);
+- no new Addon is allowed after the first exit event;
+- any position still open at the fixed campaign horizon is liquidated at the horizon close.
+
+Each Entry/Add-on purchase uses one third of the original total-capital denominator. Unused capital remains cash. Campaign profit is measured relative to that same total-capital denominator.
+
+## 3. Historical evaluation windows and Strategy outcomes
+
+For a fixed historical evaluation window
+
+\[
+W=[t_0,t_1],
+\]
+
+let the legal Entry set be
+
+\[
+\mathcal I_W=\{e:\ t_0\le e\le t_1,\ e\text{ is a legal Entry}\}.
+\]
+
+Window membership is determined by the **initial Entry date only**. The deterministic Strategy path that begins at \(e\) may continue beyond \(t_1\) until its Exit or fixed campaign horizon.
+
+Let
+
+\[
+\mathcal E_W=\{E(e):e\in\mathcal I_W\}
+\]
+
+be the realized profits of the deterministic Strategy paths whose initial Entries lie in the window.
+
+Thus one legal Entry contributes at most one Strategy outcome. Historical windows do not enumerate alternative Addon-reference configurations.
+
+## 4. Profitability bounds and normalized path position
 
 Define
 
@@ -48,31 +108,27 @@ Q_i=\frac{U_W-E_i}{C_W}.
 
 Thus \(Q_i=0\) corresponds to the observed upper-profit bound and \(Q_i=1\) corresponds to the observed lower-profit bound.
 
-The collection \(\{Q_i\}\) is a distribution over legal Strategy outcomes within a historical window.
+The collection \(\{Q_i\}\) is a distribution over legal deterministic Strategy outcomes within a historical window.
 
-## 4. Baseline family
+## 5. Baseline family
 
-A historical window may also be described by a family of reference outcomes
+The current minimal baseline family contains two references.
 
-\[
-\mathcal B_W=\{B_W^{(1)},B_W^{(2)},\ldots,B_W^{(k)}\}.
-\]
+### 5.1 Periodic baseline
 
-Possible members include:
+\(B_{\text{periodic}}\) uses the same maximum of three capital deployments. One third of total capital is invested at each of three evenly spaced dates inside the evaluation window; all three tranches are valued at the common window end. Unused capital remains cash until deployed.
 
-- market / buy-and-hold baseline;
-- fixed periodic-investment baseline;
-- random-entry baseline;
-- Strategy-null baseline in which Entry selection is neutralized while downstream rules are retained;
-- matched-random baseline under comparable market conditions.
+### 5.2 Random indicator
 
-Each baseline must have a clear null/reference interpretation and be reproducible.
+\(B_{\text{random}}\) is only a coarse descriptive indicator, not a separate research target. A small fixed-seed sample chooses one to three random Entry dates within the window, each deploying one third of total capital, and values all positions at the common window end. The sample mean is retained.
 
-For baseline \(j\), the upper-profit opportunity relative to that baseline is
+For baseline \(j\), define the signed upper-bound difference
 
 \[
 A_W^{(j)}=U_W-B_W^{(j)}.
 \]
+
+This quantity is allowed to be negative. A negative value means that even the best observed deterministic Strategy Entry in that window underperformed the baseline.
 
 This is distinct from
 
@@ -80,13 +136,13 @@ This is distinct from
 C_W=U_W-L_W.
 \]
 
-## 5. Candidate Representation A: minimal direct statistics
+## 6. Candidate Representation A: minimal direct statistics
 
 The first candidate representation is
 
 \[
 Y_W^{(A)}=
-[L_W,\ U_W,\ B_W^{(1)},\ldots,B_W^{(k)}].
+[L_W,\ U_W,\ B_{\text{periodic},W},\ B_{\text{random},W}].
 \]
 
 Representation A deliberately excludes quantities that are exact algebraic functions of these variables, such as
@@ -106,20 +162,20 @@ The purpose of Representation A is not to train an Autoencoder. It is the direct
 Before introducing a learned latent space, analyze the historical distribution and dependence structure of
 
 \[
-L,\ U,\ B_1,\ldots,B_k.
+L,\ U,\ B_{\text{periodic}},\ B_{\text{random}}.
 \]
 
 The first questions are therefore empirical and descriptive:
 
 1. how do \(L\) and \(U\) vary across historical windows;
-2. how strongly are the different baselines related to each other;
+2. how strongly are the baselines related to each other;
 3. how strongly are the baselines related to \(L\) and \(U\);
-4. whether several baselines provide genuinely different information or mostly repeat the same historical structure;
-5. whether chronological periods show materially different statistical structure.
+4. whether chronological periods show materially different statistical structure;
+5. how often and by how much \(U\) exceeds or falls below \(B_{\text{periodic}}\).
 
 Representation A provides the simplest reference against which any later Autoencoder result must be compared.
 
-## 6. Candidate Representation B: bounds, baselines, and normalized outcome shape
+## 7. Candidate Representation B: bounds, baselines, and normalized outcome shape
 
 Representation A does not distinguish two windows that have the same \(L\), \(U\), and baselines but very different distributions of legal Strategy outcomes between those bounds.
 
@@ -132,7 +188,8 @@ Y_W^{(B)}=
 [
 L_W,
 U_W,
-B_W^{(1)},\ldots,B_W^{(k)},
+B_{\text{periodic},W},
+B_{\text{random},W},
 Q_{10,W},
 Q_{25,W},
 Q_{50,W},
@@ -148,7 +205,7 @@ The exact quantile set is not frozen yet. The important distinction is that Repr
 
 Representation B is the first candidate for an unsupervised Autoencoder test.
 
-## 7. Why B may require an Autoencoder
+## 8. Why B may require an Autoencoder
 
 As more meaningful baselines and distribution summaries are added, the descriptor vector can contain substantial empirical redundancy.
 
@@ -178,7 +235,7 @@ with
 
 No semantic meaning is assigned to the coordinates of \(Z\) in advance.
 
-## 8. Algebraic redundancy must not be mistaken for discovered structure
+## 9. Algebraic redundancy must not be mistaken for discovered structure
 
 A low-dimensional reconstruction is not meaningful if it is achieved mainly by supplying exact copies of the same information.
 
@@ -203,7 +260,7 @@ The research must distinguish:
 
 Only the latter is evidence that the historical Strategy outcome environment may live on a lower-dimensional manifold.
 
-## 9. Profit relationships are examined only after Z is formed
+## 10. Profit relationships are examined only after Z is formed
 
 The Autoencoder is not trained to maximize profit prediction, win-rate separation, information strength, tradable value, or any predefined interpretation of \(Z\).
 
@@ -221,16 +278,17 @@ No relationship between \(Z\) and later profit statistics is assumed beforehand.
 
 Only after a low-dimensional \(Z\) is established should the research ask whether different regions or coordinates of \(Z\) show stable relationships with realized profitability.
 
-## 10. Current research sequence
+## 11. Current research sequence
 
 The current sequence is:
 
-1. generate historical legal Strategy outcomes and meaningful baselines;
-2. construct Representation A: \([L,U,B_i]\);
-3. analyze A directly with descriptive and chronological statistics, without an Autoencoder;
-4. construct Representation B by adding fixed-length summaries of the \(Q\) distribution;
-5. test whether B admits a stable low-dimensional \(Z\) using an unsupervised Autoencoder;
-6. only after \(Z\) is formed, examine its relationship with withheld profitability statistics;
-7. only if that structure is meaningful, return to the question of how raw price-volume information may map into it.
+1. generate historical legal Entries, local extrema, deterministic Strategy paths, and meaningful baselines;
+2. verify directly whether the deterministic Strategy upper bound \(U\) can exceed \(B_{\text{periodic}}\) in historical windows;
+3. construct Representation A: \([L,U,B_{\text{periodic}},B_{\text{random}}]\);
+4. analyze A directly with descriptive and chronological statistics, without an Autoencoder;
+5. construct Representation B by adding fixed-length summaries of the \(Q\) distribution;
+6. test whether B admits a stable low-dimensional \(Z\) using an unsupervised Autoencoder;
+7. only after \(Z\) is formed, examine its relationship with withheld profitability statistics;
+8. only if that structure is meaningful, return to the question of how raw price-volume information may map into it.
 
 No CNN architecture, gate, latent semantic interpretation, or profitability prediction head is assumed before these steps are established empirically.
