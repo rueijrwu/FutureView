@@ -5,6 +5,7 @@ on:
     branches: [strategy-profitability-restart]
     paths:
       - 'src/futureview/strategy1_representation_a.py'
+      - 'src/futureview/strategy1_deterministic_paths.py'
       - '.github/workflows/strategy1-representation-a.yml'
   workflow_dispatch:
 
@@ -25,8 +26,8 @@ jobs:
         env:
           FUTUREVIEW_TICKER: 'SMH'
           FUTUREVIEW_DATA_PERIOD: '5y'
-          FUTUREVIEW_A_WINDOWS: '20,30,60'
-          FUTUREVIEW_A_STRIDE: '5'
+          FUTUREVIEW_A_WINDOWS: '60'
+          FUTUREVIEW_A_STRIDE: '1'
           FUTUREVIEW_A_RANDOM_SAMPLES: '20'
           FUTUREVIEW_A_RANDOM_SEED: '20260827'
           FUTUREVIEW_A_OUTPUT: 'strategy1-representation-a.csv'
@@ -37,10 +38,10 @@ jobs:
         if: always()
         run: |
           {
-            echo '## Strategy 1 — Representation A historical statistics'
+            echo '## Strategy 1 — deterministic Representation A / periodic audit'
             echo
             echo '```text'
-            grep -E '^S1 REP_A (START|DEFINITION|DATA|DIST|CORR|CHRONO|OUTPUT|COMPLETE)' strategy1-representation-a.log || true
+            grep -E '^S1 REP_A (START|DEFINITION|PATHS|DATA|DIST|PERIODIC_AUDIT|PERIODIC_TOP|CORR|CHRONO|OUTPUT|COMPLETE)' strategy1-representation-a.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
