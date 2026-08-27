@@ -72,7 +72,7 @@ def build_cq_target_pairs(
     windows: pd.DataFrame,
     paths: pd.DataFrame,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
-    """Build future (C,Q) pairs only for anchors whose known historical gate is High."""
+    """Build future (C,Q) pairs for anchors whose known historical gate is High or Low."""
     input_meta, _ = build_samples(df, windows)
     valid_starts = set(input_meta["start_index"].astype(int).tolist())
     outcomes = build_outcome_table(df, windows)
@@ -85,6 +85,7 @@ def build_cq_target_pairs(
         "gate_high": 0,
         "gate_neutral": 0,
         "gate_low": 0,
+        "gate_pass": 0,
         "future_no_entry": 0,
         "future_c_zero": 0,
     }
@@ -107,9 +108,10 @@ def build_cq_target_pairs(
         else:
             counters["gate_neutral"] += 1
 
-        # Current deterministic pass rule: only the known historical High state enters C/Q training.
-        if state != 1:
+        # Deterministic gate: High and Low pass; Neutral is filtered.
+        if state == 0:
             continue
+        counters["gate_pass"] += 1
 
         end = int(w.end_index)
         entries = paths.loc[
@@ -159,6 +161,30 @@ def _pct(v: pd.Series, q: float) -> float:
     return float(v.quantile(q))
 
 
+def _print_group(name: str, pairs: pd.DataFrame) -> None:
+    anchors = pairs["anchor_index"].nunique()
+    c = pairs.drop_duplicates("anchor_index")["future_C"]
+    q = pairs["future_Q"]
+    print(
+        f"S1 CQ AUDIT GROUP gate={name} anchors={anchors} pairs={len(pairs)} "
+        f"pairs_per_anchor_mean={len(pairs)/anchors:.3f} pairs_per_anchor_median={pairs.groupby('anchor_index').size().median():.1f}"
+    )
+    print(
+        f"S1 CQ AUDIT C gate={name} positive_rate={(c > 0).mean():.6f} "
+        f"p10={_pct(c,0.10):.6f} p25={_pct(c,0.25):.6f} median={_pct(c,0.50):.6f} "
+        f"p75={_pct(c,0.75):.6f} p90={_pct(c,0.90):.6f}"
+    )
+    print(
+        f"S1 CQ AUDIT Q gate={name} p01={_pct(q,0.01):.6f} p10={_pct(q,0.10):.6f} p25={_pct(q,0.25):.6f} "
+        f"median={_pct(q,0.50):.6f} p75={_pct(q,0.75):.6f} p90={_pct(q,0.90):.6f} p99={_pct(q,0.99):.6f}"
+    )
+    print(
+        f"S1 CQ AUDIT JOINT gate={name} "
+        f"C_gt_0_Q_lt_0.2={((pairs['future_C'] > 0) & (pairs['future_Q'] < 0.2)).mean():.6f} "
+        f"C_gt_0_Q_lt_0.5={((pairs['future_C'] > 0) & (pairs['future_Q'] < 0.5)).mean():.6f}"
+    )
+
+
 def main() -> None:
     if WINDOW != 30 or REFERENCE_DAYS != 60:
         raise ValueError("C/Q audit is currently locked to W=30 and gate reference=60")
@@ -179,39 +205,22 @@ def main() -> None:
     )
     pairs, counters = build_cq_target_pairs(df, windows, paths)
 
-    anchors = pairs["anchor_index"].nunique()
-    c = pairs.drop_duplicates("anchor_index")["future_C"]
-    q = pairs["future_Q"]
-
     print(
         f"S1 CQ AUDIT START ticker={TICKER} rows={audit.rows} first={audit.start} last={audit.end} "
         f"W={WINDOW} gate_reference={REFERENCE_DAYS} gate_percentiles={LOW_Q:.2f},{HIGH_Q:.2f}"
     )
     print(
-        "S1 CQ AUDIT DEFINITION gate=known_completed_history_high_only "
-        "target=future_joint_distribution_p(C,Q|X,gate_passed) Q=(U-P_E)/C"
+        "S1 CQ AUDIT DEFINITION gate=known_completed_history_high_or_low_pass_neutral_filter "
+        "target=future_joint_distribution_p(C,Q|X,gate_state) Q=(U-P_E)/C"
     )
-    print(
-        "S1 CQ AUDIT GATE "
-        + " ".join(f"{k}={v}" for k, v in counters.items())
-    )
-    print(
-        f"S1 CQ AUDIT SUPPORT anchors={anchors} pairs={len(pairs)} "
-        f"pairs_per_anchor_mean={len(pairs)/anchors:.3f} pairs_per_anchor_median={pairs.groupby('anchor_index').size().median():.1f}"
-    )
-    print(
-        f"S1 CQ AUDIT C positive_rate={(c > 0).mean():.6f} "
-        f"p10={_pct(c,0.10):.6f} p25={_pct(c,0.25):.6f} median={_pct(c,0.50):.6f} "
-        f"p75={_pct(c,0.75):.6f} p90={_pct(c,0.90):.6f}"
-    )
-    print(
-        f"S1 CQ AUDIT Q p01={_pct(q,0.01):.6f} p10={_pct(q,0.10):.6f} p25={_pct(q,0.25):.6f} "
-        f"median={_pct(q,0.50):.6f} p75={_pct(q,0.75):.6f} p90={_pct(q,0.90):.6f} p99={_pct(q,0.99):.6f}"
-    )
-    print(
-        f"S1 CQ AUDIT JOINT C_gt_0_Q_lt_0.2={((pairs['future_C'] > 0) & (pairs['future_Q'] < 0.2)).mean():.6f} "
-        f"C_gt_0_Q_lt_0.5={((pairs['future_C'] > 0) & (pairs['future_Q'] < 0.5)).mean():.6f}"
-    )
+    print("S1 CQ AUDIT GATE " + " ".join(f"{k}={v}" for k, v in counters.items()))
+
+    for state, name in ((1, "high"), (-1, "low")):
+        group = pairs.loc[pairs["gate_state"] == state].copy()
+        if group.empty:
+            print(f"S1 CQ AUDIT GROUP gate={name} anchors=0 pairs=0")
+            continue
+        _print_group(name, group)
 
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     pairs.to_csv(OUTPUT, index=False)
