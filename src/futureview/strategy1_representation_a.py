@@ -9,12 +9,12 @@ import pandas as pd
 from .data import download_ticker_daily, validate_daily_ohlcv
 from .strategy1 import add_strategy1_events
 from .strategy1_cq_data import HORIZON
-from .strategy1_profitability_io import build_path_table
+from .strategy1_deterministic_paths import build_deterministic_path_table
 
 TICKER = os.environ.get("FUTUREVIEW_TICKER", "SMH")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "5y")
-WINDOWS = tuple(int(v) for v in os.environ.get("FUTUREVIEW_A_WINDOWS", "20,30,60").split(","))
-STRIDE = int(os.environ.get("FUTUREVIEW_A_STRIDE", "5"))
+WINDOWS = tuple(int(v) for v in os.environ.get("FUTUREVIEW_A_WINDOWS", "60").split(","))
+STRIDE = int(os.environ.get("FUTUREVIEW_A_STRIDE", "1"))
 RANDOM_SAMPLES = int(os.environ.get("FUTUREVIEW_A_RANDOM_SAMPLES", "20"))
 RANDOM_SEED = int(os.environ.get("FUTUREVIEW_A_RANDOM_SEED", "20260827"))
 OUTPUT = Path(os.environ.get("FUTUREVIEW_A_OUTPUT", "strategy1-representation-a.csv"))
@@ -47,21 +47,14 @@ def _random_baseline(
     n_samples: int,
     seed: int,
 ) -> float:
-    """Coarse random-entry indicator using a small fixed-seed sample.
-
-    Each sample chooses 1, 2, or 3 distinct entry dates uniformly within the
-    evaluation window. Each used entry deploys 1/3 of total capital; unused
-    capital remains cash. All positions are marked to the common window end.
-    The mean over n_samples is retained only as a simple reference indicator.
-    """
+    """Coarse random-entry indicator using a small fixed-seed sample."""
     if n_samples <= 0:
         raise ValueError("n_samples must be positive")
     candidates = np.arange(start, end + 1, dtype=int)
     rng = np.random.default_rng(seed)
     returns: list[float] = []
     for _ in range(n_samples):
-        k = int(rng.integers(1, 4))
-        k = min(k, len(candidates))
+        k = min(int(rng.integers(1, 4)), len(candidates))
         entries = np.sort(rng.choice(candidates, size=k, replace=False)).astype(int).tolist()
         returns.append(_portfolio_return_to_end(close, entries, end))
     return float(np.mean(returns))
@@ -95,7 +88,6 @@ def build_representation_a_table(
         L = float(np.min(selected))
         U = float(np.max(selected))
         b_periodic = _periodic_baseline(close, start, end)
-        # Window-specific deterministic seed keeps the coarse indicator reproducible.
         b_random = _random_baseline(
             close,
             start,
@@ -116,7 +108,6 @@ def build_representation_a_table(
                 "U": U,
                 "B_periodic": b_periodic,
                 "B_random": b_random,
-                # Derived diagnostics only; these are not independent Representation A inputs.
                 "C": U - L,
                 "A_periodic": U - b_periodic,
                 "A_random": U - b_random,
@@ -145,6 +136,23 @@ def _print_distribution(frame: pd.DataFrame, window: int) -> None:
         )
 
 
+def _print_periodic_audit(frame: pd.DataFrame, window: int) -> None:
+    diff = frame["A_periodic"].to_numpy(dtype=float)
+    print(
+        f"S1 REP_A PERIODIC_AUDIT W={window} n={len(diff)} "
+        f"positive_rate={(diff > 0).mean():.6f} zero_or_negative_rate={(diff <= 0).mean():.6f} "
+        f"mean={diff.mean():.6f} median={np.median(diff):.6f} "
+        f"max={diff.max():.6f} min={diff.min():.6f}"
+    )
+    best = frame.nlargest(min(10, len(frame)), "A_periodic")
+    for rank, row in enumerate(best.itertuples(index=False), start=1):
+        print(
+            f"S1 REP_A PERIODIC_TOP rank={rank} W={window} start={row.start_date} end={row.end_date} "
+            f"U={row.U:.6f} B_periodic={row.B_periodic:.6f} A_periodic={row.A_periodic:.6f} "
+            f"paths={row.path_count}"
+        )
+
+
 def _print_correlations(frame: pd.DataFrame, window: int) -> None:
     cols = ["L", "U", "B_periodic", "B_random"]
     pearson = frame[cols].corr(method="pearson")
@@ -169,7 +177,8 @@ def _print_chronological(frame: pd.DataFrame, window: int) -> None:
             f"S1 REP_A CHRONO W={window} part={part_id} n={len(chunk)} "
             f"L_mean={chunk['L'].mean():.6f} U_mean={chunk['U'].mean():.6f} "
             f"B_periodic_mean={chunk['B_periodic'].mean():.6f} B_random_mean={chunk['B_random'].mean():.6f} "
-            f"A_periodic_mean={chunk['A_periodic'].mean():.6f} A_random_mean={chunk['A_random'].mean():.6f}"
+            f"A_periodic_mean={chunk['A_periodic'].mean():.6f} A_random_mean={chunk['A_random'].mean():.6f} "
+            f"A_periodic_positive_rate={(chunk['A_periodic'] > 0).mean():.6f}"
         )
 
 
@@ -182,18 +191,25 @@ def main() -> None:
     df = download_ticker_daily(TICKER, period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
     events = add_strategy1_events(df).reset_index(drop=True)
-    path_table = build_path_table(events)
+    path_table = build_deterministic_path_table(events)
 
+    addon1_rate = float((path_table["executed_addons"] >= 1).mean())
+    addon2_rate = float((path_table["executed_addons"] >= 2).mean())
     print(
         f"S1 REP_A START ticker={TICKER} rows={audit.rows} first={audit.start} last={audit.end} "
         f"paths={len(path_table)} entries={path_table['entry_index'].nunique()} horizon={HORIZON} "
         f"windows={','.join(map(str, WINDOWS))} stride={STRIDE} random_samples={RANDOM_SAMPLES} random_seed={RANDOM_SEED}"
     )
     print(
-        "S1 REP_A DEFINITION inputs=L,U,B_periodic,B_random "
-        "B_periodic=three_equal_one_third_evenly_spaced_entries_common_window_end "
-        "B_random=mean_of_small_fixed_seed_samples_each_using_1_to_3_equal_one_third_random_entries_common_window_end "
-        "derived_only=C,A_periodic,A_random"
+        "S1 REP_A DEFINITION deterministic_one_path_per_entry=true "
+        "Db=entry_close_minus_most_recent_5_or_10_day_local_min "
+        "addon_candidates=5_or_10_day_local_max first_candidate_gap_gt_Db max_two_addons "
+        "exit5=sell_40pct_current_shares exit10=sell_all_remaining no_addon_after_first_exit "
+        "inputs=L,U,B_periodic,B_random"
+    )
+    print(
+        f"S1 REP_A PATHS eligible_entries={len(path_table)} addon1_rate={addon1_rate:.6f} "
+        f"addon2_rate={addon2_rate:.6f}"
     )
 
     frames: list[pd.DataFrame] = []
@@ -212,6 +228,7 @@ def main() -> None:
             f"first={frame['start_date'].iloc[0]} last={frame['end_date'].iloc[-1]}"
         )
         _print_distribution(frame, window)
+        _print_periodic_audit(frame, window)
         _print_correlations(frame, window)
         _print_chronological(frame, window)
 
