@@ -69,7 +69,7 @@ def _make_labelled_samples(df: pd.DataFrame, windows: pd.DataFrame) -> tuple[pd.
     meta, x = build_samples(df, windows)
     outcomes = build_outcome_table(df, windows)
     labelled = rolling_labels(outcomes, REFERENCE_DAYS).loc[:, [
-        "start_index", "label", "C25", "C75", "U25", "U75", "reference_count"
+        "start_index", "label", "C_low", "C_high", "U_low", "U_high", "reference_count"
     ]]
     merged = meta.merge(labelled, on="start_index", how="inner", validate="one_to_one")
     if merged.empty:
