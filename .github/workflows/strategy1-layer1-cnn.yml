@@ -1,0 +1,61 @@
+name: Strategy 1 Layer 1 CNN
+
+on:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'src/futureview/strategy1_layer1_cnn.py'
+      - '.github/workflows/strategy1-layer1-cnn.yml'
+  workflow_dispatch:
+
+jobs:
+  cnn:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61" "scikit-learn>=1.5" "torch>=2.4"
+          python -m pip install -e . --no-deps
+      - name: Run Layer 1 CNN
+        env:
+          FUTUREVIEW_TICKER: 'TSLA'
+          FUTUREVIEW_DATA_PERIOD: '5y'
+          FUTUREVIEW_LAYER1_WINDOW: '30'
+          FUTUREVIEW_LAYER1_INPUT: '60'
+          FUTUREVIEW_LAYER1_REFERENCE_DAYS: '60'
+          FUTUREVIEW_LAYER1_LOW_Q: '0.40'
+          FUTUREVIEW_LAYER1_HIGH_Q: '0.60'
+          FUTUREVIEW_LAYER1_TRAIN_FRAC: '0.60'
+          FUTUREVIEW_LAYER1_VAL_FRAC: '0.20'
+          FUTUREVIEW_LAYER1_CNN_EPOCHS: '80'
+          FUTUREVIEW_LAYER1_CNN_BATCH: '32'
+          FUTUREVIEW_LAYER1_CNN_LR: '0.001'
+          FUTUREVIEW_A_RANDOM_SAMPLES: '20'
+          FUTUREVIEW_A_RANDOM_SEED: '20260827'
+          FUTUREVIEW_LAYER1_CNN_OUTPUT: 'strategy1-layer1-cnn.csv'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer1_cnn 2>&1 | tee strategy1-layer1-cnn.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Layer 1 CNN'
+            echo
+            echo '```text'
+            grep -E '^S1 LAYER1 CNN (START|DEFINITION|SPLIT|TRAIN|METRIC|CLASS|CONFUSION|RANK|OUTPUT|COMPLETE)' strategy1-layer1-cnn.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-layer1-cnn-${{ github.run_number }}
+          path: |
+            strategy1-layer1-cnn.log
+            strategy1-layer1-cnn.csv
+          retention-days: 30
