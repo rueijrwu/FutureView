@@ -81,12 +81,12 @@ Exit handling is:
 
 ```text
 first legal 5-day exit event  -> sell 40% of the then-current shares
-legal 10-day exit event       -> sell all remaining shares
-first exit event              -> disables any later Addon
+later legal Addon             -> still allowed after the 5-day partial exit
+legal 10-day exit event       -> sell all remaining shares and terminate campaign
 fixed horizon                 -> liquidate any still-open shares
 ```
 
-The current fixed campaign horizon remains 60 trading sessions. Campaign profit is measured against the original total-capital denominator.
+The 5-day partial exit is used at most once. It does not reset `D_b`, does not reset `last_buy_price`, and does not reset the maximum of three total capital deployments. Cash released by the 5-day partial exit may remain cash or later fund a still-legal Addon. The current fixed campaign horizon remains 60 trading sessions. Campaign profit is measured against the original total-capital denominator.
 
 ## 4. Historical evaluation interval
 
