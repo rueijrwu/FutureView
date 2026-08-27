@@ -15,23 +15,55 @@ TICKER = os.environ.get("FUTUREVIEW_TICKER", "SMH")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "5y")
 WINDOWS = tuple(int(v) for v in os.environ.get("FUTUREVIEW_A_WINDOWS", "20,30,60").split(","))
 STRIDE = int(os.environ.get("FUTUREVIEW_A_STRIDE", "5"))
+RANDOM_SAMPLES = int(os.environ.get("FUTUREVIEW_A_RANDOM_SAMPLES", "20"))
+RANDOM_SEED = int(os.environ.get("FUTUREVIEW_A_RANDOM_SEED", "20260827"))
 OUTPUT = Path(os.environ.get("FUTUREVIEW_A_OUTPUT", "strategy1-representation-a.csv"))
 
 
-def _random_entry_hold_baseline(close: np.ndarray, start: int, end: int) -> float:
-    """Expected return for a uniformly random date in [start, end], held for HORIZON sessions.
+def _portfolio_return_to_end(close: np.ndarray, entries: list[int], end: int) -> float:
+    """Return on total capital with 1/3 deployed at each supplied entry and remainder kept as cash."""
+    if len(entries) > 3:
+        raise ValueError("at most three entries are allowed")
+    total = 0.0
+    for entry in entries:
+        if entry < 0 or entry > end:
+            raise ValueError("entry must lie within the evaluation window")
+        total += (1.0 / 3.0) * float(close[end] / close[entry] - 1.0)
+    return total
 
-    This is a deterministic expectation over all eligible dates, not a Monte Carlo draw.
-    It is intentionally a simple random-entry null and does not retain Strategy add/exit rules.
+
+def _periodic_baseline(close: np.ndarray, start: int, end: int) -> float:
+    """Three equal 1/3 investments at evenly spaced times, all marked to the common window end."""
+    span = end - start
+    entries = [start, start + span // 3, start + (2 * span) // 3]
+    return _portfolio_return_to_end(close, entries, end)
+
+
+def _random_baseline(
+    close: np.ndarray,
+    start: int,
+    end: int,
+    *,
+    n_samples: int,
+    seed: int,
+) -> float:
+    """Coarse random-entry indicator using a small fixed-seed sample.
+
+    Each sample chooses 1, 2, or 3 distinct entry dates uniformly within the
+    evaluation window. Each used entry deploys 1/3 of total capital; unused
+    capital remains cash. All positions are marked to the common window end.
+    The mean over n_samples is retained only as a simple reference indicator.
     """
+    if n_samples <= 0:
+        raise ValueError("n_samples must be positive")
+    candidates = np.arange(start, end + 1, dtype=int)
+    rng = np.random.default_rng(seed)
     returns: list[float] = []
-    for i in range(start, end + 1):
-        j = i + HORIZON - 1
-        if j >= len(close):
-            continue
-        returns.append(float(close[j] / close[i] - 1.0))
-    if not returns:
-        return float("nan")
+    for _ in range(n_samples):
+        k = int(rng.integers(1, 4))
+        k = min(k, len(candidates))
+        entries = np.sort(rng.choice(candidates, size=k, replace=False)).astype(int).tolist()
+        returns.append(_portfolio_return_to_end(close, entries, end))
     return float(np.mean(returns))
 
 
@@ -41,6 +73,8 @@ def build_representation_a_table(
     *,
     window: int,
     stride: int,
+    random_samples: int,
+    random_seed: int,
 ) -> pd.DataFrame:
     if window <= 1 or stride <= 0:
         raise ValueError("window must be > 1 and stride must be positive")
@@ -60,10 +94,15 @@ def build_representation_a_table(
 
         L = float(np.min(selected))
         U = float(np.max(selected))
-        b_market = float(close[end] / close[start] - 1.0)
-        b_random = _random_entry_hold_baseline(close, start, end)
-        if not np.isfinite(b_random):
-            continue
+        b_periodic = _periodic_baseline(close, start, end)
+        # Window-specific deterministic seed keeps the coarse indicator reproducible.
+        b_random = _random_baseline(
+            close,
+            start,
+            end,
+            n_samples=random_samples,
+            seed=random_seed + 1000003 * window + start,
+        )
 
         rows.append(
             {
@@ -75,11 +114,11 @@ def build_representation_a_table(
                 "end_date": str(pd.to_datetime(df.at[end, "date"]).date()),
                 "L": L,
                 "U": U,
-                "B_market": b_market,
+                "B_periodic": b_periodic,
                 "B_random": b_random,
                 # Derived diagnostics only; these are not independent Representation A inputs.
                 "C": U - L,
-                "A_market": U - b_market,
+                "A_periodic": U - b_periodic,
                 "A_random": U - b_random,
                 "path_count": int(len(selected)),
             }
@@ -96,7 +135,7 @@ def _fmt(x: float) -> str:
 
 
 def _print_distribution(frame: pd.DataFrame, window: int) -> None:
-    cols = ["L", "U", "B_market", "B_random", "C", "A_market", "A_random"]
+    cols = ["L", "U", "B_periodic", "B_random", "C", "A_periodic", "A_random"]
     for col in cols:
         values = frame[col].to_numpy(dtype=float)
         q = np.quantile(values, [0.05, 0.25, 0.50, 0.75, 0.95])
@@ -107,8 +146,7 @@ def _print_distribution(frame: pd.DataFrame, window: int) -> None:
 
 
 def _print_correlations(frame: pd.DataFrame, window: int) -> None:
-    # Representation A only. Derived C/A variables are deliberately excluded.
-    cols = ["L", "U", "B_market", "B_random"]
+    cols = ["L", "U", "B_periodic", "B_random"]
     pearson = frame[cols].corr(method="pearson")
     spearman = frame[cols].corr(method="spearman")
     for method, corr in (("pearson", pearson), ("spearman", spearman)):
@@ -130,14 +168,16 @@ def _print_chronological(frame: pd.DataFrame, window: int) -> None:
         print(
             f"S1 REP_A CHRONO W={window} part={part_id} n={len(chunk)} "
             f"L_mean={chunk['L'].mean():.6f} U_mean={chunk['U'].mean():.6f} "
-            f"B_market_mean={chunk['B_market'].mean():.6f} B_random_mean={chunk['B_random'].mean():.6f} "
-            f"A_market_mean={chunk['A_market'].mean():.6f} A_random_mean={chunk['A_random'].mean():.6f}"
+            f"B_periodic_mean={chunk['B_periodic'].mean():.6f} B_random_mean={chunk['B_random'].mean():.6f} "
+            f"A_periodic_mean={chunk['A_periodic'].mean():.6f} A_random_mean={chunk['A_random'].mean():.6f}"
         )
 
 
 def main() -> None:
     if not WINDOWS or any(w <= 1 for w in WINDOWS):
         raise ValueError("FUTUREVIEW_A_WINDOWS must contain integers > 1")
+    if RANDOM_SAMPLES <= 0:
+        raise ValueError("FUTUREVIEW_A_RANDOM_SAMPLES must be positive")
 
     df = download_ticker_daily(TICKER, period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
@@ -147,17 +187,25 @@ def main() -> None:
     print(
         f"S1 REP_A START ticker={TICKER} rows={audit.rows} first={audit.start} last={audit.end} "
         f"paths={len(path_table)} entries={path_table['entry_index'].nunique()} horizon={HORIZON} "
-        f"windows={','.join(map(str, WINDOWS))} stride={STRIDE}"
+        f"windows={','.join(map(str, WINDOWS))} stride={STRIDE} random_samples={RANDOM_SAMPLES} random_seed={RANDOM_SEED}"
     )
     print(
-        "S1 REP_A DEFINITION inputs=L,U,B_market,B_random "
-        "B_market=window_buy_hold B_random=uniform_random_entry_expected_60_session_hold "
-        "derived_only=C,A_market,A_random"
+        "S1 REP_A DEFINITION inputs=L,U,B_periodic,B_random "
+        "B_periodic=three_equal_one_third_evenly_spaced_entries_common_window_end "
+        "B_random=mean_of_small_fixed_seed_samples_each_using_1_to_3_equal_one_third_random_entries_common_window_end "
+        "derived_only=C,A_periodic,A_random"
     )
 
     frames: list[pd.DataFrame] = []
     for window in WINDOWS:
-        frame = build_representation_a_table(df, path_table, window=window, stride=STRIDE)
+        frame = build_representation_a_table(
+            df,
+            path_table,
+            window=window,
+            stride=STRIDE,
+            random_samples=RANDOM_SAMPLES,
+            random_seed=RANDOM_SEED,
+        )
         frames.append(frame)
         print(
             f"S1 REP_A DATA W={window} n={len(frame)} path_count_median={frame['path_count'].median():.1f} "
