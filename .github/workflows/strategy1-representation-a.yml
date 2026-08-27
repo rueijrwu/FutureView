@@ -1,0 +1,52 @@
+name: Strategy 1 Representation A Statistics
+
+on:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'src/futureview/strategy1_representation_a.py'
+      - '.github/workflows/strategy1-representation-a.yml'
+  workflow_dispatch:
+
+jobs:
+  representation-a:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "torch>=2.4" "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
+          python -m pip install -e . --no-deps
+      - name: Run Representation A statistics
+        env:
+          FUTUREVIEW_TICKER: 'SMH'
+          FUTUREVIEW_DATA_PERIOD: '5y'
+          FUTUREVIEW_A_WINDOWS: '20,30,60'
+          FUTUREVIEW_A_STRIDE: '5'
+          FUTUREVIEW_A_OUTPUT: 'strategy1-representation-a.csv'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_representation_a 2>&1 | tee strategy1-representation-a.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Representation A historical statistics'
+            echo
+            echo '```text'
+            grep -E '^S1 REP_A (START|DEFINITION|DATA|DIST|CORR|CHRONO|OUTPUT|COMPLETE)' strategy1-representation-a.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-representation-a-${{ github.run_number }}
+          path: |
+            strategy1-representation-a.log
+            strategy1-representation-a.csv
+          retention-days: 30
