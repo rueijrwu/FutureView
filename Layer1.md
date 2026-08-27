@@ -41,8 +41,10 @@ The periodic baseline is \(B_{p,W}\), and
 For legal Entry \(e\), with realized fixed-Strategy outcome \(P_E=E(e)\),
 
 \[
-\boxed{Q_e=\frac{U_W-P_E}{C_W}}.
+\boxed{Q_e=U_W-P_E}.
 \]
+
+Thus \(Q_e\ge 0\) by construction. \(Q_e=0\) identifies an Entry that attains the window upper bound, and larger \(Q_e\) means the Entry outcome lies farther below that upper bound. Q is no longer normalized by C.
 
 These are retrospective outcome quantities. Once their complete Strategy dependencies have finished historically, they are known data and may be used to characterize the historical environment. They are not model inputs for predicting their own future realization.
 
