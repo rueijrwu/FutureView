@@ -1,114 +1,138 @@
-# Strategy 1 — Probabilistic C/Q Layer
+# Strategy 1 — Layer 2 Centered-2W C/Q Prediction
 
 ## Research question
 
-After a deterministic historical gate has accepted the current context, what distribution of future fixed-Strategy outcomes is compatible with the observed causal price-volume structure?
+Layer 1 is a deterministic historical gate. Layer 2 does **not** relearn the gate.
 
-The model target is
+The Layer 2 question is:
+
+> Given the price-volume structure observed during the previous W sessions and the current fixed-Strategy decision point, can the model predict the C/Q outcome that will be realized when the corresponding centered 2W region is completed?
+
+For the current decision session t and W=30, define
 
 \[
-\boxed{p(C,Q\mid X,G)},\qquad G\in\{\text{High},\text{Low}\}.
+\boxed{R_t=[t-W+1,\ t+W]}.
 \]
 
-The model is not asked to predict the gate state.
+At decision time t only the left half is observable. The right half is future. Historical training can use the complete realized region after it has occurred.
 
-## Time structure
-
-At an anchor session \(t\):
-
-1. all price-volume information through \(t\) is known;
-2. all historical Strategy outcomes whose complete dependency ended by \(t\) are known;
-3. the deterministic gate is computed only from those completed historical outcomes;
-4. the causal model input is the locked previous 60-session tensor \(X_t\in\mathbb R^{8\times60}\);
-5. the future evaluation window is \(W_t=[t+1,t+30]\);
-6. after history has unfolded, the realized future \(C\) and legal-Entry \(Q\) values inside \(W_t\) become supervised targets.
-
-Thus training uses historical pairs of information that would have been available at the anchor and outcomes that were future from that anchor, even though both are known to us today.
-
-## Deterministic gate
-
-The gate uses the most recently completed historical Strategy-window outcome available at anchor \(t\). Call it \(g_t\), with known \(C_{g_t}\) and \(U_{g_t}\).
-
-Compare that completed outcome with completed historical outcomes from the preceding 60 trading sessions and compute the local 40/60 percentiles.
-
-The locked pass rule is
+The modeling relation is
 
 \[
-\boxed{G_t=\text{High or Low}\Rightarrow \text{PASS}},
+\boxed{X_{t-W+1:t},D_t,G_t\rightarrow p(C_t,Q_t)}.
 \]
 
+Here D_t is the fixed current decision. In the first baseline, samples are legal Strategy Entries, so the decision is represented by sample selection rather than by an engineered technical-indicator channel.
+
+## Target definition
+
+For the centered region R_t, enumerate all legal Entries whose initial Entry lies in R_t and execute the fixed Strategy exactly once for each.
+
 \[
-\boxed{G_t=\text{Neutral}\Rightarrow \text{FILTER}}.
+U_t=\max_{e\in I_{R_t}}E(e).
 \]
 
-High and Low are retained separately as known conditioning states. The gate is deterministic and auditable; it is not a learned classifier.
-
-## Future C target
-
-For the future W30 window,
+With the periodic baseline over the same centered 2W region,
 
 \[
-U_W=\max_{e\in I_W}E(e),
+\boxed{C_t=U_t-B_{p,t}}.
+\]
+
+For the current legal Entry decision t, its unique fixed-Strategy return is
+
+\[
+P_{E,t}=E(t),
 \]
 
 and
 
 \[
-\boxed{C_W=U_W-B_{p,W}}.
+\boxed{Q_t=U_t-P_{E,t}}.
 \]
 
-Every legal Entry in the same future window shares the same window-level C target.
-
-## Future Q targets
-
-For every legal Entry \(e\in I_W\), the fixed Strategy produces exactly one realized outcome
+Thus one decision sample has exactly one C and one Q target:
 
 \[
-P_E=E(e).
+\boxed{1\ \text{legal Entry}\rightarrow1\ C+1\ Q}.
 \]
 
-The Entry's distance below the window upper bound is
+This removes the previous one-anchor-to-many-Q ambiguity.
+
+## Interpretation
+
+C measures how much fixed-Strategy opportunity exists in the completed centered 2W region relative to the periodic baseline. Larger C is better.
+
+Q measures how far the current Entry decision lies below the best legal Entry available in that same centered region. Smaller Q is better and Q=0 means the current Entry attains the region upper bound.
+
+The desired region is
 
 \[
-\boxed{Q_e=U_W-P_E}.
+\boxed{C\text{ high},\quad Q\text{ small}}.
 \]
 
-Because \(U_W\) is the maximum legal-Entry outcome in the same window,
+## Layer 1 gate used by Layer 2
+
+The current gate definition is locked provisionally as:
+
+- short reference: rolling 90 trading sessions;
+- short High threshold: C at/above the rolling 60th percentile and Q at/below the rolling 60th percentile;
+- short Low threshold: C at/below the rolling 40th percentile and Q at/above the rolling 40th percentile;
+- long reference: trailing 3 years, operationalized as 756 trading sessions;
+- long confirmation: 50th percentile (median) for both C and Q.
+
+High requires both short-relative and long-term confirmation:
 
 \[
-\boxed{Q_e\ge 0}.
+\boxed{C\ge C^{90}_{60}\land Q\le Q^{90}_{60}\land C>C^{3Y}_{50}\land Q<Q^{3Y}_{50}}.
 \]
 
-\(Q_e=0\) means that Entry attains the upper bound. Larger Q means the Entry outcome is farther below the best legal Entry outcome in that window. Q is not normalized by C.
+Low requires
 
-Therefore one accepted anchor can correspond to multiple realized \((C_W,Q_e)\) pairs, one for each legal Entry in the future window. This is intentional: the future is represented as a distribution over legal Entry outcomes, not as one arbitrarily selected path.
+\[
+\boxed{C\le C^{90}_{40}\land Q\ge Q^{90}_{40}\land C<C^{3Y}_{50}\land Q>Q^{3Y}_{50}}.
+\]
 
-A future window with \(C_W=0\) remains a valid target window because Q no longer divides by C.
+Neutral is filtered. If later training proves too difficult, the neutral region may be widened, but thresholds are not changed before that evidence exists.
+
+High and Low remain distinct gate states and are passed downstream as conditioning information.
 
 ## Model input
 
-Only the locked causal eight-channel normalization is allowed:
+Only causal price-volume information is allowed.
+
+For N in {5,10,20,60},
 
 \[
 price_N(t)=\frac{P_t}{\sum_{i=1}^{N}P_{t-i}},\qquad
-volume_N(t)=\frac{V_t}{\sum_{i=1}^{N}V_{t-i}},
+volume_N(t)=\frac{V_t}{\sum_{i=1}^{N}V_{t-i}}.
 \]
 
-for \(N\in\{5,10,20,60\}\), over the latest 60 sessions.
+The eight channels are
 
-No gate statistics, realized future C/Q, future prices, or technical indicators are injected into the price-volume tensor.
+```text
+price_5, price_10, price_20, price_60,
+volume_5, volume_10, volume_20, volume_60
+```
 
-## Output contract
-
-The fundamental output remains the joint conditional distribution
+For the current baseline the temporal input is the previous W=30 sessions:
 
 \[
-\boxed{p(C,Q\mid X,G)}.
+\boxed{X_t\in\mathbb R^{8\times30}}.
 \]
 
-C and Q retain distinct meanings:
+The 60-session denominator needed for the longest normalization remains causal and is computed from history preceding each row.
 
-- \(C=U-B_p\): window-level opportunity relative to the periodic baseline; larger is better.
-- \(Q=U-P_E\): Entry-level distance from the window upper bound; smaller is better.
+No realized future C/Q, future price rows, technical indicators, baseline values, or percentile thresholds are injected into X.
 
-No particular parametric family (Gaussian, mixture, fixed bins, etc.) is locked yet. The first implementation step audits the empirical target support after correct causal gating before choosing the probability head.
+## First training baseline
+
+The first model is intentionally small and diagnostic:
+
+- multi-scale 1D CNN with kernel sizes 5/10/20;
+- gate state High/Low retained as a one-dimensional condition;
+- two continuous outputs, C and Q;
+- Smooth-L1 loss on train-set standardized C/Q targets;
+- chronological train/validation/test split;
+- a 2W purge gap between partitions to reduce overlap leakage from centered targets.
+
+This is not yet the final probabilistic head. Its purpose is to test whether the causal left-half price-volume structure contains learnable information about the completed centered-2W C/Q outcome. A distributional head should only be selected after this baseline and target-support audit are understood.
