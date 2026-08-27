@@ -2,150 +2,124 @@
 
 ## Purpose
 
-Layer 1 is **not a learned classifier**.
-
-Its role is to use already-observed historical Strategy statistics to decide whether a historical/current context should be passed to the probabilistic C/Q model.
+Layer 1 is **not a learned classifier**. It is a deterministic retrospective state filter used to select informative High/Low historical contexts for Layer 2.
 
 The fixed Strategy is never changed or optimized.
 
-The conceptual separation is:
+The current separation is
 
 \[
-\boxed{\text{known past statistics} \rightarrow \text{deterministic gate}}
+\boxed{\text{historical C/Q statistics}\rightarrow\text{deterministic High/Neutral/Low gate}}
 \]
 
 followed by
 
 \[
-\boxed{\text{gate-passed price-volume context} \rightarrow \text{model future }p(C,Q\mid X,G)}.
+\boxed{\text{High/Low price-volume context}\rightarrow\text{Layer 2 centered-2W C/Q prediction}}.
 \]
 
-The model must not spend capacity relearning a state that can already be computed from completed historical data.
+## C and Q
 
-## Known historical quantities
-
-For a retrospective evaluation window \(W\),
+For any retrospective evaluation region R,
 
 \[
-U_W=\max_{e\in I_W}E(e),
-\]
-
-where every legal Entry \(e\) follows exactly one deterministic fixed-Strategy path.
-
-The periodic baseline is \(B_{p,W}\), and
-
-\[
-\boxed{C_W=U_W-B_{p,W}}.
-\]
-
-For legal Entry \(e\), with realized fixed-Strategy outcome \(P_E=E(e)\),
-
-\[
-\boxed{Q_e=U_W-P_E}.
-\]
-
-Thus \(Q_e\ge 0\) by construction. \(Q_e=0\) identifies an Entry that attains the window upper bound, and larger \(Q_e\) means the Entry outcome lies farther below that upper bound. Q is no longer normalized by C.
-
-These are retrospective outcome quantities. Once their complete Strategy dependencies have finished historically, they are known data and may be used to characterize the historical environment. They are not model inputs for predicting their own future realization.
-
-## Local historical state
-
-The current local reference length is
-
-\[
-\boxed{R=60\text{ trading sessions}=2W},\qquad W=30.
-\]
-
-At historical time \(t\), construct the reference set only from Strategy-window outcomes whose complete outcome dependency was already observable by \(t\). From completed outcomes in the preceding 60 trading sessions compute
-
-\[
-C_{40}(t),\ C_{60}(t),\ U_{40}(t),\ U_{60}(t).
-\]
-
-The deterministic historical state is
-
-\[
-\text{High}_t:\quad C_t>C_{60}(t)\ \land\ U_t>U_{60}(t),
+U_R=\max_{e\in I_R}E(e),
 \]
 
 \[
-\text{Low}_t:\quad C_t<C_{40}(t)\ \land\ U_t<U_{40}(t),
+\boxed{C_R=U_R-B_{p,R}}.
 \]
 
-and Neutral otherwise.
-
-This state is descriptive. It is computed from known historical outcomes; there is no Layer-1 neural network.
-
-## Gate — locked pass rule
-
-The gate is deterministic:
+For a legal Entry e in the same region,
 
 \[
-\boxed{G_t=\text{High}\ \text{or}\ \text{Low} \Rightarrow \text{PASS}}
+\boxed{Q_e=U_R-E(e)}.
 \]
 
+C is larger-is-better. Q is smaller-is-better and Q is non-negative by construction.
+
+## Current gate reference structure
+
+The gate uses two time scales.
+
+### Short reference: rolling 90 sessions
+
+For each evaluable historical state, use a rolling 90-trading-session reference and compute
+
 \[
-\boxed{G_t=\text{Neutral} \Rightarrow \text{FILTER}}
+C^{90}_{40},\ C^{90}_{60},\ Q^{90}_{40},\ Q^{90}_{60}.
 \]
 
-Thus the 40/60 rolling thresholds are used to remove the neutral/mixed region. Both tails are retained because they represent informative historical regimes of opposite direction.
-
-The gate state itself is retained as known conditioning information:
+The short-relative conditions are
 
 \[
-\boxed{G_t\in\{\text{High},\text{Low}\}}.
-\]
-
-High and Low must not be silently pooled into one unlabeled pass state. The downstream model/audit should preserve this distinction and may estimate separate conditional future distributions.
-
-The gate is explicit and auditable. It must never be replaced by a classifier that attempts to infer the already-computable historical state from price-volume data.
-
-## Price-volume context passed downstream
-
-For every gate-eligible modeling context, the only market input remains the locked causal normalization. For \(N\in\{5,10,20,60\}\),
-
-\[
-price_N(t)=\frac{P_t}{\sum_{i=1}^{N}P_{t-i}},
+ShortHigh:\quad C\ge C^{90}_{60}\land Q\le Q^{90}_{60},
 \]
 
 \[
-volume_N(t)=\frac{V_t}{\sum_{i=1}^{N}V_{t-i}}.
+ShortLow:\quad C\le C^{90}_{40}\land Q\ge Q^{90}_{40}.
 \]
 
-The eight channels are
+The 90-session reference rolls continuously; it is not split into fixed non-overlapping blocks.
 
-```text
-price_5, price_10, price_20, price_60,
-volume_5, volume_10, volume_20, volume_60
-```
+### Long reference: rolling 3 years
 
-and the causal context is
+Use a trailing 3-year reference, operationalized as 756 trading sessions. The long reference uses the 50th percentile (median):
 
 \[
-\boxed{X_t\in\mathbb R^{8\times60}}.
+C^{3Y}_{50},\ Q^{3Y}_{50}.
 \]
 
-No future price-volume rows, technical indicators, future \(U\), future \(C\), future \(Q\), or future baseline values may be included in \(X_t\).
-
-## What Layer 1 does not learn
-
-Layer 1 does not learn or predict:
-
-- High / Neutral / Low;
-- whether the fixed Strategy is good;
-- optional Strategy actions;
-- future \(C\) or \(Q\).
-
-Its only job is to provide an explicit historical gate and known gate state for the downstream probabilistic model.
-
-## Next layer
-
-For gate-passed historical contexts, training pairs a causal \(8\times60\) price-volume context with outcomes that occurred later historically. Because the historical record contains both sides, those future-at-the-time outcomes can be used as supervised targets.
-
-The next-layer target is the conditional future distribution
+Long-term confirmation is
 
 \[
-\boxed{p(C,Q\mid X,G)},\qquad G\in\{\text{High},\text{Low}\}.
+LongHigh:\quad C>C^{3Y}_{50}\land Q<Q^{3Y}_{50},
 \]
 
-The first audit must therefore report High and Low separately before choosing a specific probabilistic model family.
+\[
+LongLow:\quad C<C^{3Y}_{50}\land Q>Q^{3Y}_{50}.
+\]
+
+This removes a locally relative High that is still poor on a longer historical scale, and removes a locally relative Low that is still strong on that longer scale.
+
+## Locked provisional classification
+
+\[
+\boxed{High=ShortHigh\land LongHigh}
+\]
+
+\[
+\boxed{Low=ShortLow\land LongLow}
+\]
+
+Everything else is Neutral.
+
+The current TSLA audit using rolling 90D plus rolling 3Y produced a clean ordering in which High had higher C and lower Q than Neutral, and Low had lower C and higher Q than Neutral. The current thresholds remain unchanged for the first Layer 2 training experiment. If training later proves difficult, widening the Neutral region may be considered explicitly rather than silently changing the gate.
+
+## Gate pass rule
+
+\[
+\boxed{High\rightarrow PASS}
+\]
+
+\[
+\boxed{Low\rightarrow PASS}
+\]
+
+\[
+\boxed{Neutral\rightarrow FILTER}
+\]
+
+High and Low must remain distinct downstream states.
+
+## Relationship to Layer 2
+
+For a current decision point t with W=30, Layer 2 uses the previous W sessions of causal price-volume information and asks what C/Q outcome will be realized after the centered 2W region
+
+\[
+R_t=[t-W+1,t+W]
+\]
+
+is completed historically.
+
+Layer 1 therefore selects the two informative extremes. Layer 2 performs the actual price-volume prediction problem. Layer 1 itself has no neural network.
