@@ -23,73 +23,156 @@ Continue using the existing research stack:
 - PyTorch for Autoencoder experiments
 - GitHub Actions for reproducible cloud tests
 
-Existing Strategy-1 path-generation code and previously used SMH historical-data workflow may be reused where compatible with the definitions in `Theory.md`.
+Existing SMH historical-data infrastructure may be reused where compatible with the definitions in `Theory.md`. The legacy addon-reference enumeration is not authoritative for the current deterministic Strategy definition.
 
-## 3. Historical path evaluation
+## 3. Deterministic historical path construction
 
-For each historical evaluation window, the pipeline should produce auditable legal Strategy outcomes and a reproducible baseline family.
+All current Strategy calculations use daily close prices only.
 
-Conceptually:
-
-```python
-evaluate_historical_window(
-    market,
-    window,
-    strategy_config,
-    baseline_configs,
-) -> HistoricalWindowResult
-```
-
-The result should retain at least:
+Over the complete five-year sample, construct once:
 
 ```text
-window identity / dates
-legal Strategy outcome profits E_i
-L
-U
-Q_i values
-baseline results B_i
-reproducibility metadata
+legal Entry set
+legal 5-day Exit-event set
+legal 10-day Exit-event set
+5-day local-minimum set
+10-day local-minimum set
+5-day local-maximum set
+10-day local-maximum set
 ```
 
-Derived quantities such as `C = U - L` and `U - B_i` may be computed for reporting, but they should not automatically be duplicated as independent representation inputs.
+For the retrospective outcome-space experiment, a `k`-day local extremum is evaluated against the preceding `k` and following `k` trading sessions. This retrospective extremum set is used only for historical-outcome construction; confirmation delay belongs to a later predictive/tradable experiment.
 
-## 4. Candidate Representation A
+For each legal Entry `e`:
+
+```text
+entry_price = close[e]
+base_min = most recent member of (local_min_5 union local_min_10) before e
+D_b = entry_price - close[base_min]
+```
+
+The Entry is eligible for path construction only when `base_min` exists and `D_b > 0`.
+
+Capital deployment is:
+
+```text
+Entry   = 1/3 total campaign capital
+Addon1  = 1/3 total campaign capital
+Addon2  = 1/3 total campaign capital
+```
+
+Unused capital remains cash.
+
+After Entry, candidate Addons are only chronological members of:
+
+```text
+local_max_5 union local_max_10
+```
+
+Let `last_buy_price` be the actual price of the Entry or most recent Addon. The first later local-maximum candidate satisfying
+
+```text
+candidate_close - last_buy_price > D_b
+```
+
+becomes the next Addon. The same fixed `D_b` from the initial Entry is reused for Addon1 and Addon2. At most two Addons are allowed. No alternative addon-reference configurations are enumerated, so one legal Entry produces at most one deterministic path.
+
+Exit handling is:
+
+```text
+first legal 5-day exit event  -> sell 40% of the then-current shares
+legal 10-day exit event       -> sell all remaining shares
+first exit event              -> disables any later Addon
+fixed horizon                 -> liquidate any still-open shares
+```
+
+The current fixed campaign horizon remains 60 trading sessions. Campaign profit is measured against the original total-capital denominator.
+
+## 4. Historical evaluation interval
+
+The current audit uses a single interval definition first:
+
+```text
+window length = 60 trading sessions
+stride = 1 trading session
+```
+
+For window `[start, end]`, include every deterministic Strategy path whose **initial Entry index** lies in that interval. The path itself may continue beyond `end` until its exit or 60-session campaign horizon.
+
+Thus:
+
+```text
+one legal Entry -> at most one deterministic outcome E(e)
+L = min E(e) over Entries in the interval
+U = max E(e) over Entries in the interval
+```
+
+A window with no eligible deterministic Entry is omitted from the descriptive table.
+
+## 5. Baselines for the current audit
+
+### 5.1 Periodic baseline
+
+`B_periodic` is the primary comparison for the immediate audit.
+
+It uses the same maximum of three capital deployments:
+
+```text
+1/3 at the interval start
+1/3 at approximately one-third of the interval
+1/3 at approximately two-thirds of the interval
+all positions valued at the common interval end
+```
+
+The immediate question is simply:
+
+```text
+How often and by how much is U - B_periodic positive or negative?
+```
+
+A negative value is retained; it can indicate that the Strategy is unsuitable in that historical interval.
+
+### 5.2 Random indicator
+
+`B_random` remains a coarse descriptive indicator only. It is not the focus of the current audit and no Monte Carlo convergence study is required.
+
+## 6. Candidate Representation A
 
 Representation A is the direct statistical representation:
 
 ```text
-A = [L, U, B_1, ..., B_k]
+A = [L, U, B_periodic, B_random]
 ```
 
 A does **not** use an Autoencoder.
 
-The first implementation task is to build a table with one row per historical window and columns for:
+The output table should retain:
 
 ```text
 window start / end
+eligible Entry count
 L
 U
-each selected B_i
-optional derived columns for reporting only: C, U-B_i
+B_periodic
+B_random
+optional derived reporting columns: C, U-B_periodic, U-B_random
 ```
 
-### 4.1 A statistical analysis
+### 6.1 A statistical analysis
 
 At minimum, analyze:
 
 ```text
 univariate distributions
 correlation / dependence matrix
-pairwise plots or equivalent summaries
-baseline-to-baseline redundancy
-L/U versus baseline relationships
-chronological stability across subperiods
+chronological stability
+fraction of windows with U > B_periodic
+magnitude distribution of U - B_periodic
 ```
 
 The purpose is to determine how much structure is already visible without any learned representation.
 
-## 5. Candidate Representation B
+## 7. Candidate Representation B
 
 Representation B extends A with fixed-length summaries of the Q distribution.
 
@@ -99,7 +182,8 @@ Initial candidate:
 B = [
     L,
     U,
-    B_1, ..., B_k,
+    B_periodic,
+    B_random,
     Q10,
     Q25,
     Q50,
@@ -110,7 +194,7 @@ B = [
 
 The exact quantiles are configurable and are not yet frozen as theory.
 
-For each window, compute Q from all legal Strategy outcomes:
+For each window, compute Q from all legal deterministic Strategy outcomes:
 
 ```text
 Q_i = (U - E_i) / (U - L)
@@ -118,7 +202,7 @@ Q_i = (U - E_i) / (U - L)
 
 with explicit handling of degenerate windows where `U == L`.
 
-## 6. Algebraic-redundancy rule
+## 8. Algebraic-redundancy rule
 
 Do not treat deterministic transformations as independent evidence of low dimensionality.
 
@@ -148,7 +232,7 @@ empirical redundancy
 
 Only empirical redundancy is relevant evidence for a lower-dimensional historical state.
 
-## 7. Autoencoder experiment for B
+## 9. Autoencoder experiment for B
 
 Only Representation B is the current Autoencoder candidate.
 
@@ -159,40 +243,13 @@ z = encoder(y_B)
 y_hat = decoder(z)
 ```
 
-The Autoencoder objective is reconstruction only.
+The Autoencoder objective is reconstruction only. It must not use win rate, mean profit, median profit, or other withheld profitability statistics as supervised targets during formation of Z.
 
-It must not use win rate, mean profit, median profit, or other withheld profitability statistics as supervised targets during formation of Z.
+Test a small latent-dimension sweep and compare reconstruction quality on chronological held-out windows. This step remains blocked until the deterministic path audit and Representation A statistics are accepted.
 
-Test a small latent-dimension sweep, for example:
+## 10. Chronological validation
 
-```text
-d = 1, 2, 3, ...
-```
-
-and compare reconstruction quality on chronological held-out windows.
-
-The purpose is to identify whether reconstruction error meaningfully saturates at a small latent dimension.
-
-## 8. Post-hoc profitability analysis
-
-After Z has been formed, profitability statistics that were not used to train the Autoencoder may be joined back to each historical window.
-
-Examples include:
-
-```text
-mean realized profit
-median realized profit
-win rate
-other explicitly withheld outcome statistics
-```
-
-These are analyzed only after the unsupervised representation is learned.
-
-No relationship is assumed in advance.
-
-## 9. Chronological validation
-
-Both A statistics and B Autoencoder experiments must preserve chronology.
+Both A statistics and later B experiments must preserve chronology.
 
 At minimum:
 
@@ -202,31 +259,16 @@ chronological train/validation/test separation for B
 no random-only split as the sole validation
 ```
 
-The goal is to distinguish persistent historical structure from a representation that only fits one period.
-
-## 10. Reuse of previous SMH framework
-
-The previous branches already contain:
-
-- SMH daily-data loading;
-- Strategy-1 legal path generation;
-- historical-window construction;
-- GitHub Actions research workflows.
-
-These components may be reused to avoid rebuilding infrastructure.
-
-However, previous Autoencoder assumptions or input definitions are not automatically inherited. The current A/B definitions in `Theory.md` are authoritative for the restarted experiment.
-
 ## 11. Immediate execution order
 
 The implementation order is now:
 
-1. verify historical SMH outcome generation on the restart branch;
-2. implement the selected baseline family for the same windows;
-3. generate Representation A table;
-4. inspect and report A statistics before any AE interpretation;
-5. generate Representation B by adding Q quantiles;
-6. run the smallest chronological Autoencoder latent-dimension experiment on B;
-7. only afterward perform post-hoc profit analysis.
+1. build the deterministic five-year Entry / Exit / local-extrema sets;
+2. generate one deterministic 60-session Strategy path per eligible Entry;
+3. construct daily-stride 60-session evaluation intervals;
+4. compare `U` directly with `B_periodic` and report the signed-difference distribution;
+5. only after this audit is accepted, regenerate the full Representation A table;
+6. only afterward return to Representation B / Q quantiles;
+7. Autoencoder work remains later.
 
 Do not proceed to CNN development before these results are understood.
