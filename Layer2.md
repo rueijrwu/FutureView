@@ -7,7 +7,7 @@ After a deterministic historical gate has accepted the current context, what dis
 The model target is
 
 \[
-\boxed{p(C,Q\mid X,\ \text{gate passed})}.
+\boxed{p(C,Q\mid X,G)},\qquad G\in\{\text{High},\text{Low}\}.
 \]
 
 The model is not asked to predict the gate state.
@@ -31,13 +31,17 @@ The gate uses the most recently completed historical Strategy-window outcome ava
 
 Compare that completed outcome with completed historical outcomes from the preceding 60 trading sessions and compute the local 40/60 percentiles.
 
-The current pass rule is the favorable/high historical state:
+The locked pass rule is
 
 \[
-\boxed{\text{gate-pass}_t = 1[ C_{g_t}>C_{60}(t) \land U_{g_t}>U_{60}(t) ]}.
+\boxed{G_t=\text{High or Low}\Rightarrow \text{PASS}},
 \]
 
-Neutral and Low historical states do not enter the first C/Q training audit. This rule is deterministic and auditable; it is not a learned classifier.
+\[
+\boxed{G_t=\text{Neutral}\Rightarrow \text{FILTER}}.
+\]
+
+High and Low are retained separately as known conditioning states. The gate is deterministic and auditable; it is not a learned classifier.
 
 ## Future C target
 
@@ -63,13 +67,23 @@ For every legal Entry \(e\in I_W\), the fixed Strategy produces exactly one real
 P_E=E(e).
 \]
 
-Its normalized distance from the window upper bound is
+The Entry's distance below the window upper bound is
 
 \[
-\boxed{Q_e=\frac{U_W-P_E}{C_W}}.
+\boxed{Q_e=U_W-P_E}.
 \]
 
+Because \(U_W\) is the maximum legal-Entry outcome in the same window,
+
+\[
+\boxed{Q_e\ge 0}.
+\]
+
+\(Q_e=0\) means that Entry attains the upper bound. Larger Q means the Entry outcome is farther below the best legal Entry outcome in that window. Q is not normalized by C.
+
 Therefore one accepted anchor can correspond to multiple realized \((C_W,Q_e)\) pairs, one for each legal Entry in the future window. This is intentional: the future is represented as a distribution over legal Entry outcomes, not as one arbitrarily selected path.
+
+A future window with \(C_W=0\) remains a valid target window because Q no longer divides by C.
 
 ## Model input
 
@@ -89,19 +103,12 @@ No gate statistics, realized future C/Q, future prices, or technical indicators 
 The fundamental output remains the joint conditional distribution
 
 \[
-\boxed{p(C,Q\mid X,\text{gate passed})}.
+\boxed{p(C,Q\mid X,G)}.
 \]
 
-Useful summaries can later be computed from this distribution, for example
+C and Q retain distinct meanings:
 
-\[
-E[C\mid X],\quad P(C>0\mid X),\quad E[Q\mid X],
-\]
-
-or
-
-\[
-P(C>C^*,Q<Q^*\mid X).
-\]
+- \(C=U-B_p\): window-level opportunity relative to the periodic baseline; larger is better.
+- \(Q=U-P_E\): Entry-level distance from the window upper bound; smaller is better.
 
 No particular parametric family (Gaussian, mixture, fixed bins, etc.) is locked yet. The first implementation step audits the empirical target support after correct causal gating before choosing the probability head.
