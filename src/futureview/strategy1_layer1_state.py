@@ -18,8 +18,9 @@ TICKER = os.environ.get("FUTUREVIEW_TICKER", "TSLA")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "5y")
 WINDOW = int(os.environ.get("FUTUREVIEW_LAYER1_WINDOW", "30"))
 INPUT_LENGTH = int(os.environ.get("FUTUREVIEW_LAYER1_INPUT", "60"))
-LOW_Q = float(os.environ.get("FUTUREVIEW_LAYER1_LOW_Q", "0.25"))
-HIGH_Q = float(os.environ.get("FUTUREVIEW_LAYER1_HIGH_Q", "0.75"))
+REFERENCE_DAYS = int(os.environ.get("FUTUREVIEW_LAYER1_REFERENCE_DAYS", "60"))
+LOW_Q = float(os.environ.get("FUTUREVIEW_LAYER1_LOW_Q", "0.40"))
+HIGH_Q = float(os.environ.get("FUTUREVIEW_LAYER1_HIGH_Q", "0.60"))
 TRAIN_FRAC = float(os.environ.get("FUTUREVIEW_LAYER1_TRAIN_FRAC", "0.60"))
 VAL_FRAC = float(os.environ.get("FUTUREVIEW_LAYER1_VAL_FRAC", "0.20"))
 RANDOM_SAMPLES = int(os.environ.get("FUTUREVIEW_A_RANDOM_SAMPLES", "20"))
@@ -31,12 +32,6 @@ CLASS_NAMES = {-1: "low", 0: "neutral", 1: "high"}
 
 
 def make_locked_price_volume_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Locked causal price/volume normalization agreed for the project.
-
-    For N in {5,10,20,60}:
-      price_N(t)  = P_t / sum_{i=1..N} P_{t-i}
-      volume_N(t) = V_t / sum_{i=1..N} V_{t-i}
-    """
     if not {"close", "volume"}.issubset(df.columns):
         raise ValueError("df must contain close and volume")
 
@@ -59,7 +54,6 @@ def _feature_columns() -> list[str]:
 
 
 def build_samples(df: pd.DataFrame, windows: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:
-    """Align past-only 8x60 inputs with next-W retrospective outcome labels."""
     features = make_locked_price_volume_features(df)
     cols = _feature_columns()
     metadata: list[dict[str, float | int | str]] = []
@@ -75,9 +69,6 @@ def build_samples(df: pd.DataFrame, windows: pd.DataFrame) -> tuple[pd.DataFrame
         if block.shape != (INPUT_LENGTH, len(cols)) or not np.isfinite(block).all():
             continue
 
-        # Current project definition: C = U - B_periodic.
-        c_value = float(row.U - row.B_periodic)
-        dependency_end = int(row.end_index) + HORIZON
         metadata.append(
             {
                 "ticker": TICKER,
@@ -88,12 +79,11 @@ def build_samples(df: pd.DataFrame, windows: pd.DataFrame) -> tuple[pd.DataFrame
                 "end_date": row.end_date,
                 "U": float(row.U),
                 "B_periodic": float(row.B_periodic),
-                "C": c_value,
+                "C": float(row.U - row.B_periodic),
                 "path_count": int(row.path_count),
-                "dependency_end": dependency_end,
+                "dependency_end": int(row.end_index) + HORIZON,
             }
         )
-        # Keep channel-first semantics: 8 x 60, flatten only at baseline-model fit time.
         tensors.append(block.T)
 
     if not tensors:
@@ -101,8 +91,51 @@ def build_samples(df: pd.DataFrame, windows: pd.DataFrame) -> tuple[pd.DataFrame
     return pd.DataFrame(metadata), np.stack(tensors, axis=0)
 
 
+def apply_rolling_labels(meta: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    """Label each target from prior completed outcomes in the last REFERENCE_DAYS sessions."""
+    labels = np.full(len(meta), 99, dtype=int)
+    valid = np.zeros(len(meta), dtype=bool)
+    c_low = np.full(len(meta), np.nan)
+    c_high = np.full(len(meta), np.nan)
+    u_low = np.full(len(meta), np.nan)
+    u_high = np.full(len(meta), np.nan)
+    ref_count = np.zeros(len(meta), dtype=int)
+
+    min_ref = max(10, REFERENCE_DAYS // 3)
+    for i, row in enumerate(meta.itertuples(index=False)):
+        s = int(row.start_index)
+        ref = meta.loc[
+            (meta["dependency_end"] >= s - REFERENCE_DAYS)
+            & (meta["dependency_end"] < s)
+        ]
+        if len(ref) < min_ref:
+            continue
+
+        c_low[i] = float(ref["C"].quantile(LOW_Q))
+        c_high[i] = float(ref["C"].quantile(HIGH_Q))
+        u_low[i] = float(ref["U"].quantile(LOW_Q))
+        u_high[i] = float(ref["U"].quantile(HIGH_Q))
+        ref_count[i] = len(ref)
+        valid[i] = True
+
+        if row.C > c_high[i] and row.U > u_high[i]:
+            labels[i] = 1
+        elif row.C < c_low[i] and row.U < u_low[i]:
+            labels[i] = -1
+        else:
+            labels[i] = 0
+
+    out = meta.copy()
+    out["C_low"] = c_low
+    out["C_high"] = c_high
+    out["U_low"] = u_low
+    out["U_high"] = u_high
+    out["reference_count"] = ref_count
+    out["label"] = labels
+    return out, labels, valid
+
+
 def chronological_purged_split(meta: pd.DataFrame) -> dict[str, np.ndarray]:
-    """Chronological 60/20/20 nominal split with future-label purge at boundaries."""
     n = len(meta)
     if n < 100:
         raise RuntimeError("too few samples for chronological Layer-1 split")
@@ -119,25 +152,6 @@ def chronological_purged_split(meta: pd.DataFrame) -> dict[str, np.ndarray]:
     if min(len(train), len(val), len(test)) == 0:
         raise RuntimeError("purged chronological split produced an empty partition")
     return {"train": train, "val": val, "test": test}
-
-
-def fit_thresholds(meta: pd.DataFrame, train_idx: np.ndarray) -> dict[str, float]:
-    train = meta.iloc[train_idx]
-    return {
-        "C25": float(train["C"].quantile(LOW_Q)),
-        "C75": float(train["C"].quantile(HIGH_Q)),
-        "U25": float(train["U"].quantile(LOW_Q)),
-        "U75": float(train["U"].quantile(HIGH_Q)),
-    }
-
-
-def apply_state_labels(meta: pd.DataFrame, thresholds: dict[str, float]) -> np.ndarray:
-    c = meta["C"].to_numpy(dtype=float)
-    u = meta["U"].to_numpy(dtype=float)
-    labels = np.zeros(len(meta), dtype=int)
-    labels[(c > thresholds["C75"]) & (u > thresholds["U75"])] = 1
-    labels[(c < thresholds["C25"]) & (u < thresholds["U25"])] = -1
-    return labels
 
 
 def _print_partition(name: str, idx: np.ndarray, labels: np.ndarray, meta: pd.DataFrame) -> None:
@@ -168,9 +182,10 @@ def _evaluate(name: str, y_true: np.ndarray, y_pred: np.ndarray, prob_high: np.n
     top = np.argsort(prob_high)[-k:]
     high_precision_at_top10 = float((y_true[top] == 1).mean())
     base_high_rate = float((y_true == 1).mean())
+    lift = high_precision_at_top10 / base_high_rate if base_high_rate > 0 else np.nan
     print(
         f"S1 LAYER1 RANK part={name} top10_n={k} high_precision={high_precision_at_top10:.6f} "
-        f"base_high_rate={base_high_rate:.6f} lift={(high_precision_at_top10 / base_high_rate if base_high_rate > 0 else np.nan):.6f}"
+        f"base_high_rate={base_high_rate:.6f} lift={lift:.6f}"
     )
 
 
@@ -179,6 +194,8 @@ def main() -> None:
         raise ValueError("Layer-1 experiment is currently locked to W=30")
     if INPUT_LENGTH != 60:
         raise ValueError("Layer-1 input is currently locked to 60 sessions")
+    if REFERENCE_DAYS != 60:
+        raise ValueError("Layer-1 reference is currently locked to 60 sessions")
     if not (0.0 < LOW_Q < HIGH_Q < 1.0):
         raise ValueError("invalid percentile thresholds")
     if not (0.0 < TRAIN_FRAC < 1.0 and 0.0 < VAL_FRAC < 1.0 and TRAIN_FRAC + VAL_FRAC < 1.0):
@@ -197,21 +214,20 @@ def main() -> None:
         random_seed=RANDOM_SEED,
     )
     meta, x = build_samples(df, windows)
+    meta, labels, valid = apply_rolling_labels(meta)
+    meta = meta.loc[valid].reset_index(drop=True)
+    x = x[valid]
+    labels = labels[valid]
     split = chronological_purged_split(meta)
-    thresholds = fit_thresholds(meta, split["train"])
-    labels = apply_state_labels(meta, thresholds)
 
     print(
         f"S1 LAYER1 START ticker={TICKER} rows={audit.rows} first={audit.start} last={audit.end} "
-        f"W={WINDOW} input={INPUT_LENGTH} channels=8 samples={len(meta)} horizon={HORIZON}"
+        f"W={WINDOW} input={INPUT_LENGTH} channels=8 reference={REFERENCE_DAYS} samples={len(meta)} horizon={HORIZON}"
     )
     print(
-        "S1 LAYER1 DEFINITION C=U-B_periodic high=(C>C75 and U>U75) "
-        "low=(C<C25 and U<U25) neutral=otherwise thresholds=train_only input=past_only"
-    )
-    print(
-        f"S1 LAYER1 THRESHOLD C25={thresholds['C25']:.6f} C75={thresholds['C75']:.6f} "
-        f"U25={thresholds['U25']:.6f} U75={thresholds['U75']:.6f}"
+        f"S1 LAYER1 DEFINITION C=U-B_periodic rolling_percentiles={LOW_Q:.2f},{HIGH_Q:.2f} "
+        "high=(C>C_high and U>U_high) low=(C<C_low and U<U_low) neutral=otherwise "
+        "reference=prior_completed_outcomes_only input=past_only"
     )
     for name in ("train", "val", "test"):
         _print_partition(name, split[name], labels, meta)
@@ -226,7 +242,6 @@ def main() -> None:
     class_to_col = {int(cls): i for i, cls in enumerate(model.classes_)}
 
     out = meta.copy()
-    out["label"] = labels
     out["partition"] = "purged"
     out["p_low"] = np.nan
     out["p_neutral"] = np.nan
