@@ -87,21 +87,130 @@ E_i=L_W \Rightarrow Q_i=1.
 
 Thus smaller \(Q_i\) means that the realized Entry outcome lies closer to the best observed Strategy outcome within the corresponding window.
 
-## 4. Strategy-Independent Baseline
+## 4. Baseline Family
 
-For the same historical window \(W\), define a baseline profit
+A single baseline is not sufficient to answer all research questions. For each historical evaluation window \(W\), the same historical price-volume path can be used to compute a family of null or reference outcomes alongside the Strategy outcomes.
+
+Let
 
 \[
-B_W,
+\mathcal{B}_W = \{B_W^{(1)},B_W^{(2)},\ldots,B_W^{(k)}\}
 \]
 
-computed without Strategy timing, for example from a fixed periodic-investment rule.
+be a set of explicitly defined baselines.
 
-The role of \(B_W\) is to describe the profitability available from the underlying market over the same period independently of the Strategy's Entry/Add/Exit decisions.
+The baseline family may include at least the following conceptual classes.
 
-Consequently, \(B_W\) provides a reference against which Strategy-dependent profitability may later be interpreted. Its exact baseline rule must be fixed before empirical comparison.
+### 4.1 Market baseline
 
-## 5. Price-Volume Information as the Primitive Market Input
+A market baseline \(B_W^{\mathrm{market}}\) measures the return available from the underlying market without Strategy timing, for example by buy-and-hold or a fixed periodic-investment rule.
+
+It answers:
+
+> How much profit was available from the market itself during this window?
+
+### 4.2 Random-entry baseline
+
+A random-entry baseline \(B_W^{\mathrm{random}}\) replaces the Strategy's Entry timing with random Entry timing under a fixed and explicitly defined sampling rule.
+
+It answers:
+
+> How much profit would have been obtained without Strategy-specific Entry selection?
+
+### 4.3 Strategy-null baseline
+
+A Strategy-null baseline preserves downstream Strategy mechanics, such as Add or Exit rules, while randomizing or otherwise neutralizing the Entry-selection rule.
+
+It answers:
+
+> How much of the observed profitability comes from the Strategy's Entry-selection structure rather than from the rest of the execution framework?
+
+### 4.4 Matched random baseline
+
+A matched random baseline restricts random Entry opportunities to a comparable historical context, such as the same evaluation window or another explicitly defined matched sample space.
+
+It answers:
+
+> Does the Strategy outperform a null Entry process under comparable market conditions?
+
+The exact members of \(\mathcal{B}_W\) are not frozen by this document. Each baseline must be deterministic or probabilistically well-defined, reproducible, and computed from the same historical information used to construct the Strategy outcome space.
+
+## 5. Profit Opportunity Relative to Baseline
+
+For any selected baseline \(B_W^{(j)}\), define the observed upper-profit opportunity above that baseline as
+
+\[
+A_W^{(j)} = U_W-B_W^{(j)}.
+\]
+
+This quantity answers:
+
+> How much additional realized profit was available at the best legal Strategy outcome relative to baseline \(j\)?
+
+Different baselines therefore produce different notions of opportunity.
+
+For example:
+
+\[
+A_W^{\mathrm{market}}=U_W-B_W^{\mathrm{market}}
+\]
+
+measures the maximum observed Strategy upside relative to passive market participation, while
+
+\[
+A_W^{\mathrm{random}}=U_W-B_W^{\mathrm{random}}
+\]
+
+measures the maximum observed Strategy upside relative to a null Entry process.
+
+This is distinct from
+
+\[
+C_W=U_W-L_W,
+\]
+
+which measures the spread between the best and worst observed Strategy outcomes rather than opportunity relative to a baseline.
+
+## 6. Information and Tradable-Value Space
+
+The framework distinguishes **information strength** from **tradable value**.
+
+A neutral or uncertain market state is one for which the Strategy's profitable-outcome probability is near
+
+\[
+P(\mathrm{win})\approx 0.5.
+\]
+
+A strongly informative state may lie on either side of neutrality:
+
+\[
+P(\mathrm{win})\gg 0.5
+\]
+
+or
+
+\[
+P(\mathrm{win})\ll 0.5.
+\]
+
+Separately, tradable value depends on how much economic opportunity is available relative to an appropriate baseline, for example
+
+\[
+U_W-B_W^{(j)}.
+\]
+
+This produces four conceptual regions:
+
+1. high information, high tradable value;
+2. low information, high tradable value;
+3. low information, low tradable value;
+4. high information, low tradable value.
+
+The role of a first-stage gate, if adopted, is not simply to remove losing states. Strongly negative states can still be highly informative. The main motivation for gating is to prevent a large population of weakly informative, near-neutral observations from dominating learning while preserving economically meaningful and informative regions.
+
+Whether low-tradable-value but informative regions should be learned with full weight, reduced weight, or only retained for validation remains an open research question.
+
+## 7. Price-Volume Information as the Primitive Market Input
 
 All conventional technical indicators are transformations of underlying market observations, principally price and volume. The framework therefore treats historical price-volume information as the primitive market input rather than assuming a large manually selected technical-indicator set.
 
@@ -115,7 +224,7 @@ where \(P\) denotes price information, \(V\) denotes volume information, and \(T
 
 The exact normalization, channels, sampling convention, and tensor representation of \(X_i\) are intentionally not defined in this theory document.
 
-## 6. Learned Market Representation
+## 8. Learned Market Representation
 
 The central representation problem is to learn a compact mapping
 
@@ -135,11 +244,11 @@ The representation is not required to reproduce named technical indicators. It s
 
 At this stage, the dimensionality \(m\), semantic interpretation of each component, and learning objective used to obtain \(Z_i\) are deliberately left open.
 
-## 7. Profitability Estimation
+## 9. Profitability Estimation
 
 Given a learned representation \(Z_i\), the eventual profitability estimator should address at least two quantities:
 
-### 7.1 Probability of profitable Entry
+### 9.1 Probability of profitable Entry
 
 \[
 p_i = P(E_i>0\mid Z_i).
@@ -147,7 +256,7 @@ p_i = P(E_i>0\mid Z_i).
 
 This is the estimated probability that a legal Entry under the fixed Strategy produces positive realized profit.
 
-### 7.2 Expected profit
+### 9.2 Expected profit
 
 \[
 \mu_i = \mathbb{E}[E_i\mid Z_i].
@@ -163,7 +272,39 @@ q_i = \mathbb{E}[Q_i\mid Z_i].
 
 Whether \(Q\) should be a direct learning target, an evaluation quantity, or a derived diagnostic remains open.
 
-## 8. Conceptual Separation of Representation and Profitability
+## 10. Conditional Strategy Decision States
+
+A Strategy may contain sequential decision points such as Entry followed by one or more Add decisions and Exit decisions.
+
+These decision states are nested rather than independent. If \(S_A\) denotes the set of paths reaching Add and \(S_E\) the set of legal Entry paths, then
+
+\[
+S_A\subseteq S_E.
+\]
+
+Therefore profitability questions at later Strategy decisions are conditional questions.
+
+At Entry, the framework may consider quantities such as
+
+\[
+P(\mathrm{win}\mid \mathrm{Entry},Z_E),
+\]
+
+\[
+\mathbb{E}[E\mid \mathrm{Entry},Z_E],
+\]
+
+and
+
+\[
+P(\mathrm{Add}\mid \mathrm{Entry},Z_E).
+\]
+
+If Add later occurs, the relevant state is updated and the corresponding questions become conditional on both the earlier Entry and the observed Add event.
+
+A realized Add path may be compared both with the best outcome in the full Entry population and with the best outcome within the Add subset. These are different comparisons and should use separately defined bounds.
+
+## 11. Conceptual Separation of Representation and Profitability
 
 Two conceptual functions should be distinguished:
 
@@ -187,11 +328,13 @@ The second asks:
 
 This conceptual separation does **not** require two independently trained machine-learning models. The representation and profitability estimator may ultimately be learned separately or jointly. That choice is an empirical modeling question.
 
-## 9. Information Boundary
+A separate two-stage research design may also be considered in which an initial information/opportunity gate suppresses large neutral regions before detailed profitability estimation. This gating interpretation is distinct from the representation-versus-profitability separation above.
+
+## 12. Information Boundary
 
 For any Entry-time prediction, the model input may contain only information available at or before the prediction time.
 
-Future information may be used only to construct historical training outcomes such as \(E_i\), \(L_W\), \(U_W\), and derived quantities such as \(Q_i\).
+Future information may be used only to construct historical training outcomes such as \(E_i\), \(L_W\), \(U_W\), baseline outcomes, and derived quantities such as \(Q_i\).
 
 This establishes the fundamental temporal boundary:
 
@@ -201,7 +344,7 @@ This establishes the fundamental temporal boundary:
 
 No future-derived quantity may enter the predictive input representation.
 
-## 10. Current Open Question
+## 13. Current Open Question
 
 The next theoretical task is **representation definition**.
 
