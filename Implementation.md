@@ -6,7 +6,7 @@ This document defines the implementation and program/API framework for the resta
 
 The implementation should remain deliberately small. It should reuse the repository's existing GitHub/cloud-computation foundation where useful, but it does not require the existing web application, frontend visualization, production brokerage execution, or dashboard layers.
 
-The immediate implementation goal is to provide a reproducible research pipeline in which representation experiments can be added without repeatedly redesigning data loading, Strategy outcome generation, training, evaluation, and artifact handling.
+The immediate implementation goal is to provide a reproducible research pipeline in which representation experiments can be added without repeatedly redesigning data loading, Strategy outcome generation, baseline generation, training, evaluation, and artifact handling.
 
 ## 2. Technology Baseline
 
@@ -28,12 +28,13 @@ The restarted framework should follow these rules:
 
 1. Keep the fixed Strategy definition separate from learned models.
 2. Keep historical outcome construction separate from predictive model input construction.
-3. Prevent future-data leakage by API design rather than convention alone where practical.
-4. Keep raw/intermediate datasets reproducible from explicit configuration.
-5. Keep model training independent of frontend or web services.
-6. Keep GPU acceleration optional at the API boundary: research logic should identify the compute device explicitly.
-7. Save enough metadata to reproduce every experiment.
-8. Do not freeze the learned representation format until the representation question is resolved.
+3. Compute Strategy outcomes and baseline families from the same historical path-generation pass where practical.
+4. Prevent future-data leakage by API design rather than convention alone where practical.
+5. Keep raw/intermediate datasets reproducible from explicit configuration.
+6. Keep model training independent of frontend or web services.
+7. Keep GPU acceleration optional at the API boundary: research logic should identify the compute device explicitly.
+8. Save enough metadata to reproduce every experiment.
+9. Do not freeze the learned representation format until the representation question is resolved.
 
 ## 4. Proposed Research Package
 
@@ -114,7 +115,38 @@ legal Strategy evolution needed for audit
 
 The exact treatment of nested Entry/Add1/Add2 paths must follow the final theoretical sample-space definition and should not be silently decided by the implementation.
 
-## 7. Window-Level Profitability Statistics
+## 7. Historical Path Evaluation Bundle
+
+Strategy outcomes and baselines should be generated together from the same historical evaluation window where practical.
+
+Conceptual API:
+
+```python
+evaluate_historical_window(
+    market,
+    window,
+    strategy_config,
+    baseline_configs,
+) -> HistoricalWindowResult
+```
+
+A `HistoricalWindowResult` should contain at least:
+
+```text
+legal Strategy entries
+realized Strategy outcomes
+L
+U
+C
+Q values
+baseline family
+U - baseline opportunity values
+reproducibility metadata
+```
+
+This keeps all historical comparisons synchronized to the same source data and evaluation window.
+
+## 8. Window-Level Profitability Statistics
 
 For a historical evaluation window, provide deterministic statistics:
 
@@ -144,15 +176,74 @@ Q = (U - E_i) / C
 
 with explicit handling of the degenerate case `C == 0`.
 
-The Strategy-independent baseline should use a separate API:
+## 9. Baseline Family APIs
+
+Baselines should be configuration-controlled, reproducible, and computed from the same historical data used for Strategy path evaluation.
+
+A common conceptual interface is:
 
 ```python
-compute_baseline(market, window, baseline_config) -> BaselineResult
+compute_baseline(
+    market,
+    window,
+    strategy_config,
+    baseline_config,
+    rng,
+) -> BaselineResult
 ```
 
-The baseline definition must be configuration-controlled and reproducible.
+Potential baseline types include:
 
-## 8. Training Sample Construction
+```text
+market / buy-and-hold
+periodic-investment
+random-entry
+strategy-null random-entry with downstream Strategy rules retained
+matched-random entry
+```
+
+For stochastic baselines, the random seed and sampling procedure must be explicit and persisted.
+
+Because a single random draw is noisy, stochastic baseline configurations should support repeated Monte Carlo sampling and return a distribution summary rather than only one realization.
+
+Conceptually:
+
+```python
+compute_baseline_distribution(
+    market,
+    window,
+    strategy_config,
+    baseline_config,
+    n_samples,
+    seed,
+) -> BaselineDistribution
+```
+
+A baseline distribution may retain:
+
+```text
+mean
+median
+quantiles
+standard deviation
+individual sampled returns when audit requires them
+```
+
+For any baseline result `B`, compute opportunity relative to the observed upper Strategy outcome:
+
+```python
+compute_upper_opportunity(U, B) -> float
+```
+
+implementing
+
+```text
+A = U - B
+```
+
+For a stochastic baseline, both opportunity relative to the expected baseline and opportunity relative to baseline quantiles may be retained.
+
+## 10. Training Sample Construction
 
 Training-data construction should join two objects that remain separately auditable:
 
@@ -180,9 +271,10 @@ Each sample should retain stable identifiers allowing reconstruction of:
 - input-window boundaries;
 - outcome identity;
 - historical evaluation window used for L/U/Q when applicable;
+- associated baseline-family statistics for that window;
 - configuration/version information.
 
-## 9. Representation API
+## 11. Representation API
 
 Do not freeze the CNN representation yet.
 
@@ -204,7 +296,7 @@ The representation output should conceptually have shape
 
 unless later research demonstrates that a structured representation is preferable.
 
-## 10. Profitability Model API
+## 12. Profitability Model API
 
 The downstream estimator should consume a representation and expose profitability predictions without requiring knowledge of how the representation was generated.
 
@@ -222,11 +314,12 @@ Potential outputs include:
 win probability
 expected profit
 expected/estimated Q
+probability of next Strategy decision state
 ```
 
 These outputs are not all required for the first experiment. Target selection will follow the representation discussion.
 
-## 11. End-to-End Composition
+## 13. End-to-End Composition
 
 The framework should permit both separated and joint training:
 
@@ -246,7 +339,7 @@ class StrategyProfitabilityModel(torch.nn.Module):
 
 This allows representation experiments without changing Strategy/outcome generation or evaluation infrastructure.
 
-## 12. GPU and Numerical Execution
+## 14. GPU and Numerical Execution
 
 PyTorch should be the primary learned-model execution layer.
 
@@ -256,11 +349,11 @@ Typical device selection:
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 ```
 
-NumPy and Numba/CUDA may be used for deterministic preprocessing, Strategy replay, large-scale historical calculations, or other operations where they are more appropriate than PyTorch.
+NumPy and Numba/CUDA may be used for deterministic preprocessing, Strategy replay, large-scale historical calculations, Monte Carlo baseline evaluation, or other operations where they are more appropriate than PyTorch.
 
 CPU fallbacks should remain available for validation and small tests.
 
-## 13. Experiment Configuration
+## 15. Experiment Configuration
 
 Every experiment should be driven by an explicit serializable configuration containing at least:
 
@@ -269,7 +362,8 @@ data range
 symbols/universe
 lookback definition
 Strategy version/configuration
-baseline definition
+baseline family definitions
+baseline Monte Carlo sample count and random seed where applicable
 sample-space/outcome-definition version
 representation model version
 profitability-head version
@@ -286,7 +380,7 @@ python -m futureview.experiment.runner --config configs/<experiment>.yaml
 
 The exact configuration format may reuse existing repository conventions; no format change is required merely for this restart.
 
-## 14. Experiment Artifacts
+## 16. Experiment Artifacts
 
 A run should produce a self-contained result directory, for example:
 
@@ -304,10 +398,11 @@ The artifacts should make it possible to answer:
 - exactly which samples were used;
 - exactly which historical periods were train/validation/test;
 - which Strategy and outcome definitions generated the targets;
+- which baseline definitions and stochastic seeds generated reference results;
 - which representation/model version was trained;
 - which code revision produced the run.
 
-## 15. Validation Framework
+## 17. Validation Framework
 
 At minimum, validation should include:
 
@@ -317,27 +412,28 @@ past-only input-window leakage tests
 Strategy outcome reproducibility tests
 L/U/C/Q calculation tests
 baseline reproducibility tests
+random-baseline seed reproducibility tests
 chronological train/validation/test separation
 CPU/GPU numerical sanity checks where relevant
 ```
 
 Model evaluation should remain chronological rather than relying only on random sample splitting.
 
-## 16. Cloud/GitHub Workflow
+## 18. Cloud/GitHub Workflow
 
 Reuse the existing GitHub-based development and cloud-computation workflow. The restarted branch should remain research-oriented:
 
 ```text
 GitHub repository
     -> cloud development/computation environment
-    -> deterministic dataset/outcome generation
+    -> deterministic Strategy/baseline outcome generation
     -> GPU/CPU training
     -> versioned experiment artifacts
 ```
 
 No frontend, dashboard, web API, scheduled production workflow, or deployment layer is required for the present research phase.
 
-## 17. Immediate Implementation Boundary
+## 19. Immediate Implementation Boundary
 
 Do not implement a new CNN architecture yet.
 
