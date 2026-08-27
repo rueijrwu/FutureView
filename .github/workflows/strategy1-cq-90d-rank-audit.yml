@@ -1,0 +1,44 @@
+name: Strategy 1 C Q 90D Rank Audit
+
+on:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'src/futureview/strategy1_cq_90d_rank_audit.py'
+      - '.github/workflows/strategy1-cq-90d-rank-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61" "scikit-learn>=1.5"
+          python -m pip install -e . --no-deps
+      - name: Run 90D C Q rank audit
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 5y
+          FUTUREVIEW_WINDOW: '30'
+          FUTUREVIEW_BLOCK: '90'
+          FUTUREVIEW_LOW_QTL: '0.40'
+          FUTUREVIEW_HIGH_QTL: '0.60'
+          FUTUREVIEW_A_RANDOM_SAMPLES: '20'
+          FUTUREVIEW_A_RANDOM_SEED: '20260827'
+        run: python -m futureview.strategy1_cq_90d_rank_audit 2>&1 | tee strategy1-cq-90d-rank-audit.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — 90-session C/Q rank audit'
+            echo
+            echo '```text'
+            grep -E '^S1 CQ90' strategy1-cq-90d-rank-audit.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
