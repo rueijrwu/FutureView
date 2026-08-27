@@ -16,13 +16,16 @@ TICKER = os.environ.get("FUTUREVIEW_TICKER", "TSLA")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "5y")
 WINDOW = int(os.environ.get("FUTUREVIEW_LAYER1_WINDOW", "30"))
 REFERENCE_WINDOWS = tuple(
-    int(v) for v in os.environ.get("FUTUREVIEW_LAYER1_REFERENCE_WINDOWS", "60,90").split(",")
+    int(v) for v in os.environ.get("FUTUREVIEW_LAYER1_REFERENCE_WINDOWS", "60").split(",")
 )
-LOW_Q = float(os.environ.get("FUTUREVIEW_LAYER1_LOW_Q", "0.25"))
-HIGH_Q = float(os.environ.get("FUTUREVIEW_LAYER1_HIGH_Q", "0.75"))
+LOW_Q = float(os.environ.get("FUTUREVIEW_LAYER1_LOW_Q", "0.40"))
+HIGH_Q = float(os.environ.get("FUTUREVIEW_LAYER1_HIGH_Q", "0.60"))
 RANDOM_SAMPLES = int(os.environ.get("FUTUREVIEW_A_RANDOM_SAMPLES", "20"))
 RANDOM_SEED = int(os.environ.get("FUTUREVIEW_A_RANDOM_SEED", "20260827"))
 OUTPUT = Path(os.environ.get("FUTUREVIEW_LAYER1_THRESHOLD_OUTPUT", "strategy1-layer1-threshold-audit.csv"))
+
+LOW_PCT = int(round(100 * LOW_Q))
+HIGH_PCT = int(round(100 * HIGH_Q))
 
 
 def build_outcome_table(df: pd.DataFrame, windows: pd.DataFrame) -> pd.DataFrame:
@@ -31,20 +34,12 @@ def build_outcome_table(df: pd.DataFrame, windows: pd.DataFrame) -> pd.DataFrame
         "U", "B_periodic", "path_count",
     ]].copy()
     out["C"] = out["U"].astype(float) - out["B_periodic"].astype(float)
-    # Conservative availability index: the evaluation window may contain an Entry
-    # on its final day, whose fixed Strategy path may continue HORIZON sessions.
     out["dependency_end"] = out["end_index"].astype(int) + HORIZON
     return out.sort_values("start_index").reset_index(drop=True)
 
 
 def rolling_labels(meta: pd.DataFrame, reference_days: int) -> pd.DataFrame:
-    """Compute local 25/75 percentiles using outcomes completed in the prior R sessions.
-
-    For a target window beginning at index s, a historical outcome is eligible for the
-    reference set only when its dependency_end is in [s-R, s-1]. This keeps the local
-    reference causal while measuring locality by when the historical outcome became
-    fully known.
-    """
+    """Compute causal rolling percentiles from prior fully observed outcomes."""
     rows: list[dict[str, float | int | str]] = []
     for row in meta.itertuples(index=False):
         s = int(row.start_index)
@@ -55,17 +50,17 @@ def rolling_labels(meta: pd.DataFrame, reference_days: int) -> pd.DataFrame:
         if len(ref) < max(10, reference_days // 3):
             continue
 
-        c25 = float(ref["C"].quantile(LOW_Q))
-        c75 = float(ref["C"].quantile(HIGH_Q))
-        u25 = float(ref["U"].quantile(LOW_Q))
-        u75 = float(ref["U"].quantile(HIGH_Q))
+        c_low = float(ref["C"].quantile(LOW_Q))
+        c_high = float(ref["C"].quantile(HIGH_Q))
+        u_low = float(ref["U"].quantile(LOW_Q))
+        u_high = float(ref["U"].quantile(HIGH_Q))
         c = float(row.C)
         u = float(row.U)
 
         label = 0
-        if c > c75 and u > u75:
+        if c > c_high and u > u_high:
             label = 1
-        elif c < c25 and u < u25:
+        elif c < c_low and u < u_low:
             label = -1
 
         rows.append({
@@ -76,10 +71,12 @@ def rolling_labels(meta: pd.DataFrame, reference_days: int) -> pd.DataFrame:
             "end_date": row.end_date,
             "U": u,
             "C": c,
-            "C25": c25,
-            "C75": c75,
-            "U25": u25,
-            "U75": u75,
+            "C_low": c_low,
+            "C_high": c_high,
+            "U_low": u_low,
+            "U_high": u_high,
+            "low_percentile": LOW_PCT,
+            "high_percentile": HIGH_PCT,
             "reference_count": int(len(ref)),
             "label": label,
         })
@@ -115,8 +112,8 @@ def print_audit(frame: pd.DataFrame, reference_days: int) -> None:
 
     print(
         f"S1 LAYER1 ROLLING_THRESHOLD R={reference_days} "
-        f"C25_median={frame['C25'].median():.6f} C75_median={frame['C75'].median():.6f} "
-        f"U25_median={frame['U25'].median():.6f} U75_median={frame['U75'].median():.6f}"
+        f"C{LOW_PCT}_median={frame['C_low'].median():.6f} C{HIGH_PCT}_median={frame['C_high'].median():.6f} "
+        f"U{LOW_PCT}_median={frame['U_low'].median():.6f} U{HIGH_PCT}_median={frame['U_high'].median():.6f}"
     )
 
 
@@ -147,8 +144,9 @@ def main() -> None:
         f"W={WINDOW} horizon={HORIZON} refs={','.join(map(str, REFERENCE_WINDOWS))}"
     )
     print(
-        "S1 LAYER1 ROLLING_DEFINITION C=U-B_periodic percentiles=25,75 "
-        "high=(C>C75 and U>U75) low=(C<C25 and U<U25) neutral=otherwise "
+        f"S1 LAYER1 ROLLING_DEFINITION C=U-B_periodic percentiles={LOW_PCT},{HIGH_PCT} "
+        f"high=(C>C{HIGH_PCT} and U>U{HIGH_PCT}) "
+        f"low=(C<C{LOW_PCT} and U<U{LOW_PCT}) neutral=otherwise "
         "reference=prior_completed_outcomes_only"
     )
 
