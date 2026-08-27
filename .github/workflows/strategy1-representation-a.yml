@@ -28,6 +28,8 @@ jobs:
           FUTUREVIEW_DATA_PERIOD: '5y'
           FUTUREVIEW_A_WINDOWS: '20,30,60'
           FUTUREVIEW_A_STRIDE: '5'
+          FUTUREVIEW_A_RANDOM_SAMPLES: '20'
+          FUTUREVIEW_A_RANDOM_SEED: '20260827'
           FUTUREVIEW_A_OUTPUT: 'strategy1-representation-a.csv'
         run: |
           set -o pipefail
