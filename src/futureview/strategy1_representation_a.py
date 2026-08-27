@@ -204,7 +204,7 @@ def main() -> None:
         "S1 REP_A DEFINITION deterministic_one_path_per_entry=true "
         "Db=entry_close_minus_most_recent_5_or_10_day_local_min "
         "addon_candidates=5_or_10_day_local_max first_candidate_gap_gt_Db max_two_addons "
-        "exit5=sell_40pct_current_shares exit10=sell_all_remaining no_addon_after_first_exit "
+        "exit5=sell_40pct_current_shares exit10=sell_all_remaining addon_allowed_after_exit5=true "
         "inputs=L,U,B_periodic,B_random"
     )
     print(
