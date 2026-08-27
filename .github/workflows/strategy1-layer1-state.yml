@@ -1,0 +1,58 @@
+name: Strategy 1 Layer 1 State Baseline
+
+on:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'Layer1.md'
+      - 'src/futureview/strategy1_layer1_state.py'
+      - '.github/workflows/strategy1-layer1-state.yml'
+  workflow_dispatch:
+
+jobs:
+  layer1:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61" "scikit-learn>=1.5"
+          python -m pip install -e . --no-deps
+      - name: Run Layer 1 state baseline
+        env:
+          FUTUREVIEW_TICKER: 'TSLA'
+          FUTUREVIEW_DATA_PERIOD: '5y'
+          FUTUREVIEW_LAYER1_WINDOW: '30'
+          FUTUREVIEW_LAYER1_INPUT: '60'
+          FUTUREVIEW_LAYER1_LOW_Q: '0.25'
+          FUTUREVIEW_LAYER1_HIGH_Q: '0.75'
+          FUTUREVIEW_LAYER1_TRAIN_FRAC: '0.60'
+          FUTUREVIEW_LAYER1_VAL_FRAC: '0.20'
+          FUTUREVIEW_A_RANDOM_SAMPLES: '20'
+          FUTUREVIEW_A_RANDOM_SEED: '20260827'
+          FUTUREVIEW_LAYER1_OUTPUT: 'strategy1-layer1-state.csv'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer1_state 2>&1 | tee strategy1-layer1-state.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Layer 1 state baseline'
+            echo
+            echo '```text'
+            grep -E '^S1 LAYER1 (START|DEFINITION|THRESHOLD|SPLIT|METRIC|CLASS|CONFUSION|RANK|OUTPUT|COMPLETE)' strategy1-layer1-state.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-layer1-state-${{ github.run_number }}
+          path: |
+            strategy1-layer1-state.log
+            strategy1-layer1-state.csv
+          retention-days: 30
