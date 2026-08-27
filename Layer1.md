@@ -4,7 +4,7 @@
 
 The first predictive question is deliberately narrow:
 
-> Using only price-volume information available now, can the model distinguish a rare favorable Strategy state, a neutral state, and a rare unfavorable Strategy state?
+> Using only price-volume information available now, can the model distinguish a favorable Strategy state, a neutral state, and an unfavorable Strategy state?
 
 The fixed Strategy is not changed or optimized.
 
@@ -34,37 +34,45 @@ where \(P_E\) is the realized deterministic Strategy profit for that legal Entry
 
 ## Layer-1 labels
 
-Thresholds are percentile based, never hard-coded return percentages.
+Thresholds are local percentile thresholds, never hard-coded return percentages.
 
-For the training split only, estimate
+The current reference length is locked to
 
 \[
-C_{25},C_{75},U_{25},U_{75}.
+R=60\text{ trading sessions}=2W.
 \]
 
-Then define the three states
+For every target time t, construct a causal local reference set from historical Strategy-window outcomes whose complete outcome dependency is already observable before t. Within the preceding 60 trading sessions, compute
 
 \[
-y=+1\quad\text{if}\quad C>C_{75}\ \land\ U>U_{75},
+C_{40}(t),C_{60}(t),U_{40}(t),U_{60}(t).
+\]
+
+Then define
+
+\[
+y_t=+1\quad\text{if}\quad C_t>C_{60}(t)\ \land\ U_t>U_{60}(t),
 \]
 
 \[
-y=-1\quad\text{if}\quad C<C_{25}\ \land\ U<U_{25},
+y_t=-1\quad\text{if}\quad C_t<C_{40}(t)\ \land\ U_t<U_{40}(t),
 \]
 
 and
 
 \[
-y=0\quad\text{otherwise}.
+y_t=0\quad\text{otherwise}.
 \]
 
 Thus the classes are:
 
-- +1: rare favorable / high-opportunity state;
+- +1: favorable / high-opportunity state;
 - 0: neutral or mixed state;
-- -1: rare unfavorable / low-opportunity state.
+- -1: unfavorable / low-opportunity state.
 
-Validation and test labels use the training thresholds unchanged. Percentiles are never recomputed on validation/test data.
+The 40/60 percentiles deliberately make the neutral region narrower than the previous 25/75 definition.
+
+The reference thresholds are recomputed causally at each target time from the rolling 60-session historical reference set. Future outcomes are never used to define the current threshold.
 
 ## Locked price-volume input
 
@@ -103,27 +111,23 @@ The corresponding W=30 label window begins on the next session:
 W_t=[t+1,t+30].
 \]
 
-Therefore the 60-row input is entirely earlier than the outcome window. This prevents the model from seeing price-volume rows that are part of the retrospective target window.
+Therefore the 60-row input is entirely earlier than the outcome window.
 
-The historical U label can depend on a Strategy path that starts near the end of W and continues for the fixed 60-session Strategy horizon. Chronological partitions therefore purge observations whose target dependency can cross into the next partition.
+A historical U label can depend on a Strategy path beginning near the end of W and continuing for the fixed 60-session Strategy horizon. A historical outcome can enter the rolling reference set only after that complete dependency is observable. This rule keeps the rolling percentile labels causal.
 
-## First test model
+## Current execution order
 
-The first experiment is intentionally a baseline classifier, not the final CNN.
-
-- flatten the locked 8 x 60 input;
-- train a multinomial logistic classifier with class balancing;
-- preserve chronology;
-- fit all percentile thresholds and model parameters on the training set only;
-- use validation and test only as forward held-out data.
-
-This answers the smallest question: whether the locked normalized price-volume representation contains any forward information about the three Layer-1 states before adding CNN capacity.
+1. audit the 60-day rolling 40/60 state definition and its chronological class distribution;
+2. if all three states remain sufficiently represented, use the locked 8 x 60 price-volume input to test whether those states are learnable;
+3. start with a simple baseline classifier before increasing model capacity;
+4. only after Layer 1 is established, proceed to the later C/Q estimation layer.
 
 ## Evaluation
 
-Accuracy alone is not sufficient because neutral states are expected to dominate. Report at least:
+Accuracy alone is not sufficient. Report at least:
 
-- class counts;
+- class counts and rates;
+- chronological class stability;
 - balanced accuracy;
 - macro F1;
 - per-class precision and recall;
@@ -131,9 +135,3 @@ Accuracy alone is not sufficient because neutral states are expected to dominate
 - high-state probability ranking diagnostics.
 
 Because stride-1 W=30 windows overlap strongly, rows are not independent trials. Metrics describe chronological discrimination on the historical sequence, not an independent-sample probability estimate.
-
-## Decision after Layer 1
-
-If the baseline shows no chronological separation beyond trivial baselines, do not proceed to Q prediction yet.
-
-If the high/neutral/low states show reproducible forward separation, keep the same labels and input definition and then test a small 1-D CNN as the next representation model. The later second layer will estimate C and Q inside informative states; it is not part of this first experiment.
