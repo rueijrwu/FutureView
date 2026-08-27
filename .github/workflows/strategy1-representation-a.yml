@@ -24,7 +24,7 @@ jobs:
           python -m pip install -e . --no-deps
       - name: Run Representation A statistics
         env:
-          FUTUREVIEW_TICKER: 'QQQ'
+          FUTUREVIEW_TICKER: 'TSLA'
           FUTUREVIEW_DATA_PERIOD: '5y'
           FUTUREVIEW_A_WINDOWS: '30'
           FUTUREVIEW_A_STRIDE: '1'
