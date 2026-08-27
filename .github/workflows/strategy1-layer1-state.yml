@@ -28,8 +28,9 @@ jobs:
           FUTUREVIEW_DATA_PERIOD: '5y'
           FUTUREVIEW_LAYER1_WINDOW: '30'
           FUTUREVIEW_LAYER1_INPUT: '60'
-          FUTUREVIEW_LAYER1_LOW_Q: '0.25'
-          FUTUREVIEW_LAYER1_HIGH_Q: '0.75'
+          FUTUREVIEW_LAYER1_REFERENCE_DAYS: '60'
+          FUTUREVIEW_LAYER1_LOW_Q: '0.40'
+          FUTUREVIEW_LAYER1_HIGH_Q: '0.60'
           FUTUREVIEW_LAYER1_TRAIN_FRAC: '0.60'
           FUTUREVIEW_LAYER1_VAL_FRAC: '0.20'
           FUTUREVIEW_A_RANDOM_SAMPLES: '20'
@@ -45,7 +46,7 @@ jobs:
             echo '## Strategy 1 — Layer 1 state baseline'
             echo
             echo '```text'
-            grep -E '^S1 LAYER1 (START|DEFINITION|THRESHOLD|SPLIT|METRIC|CLASS|CONFUSION|RANK|OUTPUT|COMPLETE)' strategy1-layer1-state.log || true
+            grep -E '^S1 LAYER1 (START|DEFINITION|SPLIT|METRIC|CLASS|CONFUSION|RANK|OUTPUT|COMPLETE)' strategy1-layer1-state.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
