@@ -16,7 +16,7 @@ W = int(os.environ.get("FUTUREVIEW_W", "30"))
 SHORT_REF = int(os.environ.get("FUTUREVIEW_SHORT_REF", "90"))
 LONG_REF = int(os.environ.get("FUTUREVIEW_LONG_REF", "756"))
 SEED = int(os.environ.get("FUTUREVIEW_SEED", "20260827"))
-OUTPUT = os.environ.get("FUTUREVIEW_OUTPUT", "strategy1-layer1-forward-w-audit.csv")
+OUTPUT = os.environ.get("FUTUREVIEW_OUTPUT", f"strategy1-layer1-forward-w-audit-w{W}.csv")
 
 
 def _classify(wq: pd.DataFrame) -> pd.DataFrame:
@@ -54,8 +54,8 @@ def _corr(a: pd.Series, b: pd.Series, method: str) -> float:
 
 
 def main() -> None:
-    if W != 30 or SHORT_REF != 90 or LONG_REF != 756:
-        raise ValueError("audit locked to W=30, rolling90, rolling3Y")
+    if W not in (15, 30, 60) or SHORT_REF != 90 or LONG_REF != 756:
+        raise ValueError("audit locked to W in {15,30,60}, rolling90, rolling3Y")
 
     df = download_ticker_daily(TICKER, period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
@@ -99,11 +99,11 @@ def main() -> None:
     out.to_csv(OUTPUT, index=False)
 
     print(
-        f"S1 L1FW START ticker={TICKER} rows={audit.rows} W={W} "
+        f"S1 L1FW START W={W} ticker={TICKER} rows={audit.rows} "
         f"classified={len(classified)} full_future_W={len(out)} cq_pairs={len(cq)}"
     )
     print(
-        "S1 L1FW CORR overall "
+        f"S1 L1FW CORR W={W} overall "
         f"C_pearson={_corr(cq.past_C,cq.future_C,'pearson'):.6f} "
         f"C_spearman={_corr(cq.past_C,cq.future_C,'spearman'):.6f} "
         f"Q_pearson={_corr(cq.past_Q,cq.future_Q,'pearson'):.6f} "
@@ -118,14 +118,14 @@ def main() -> None:
         if g.empty:
             continue
         print(
-            f"S1 L1FW STATE state={state} n={len(g)} cq_n={len(gcq)} "
+            f"S1 L1FW STATE W={W} state={state} n={len(g)} cq_n={len(gcq)} "
             f"past_C_mean={g.past_C.mean():.6f} future_C_mean={gcq.future_C.mean():.6f} "
             f"past_Q_mean={g.past_Q.mean():.6f} future_Q_mean={gcq.future_Q.mean():.6f} "
             f"past_entries_mean={g.past_entries.mean():.3f} future_entries_mean={g.future_entries.mean():.3f} "
             f"future_entries_median={g.future_entries.median():.3f} future_entries_zero={(g.future_entries==0).mean():.6f}"
         )
         print(
-            f"S1 L1FW STATECORR state={state} "
+            f"S1 L1FW STATECORR W={W} state={state} "
             f"C_pearson={_corr(gcq.past_C,gcq.future_C,'pearson'):.6f} "
             f"C_spearman={_corr(gcq.past_C,gcq.future_C,'spearman'):.6f} "
             f"Q_pearson={_corr(gcq.past_Q,gcq.future_Q,'pearson'):.6f} "
@@ -134,8 +134,8 @@ def main() -> None:
             f"entries_spearman={_corr(g.past_entries,g.future_entries,'spearman'):.6f}"
         )
 
-    print(f"S1 L1FW OUTPUT file={OUTPUT} rows={len(out)}")
-    print("S1 L1FW COMPLETE")
+    print(f"S1 L1FW OUTPUT W={W} file={OUTPUT} rows={len(out)}")
+    print(f"S1 L1FW COMPLETE W={W}")
 
 
 if __name__ == "__main__":
