@@ -1,9 +1,6 @@
 name: Strategy 1 Layer 1 Transition Audit
 
 on:
-  push:
-    branches:
-      - strategy-profitability-restart
   workflow_dispatch:
 
 jobs:
