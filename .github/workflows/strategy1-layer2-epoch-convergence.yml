@@ -1,0 +1,61 @@
+name: Strategy 1 Layer 2 Epoch Convergence
+
+on:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'src/futureview/strategy1_layer2_epoch_convergence.py'
+      - 'src/futureview/strategy1_deterministic_paths_asof.py'
+      - 'src/futureview/strategy1_layer2_forward_smoke.py'
+      - 'src/futureview/strategy1_layer2_rolling_8y.py'
+      - '.github/workflows/strategy1-layer2-epoch-convergence.yml'
+  workflow_dispatch:
+
+jobs:
+  convergence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5' pytest torch
+          python -m pip install -e . --no-deps
+      - name: Unit tests
+        run: pytest -q tests/test_strategy1_deterministic_paths_asof.py tests/test_strategy1_layer2_forward_smoke.py
+      - name: Run epoch convergence diagnostic
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 8y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_MODEL_HISTORY: '90'
+          FUTUREVIEW_TRAIN_YEARS: '5'
+          FUTUREVIEW_VALID_YEARS: '1'
+          FUTUREVIEW_CONVERGENCE_DATES: '5'
+          FUTUREVIEW_MAX_EPOCHS: '300'
+          FUTUREVIEW_NEUTRAL_ALPHA: '0.2'
+          FUTUREVIEW_SEED: '20260827'
+          FUTUREVIEW_CONVERGENCE_OUTPUT: strategy1-layer2-epoch-convergence.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer2_epoch_convergence 2>&1 | tee strategy1-layer2-epoch-convergence.log
+      - name: Upload convergence curve
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-layer2-epoch-convergence
+          path: strategy1-layer2-epoch-convergence.csv
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Layer2 epoch convergence diagnostic'
+            echo
+            echo '```text'
+            grep -E '^S1 L2CONV' strategy1-layer2-epoch-convergence.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
