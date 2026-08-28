@@ -1,0 +1,48 @@
+name: Strategy 1 Layer 2 Weight Handoff Audit
+
+on:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'src/futureview/strategy1_layer2_weight_handoff.py'
+      - 'tests/test_strategy1_layer2_weight_handoff.py'
+      - '.github/workflows/strategy1-layer2-weight-handoff.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61" "scikit-learn>=1.5" pytest
+          python -m pip install -e . --no-deps
+      - name: Unit tests
+        run: pytest -q tests/test_strategy1_layer2_weight_handoff.py
+      - name: Run audit
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 5y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_MODEL_HISTORY: '90'
+          FUTUREVIEW_NEUTRAL_ALPHA: '0.2'
+          FUTUREVIEW_SEED: '20260827'
+          FUTUREVIEW_OUTPUT: strategy1-layer2-weight-handoff.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer2_weight_handoff 2>&1 | tee strategy1-layer2-weight-handoff.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — clean Layer1 to Layer2 weight handoff audit'
+            echo
+            echo '```text'
+            grep -E '^S1 L2WEIGHT' strategy1-layer2-weight-handoff.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
