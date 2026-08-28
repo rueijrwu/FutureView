@@ -5,6 +5,7 @@ on:
     branches: [strategy-profitability-restart]
     paths:
       - 'src/futureview/strategy1_cq_90d_rank_audit.py'
+      - 'src/futureview/strategy1_deterministic_paths.py'
       - '.github/workflows/strategy1-cq-90d-rank-audit.yml'
   workflow_dispatch:
 
