@@ -24,6 +24,7 @@ NEUTRAL_ALPHA = float(os.environ.get("FUTUREVIEW_NEUTRAL_ALPHA", "0.2"))
 EPOCHS = int(os.environ.get("FUTUREVIEW_EPOCHS", "300"))
 LR = float(os.environ.get("FUTUREVIEW_LR", "0.003"))
 SEED = int(os.environ.get("FUTUREVIEW_SEED", "20260827"))
+OUTPUT = os.environ.get("FUTUREVIEW_COMPARISON_OUTPUT", "strategy1-layer2-forward-comparison.csv")
 
 STATE_TO_ID = {"high": 0, "neutral": 1, "low": 2}
 ID_TO_STATE = {v: k for k, v in STATE_TO_ID.items()}
@@ -179,6 +180,31 @@ def main() -> None:
         f"pred_C_min={pred_np[:,0].min():.6f} pred_C_max={pred_np[:,0].max():.6f} "
         f"pred_Q_min={pred_np[:,1].min():.6f} pred_Q_max={pred_np[:,1].max():.6f} pred_Q_negative={q_negative}"
     )
+
+    comparison_rows: list[dict[str, object]] = []
+    for j, r in data.rows.iterrows():
+        p = prob_np[j]
+        target_start = int(r.target_start)
+        target_end = int(r.target_end)
+        comparison_rows.append(
+            {
+                "target_start_date": pd.Timestamp(df.iloc[target_start]["date"]).date().isoformat(),
+                "target_end_date": pd.Timestamp(df.iloc[target_end]["date"]).date().isoformat(),
+                "actual_C": float(r.C),
+                "pred_C": float(pred_np[j, 0]),
+                "actual_Q": float(r.Q),
+                "pred_Q": float(pred_np[j, 1]),
+                "actual_state": str(r.state),
+                "P_H": float(p[0]),
+                "P_N": float(p[1]),
+                "P_L": float(p[2]),
+                "pred_state": ID_TO_STATE[int(np.argmax(p))],
+            }
+        )
+
+    comparison = pd.DataFrame(comparison_rows)
+    comparison.to_csv(OUTPUT, index=False)
+    print(f"S1 L2SMOKE COMPARISON file={OUTPUT} rows={len(comparison)}")
 
     for j in range(max(0, len(data.rows) - 8), len(data.rows)):
         r = data.rows.iloc[j]
