@@ -9,7 +9,7 @@ from .strategy1 import add_strategy1_events
 from .strategy1_deterministic_paths import build_deterministic_path_table
 from .strategy1_representation_a import build_representation_a_table
 from .strategy1_cq_90d_rank_audit import build_window_q
-from .strategy1_prev_w_neutral_gate_audit import classify_layer1, summarize
+from .strategy1_prev_w_neutral_gate_audit import classify_layer1
 
 TICKER = os.environ.get("FUTUREVIEW_TICKER", "TSLA")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "5y")
@@ -17,6 +17,7 @@ W = int(os.environ.get("FUTUREVIEW_W", "30"))
 SEED = int(os.environ.get("FUTUREVIEW_SEED", "20260827"))
 OUTPUT = os.environ.get("FUTUREVIEW_OUTPUT", "strategy1-prev-w-neutral-gate-50-audit.csv")
 EPS = 1e-12
+TARGET_NEUTRAL = 0.50
 
 
 def build_centered_entries_50(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
@@ -49,16 +50,35 @@ def build_centered_entries_50(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataF
         )
 
     out = pd.DataFrame(rows).sort_values("entry_index").reset_index(drop=True)
-    c50 = float(out.C.quantile(.50))
-    q50 = float(out.Q.quantile(.50))
+
+    # Keep the same symmetric joint-C/Q semantics as the 40/60 audit, but
+    # choose the quantile boundary that makes Neutral closest to 50%.
+    best = None
+    for hi in np.linspace(0.50, 0.60, 101):
+        lo = 1.0 - hi
+        c_hi = float(out.C.quantile(hi))
+        c_lo = float(out.C.quantile(lo))
+        q_hi = float(out.Q.quantile(hi))
+        q_lo = float(out.Q.quantile(lo))
+        good = (out.C >= c_hi) & (out.Q <= q_lo)
+        bad = (out.C <= c_lo) & (out.Q >= q_hi)
+        neutral_rate = float((~(good | bad)).mean())
+        err = abs(neutral_rate - TARGET_NEUTRAL)
+        candidate = (err, hi, lo, c_hi, c_lo, q_hi, q_lo, good, bad, neutral_rate)
+        if best is None or candidate[0] < best[0]:
+            best = candidate
+
+    assert best is not None
+    _, hi, lo, c_hi, c_lo, q_hi, q_lo, good, bad, neutral_rate = best
     out["label"] = "neutral"
-    out.loc[(out.C >= c50) & (out.Q <= q50), "label"] = "good"
-    out.loc[(out.C <= c50) & (out.Q >= q50), "label"] = "bad"
+    out.loc[good, "label"] = "good"
+    out.loc[bad, "label"] = "bad"
     out["non_neutral"] = (out.label != "neutral").astype(int)
     print(
-        f"S1 PWG50 TARGET C50={c50:.6f} Q50={q50:.6f} "
+        f"S1 PWG50 TARGET target_neutral={TARGET_NEUTRAL:.6f} chosen_hi={hi:.3f} chosen_lo={lo:.3f} "
+        f"C_hi={c_hi:.6f} C_lo={c_lo:.6f} Q_hi={q_hi:.6f} Q_lo={q_lo:.6f} "
         f"good={(out.label=='good').sum()} bad={(out.label=='bad').sum()} "
-        f"neutral={(out.label=='neutral').sum()} neutral_rate={(out.label=='neutral').mean():.6f}"
+        f"neutral={(out.label=='neutral').sum()} neutral_rate={neutral_rate:.6f}"
     )
     return out
 
@@ -97,7 +117,7 @@ def main() -> None:
                 "label": r.label,
                 "non_neutral": int(r.non_neutral),
                 "prev_start": int(g.start_index),
-                "prev_end": int(g.end_index),
+                "prev_end": int(prev_end),
                 "prev_state": g.state,
                 "past_C": float(g.past_C),
                 "past_Q": float(g.past_Q),
@@ -148,7 +168,7 @@ def main() -> None:
     )
     matched.to_csv(OUTPUT, index=False)
     print(f"S1 PWG50 OUTPUT file={OUTPUT} rows={len(matched)}")
-    print("S1 PWG50 COMPLETE target_definition=median_joint_split layer1_unchanged=true")
+    print("S1 PWG50 COMPLETE target_neutral_approximately_50=true layer1_unchanged=true")
 
 
 if __name__ == "__main__":
