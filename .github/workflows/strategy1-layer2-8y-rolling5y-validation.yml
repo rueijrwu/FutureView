@@ -1,0 +1,59 @@
+name: Strategy 1 Layer 2 8Y Rolling 5Y Validation
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'src/futureview/strategy1_layer2_8y_rolling5y_validation.py'
+      - 'tests/test_strategy1_layer2_8y_rolling5y_validation.py'
+      - '.github/workflows/strategy1-layer2-8y-rolling5y-validation.yml'
+
+jobs:
+  rolling:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5' pytest torch
+          python -m pip install -e . --no-deps
+      - name: Unit tests
+        run: pytest -q tests/test_strategy1_layer2_8y_rolling5y_validation.py
+      - name: Run rolling validation
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 8y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_MODEL_HISTORY: '90'
+          FUTUREVIEW_TRAIN_YEARS: '5'
+          FUTUREVIEW_VALIDATION_YEARS: '3'
+          FUTUREVIEW_LABEL_LAG: '60'
+          FUTUREVIEW_NEUTRAL_ALPHA: '0.2'
+          FUTUREVIEW_EPOCHS: '100'
+          FUTUREVIEW_SEED: '20260828'
+          FUTUREVIEW_ROLLING_OUTPUT: strategy1-layer2-8y-rolling5y-validation.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer2_8y_rolling5y_validation 2>&1 | tee strategy1-layer2-8y-rolling5y-validation.log
+      - name: Upload rolling comparison
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-layer2-8y-rolling5y-validation
+          path: strategy1-layer2-8y-rolling5y-validation.csv
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Layer2 8Y rolling 5Y validation'
+            echo
+            echo '```text'
+            grep -E '^S1 L2ROLL' strategy1-layer2-8y-rolling5y-validation.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
