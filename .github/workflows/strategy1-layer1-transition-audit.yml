@@ -9,6 +9,10 @@ on:
 jobs:
   audit:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        w: [15, 60]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -19,26 +23,27 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61"
           python -m pip install -e . --no-deps
-      - name: Run transition episode audit
+      - name: Run row-level transition audit
         env:
           FUTUREVIEW_TICKER: TSLA
           FUTUREVIEW_DATA_PERIOD: 5y
-          FUTUREVIEW_W: '30'
+          FUTUREVIEW_W: ${{ matrix.w }}
           FUTUREVIEW_SEED: '20260827'
+          FUTUREVIEW_OUTPUT: strategy1-layer1-transition-audit-w${{ matrix.w }}.csv
         run: |
-          python -m futureview.strategy1_layer1_transition_audit 2>&1 | tee strategy1-layer1-transition-audit.log
+          python -m futureview.strategy1_layer1_transition_audit 2>&1 | tee strategy1-layer1-transition-audit-w${{ matrix.w }}.log
       - name: Summary
         run: |
           {
-            echo '## Strategy 1 — Layer 1 transition audit'
+            echo "## Strategy 1 — Layer 1 transition audit W=${{ matrix.w }}"
             echo
             echo '```text'
-            grep -E '^S1 L1TRANS' strategy1-layer1-transition-audit.log || true
+            grep -E '^S1 L1TRANS' strategy1-layer1-transition-audit-w${{ matrix.w }}.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
-          name: strategy1-layer1-transition-audit
+          name: strategy1-layer1-transition-audit-w${{ matrix.w }}
           path: |
-            strategy1-layer1-transition-audit.csv
-            strategy1-layer1-transition-audit.log
+            strategy1-layer1-transition-audit-w${{ matrix.w }}.csv
+            strategy1-layer1-transition-audit-w${{ matrix.w }}.log
