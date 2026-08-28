@@ -8,6 +8,7 @@ from futureview.strategy1_layer2_forward_smoke import (
     MODEL_HISTORY,
     ForwardCQStateNet,
     make_input_features,
+    nonnegative_q,
     state_weight,
     weighted_mean,
 )
@@ -42,6 +43,13 @@ def test_network_output_shapes_and_probability_sum() -> None:
     assert cq.shape == (4, 2)
     assert logits.shape == (4, 3)
     assert torch.allclose(p.sum(dim=1), torch.ones(4), atol=1e-6)
+
+
+def test_q_transform_is_nonnegative_and_allows_exact_zero() -> None:
+    raw = torch.tensor([[-2.0], [0.0], [3.0]])
+    q = nonnegative_q(raw)
+    assert torch.all(q >= 0)
+    assert float(q[1, 0]) == 0.0
 
 
 def test_weighted_mean_matches_manual() -> None:
