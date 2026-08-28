@@ -1,0 +1,48 @@
+name: Strategy 1 Layer 1 Weight Audit
+
+on:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'src/futureview/strategy1_layer1_weight_audit.py'
+      - 'tests/test_strategy1_layer1_weight_audit.py'
+      - '.github/workflows/strategy1-layer1-weight-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61" "scikit-learn>=1.5" pytest
+          python -m pip install -e . --no-deps
+      - name: Unit tests
+        run: pytest -q tests/test_strategy1_layer1_weight_audit.py
+      - name: Run audit
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 5y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_WEIGHT_HISTORY: '90'
+          FUTUREVIEW_EXTREME_THRESHOLD: '0.5'
+          FUTUREVIEW_SEED: '20260827'
+          FUTUREVIEW_OUTPUT: strategy1-layer1-weight-audit.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer1_weight_audit 2>&1 | tee strategy1-layer1-weight-audit.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Layer 1 simple 1/2/3 weight audit'
+            echo
+            echo '```text'
+            grep -E '^S1 L1WEIGHT' strategy1-layer1-weight-audit.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
