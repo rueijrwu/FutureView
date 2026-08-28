@@ -46,7 +46,6 @@ def build_window_q(windows: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
                 "start_date": w.start_date,
                 "end_date": w.end_date,
                 "C": float(w.U - w.B_periodic),
-                # Window-level dilution used for state classification.
                 "Q": float(qs.mean()),
                 "Q_median": float(np.median(qs)),
                 "Q_min": float(qs.min()),
@@ -60,138 +59,81 @@ def build_window_q(windows: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
 def main() -> None:
     if WINDOW != 30 or SHORT_REF != 90 or LONG_REF != 756:
         raise ValueError("audit is locked to W=30, rolling short reference=90, long reference=756 sessions")
-    if not (
-        np.isclose(LOW_QTL, 0.40)
-        and np.isclose(HIGH_QTL, 0.60)
-        and np.isclose(LONG_QTL, 0.50)
-    ):
+    if not (np.isclose(LOW_QTL, 0.40) and np.isclose(HIGH_QTL, 0.60) and np.isclose(LONG_QTL, 0.50)):
         raise ValueError("audit is locked to short 40/60 and long 50th percentile")
 
     df = download_ticker_daily(TICKER, period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
     events = add_strategy1_events(df).reset_index(drop=True)
     paths = build_deterministic_path_table(events)
-    windows = build_representation_a_table(
-        df,
-        paths,
-        window=WINDOW,
-        stride=1,
-        random_samples=RANDOM_SAMPLES,
-        random_seed=RANDOM_SEED,
-    )
+    windows = build_representation_a_table(df, paths, window=WINDOW, stride=1, random_samples=RANDOM_SAMPLES, random_seed=RANDOM_SEED)
     wq = build_window_q(windows, paths).sort_values("start_index").reset_index(drop=True)
 
     rows: list[dict[str, float | int | str]] = []
     for row in wq.itertuples(index=False):
         s = int(row.start_index)
-
-        # Causal historical references: only W30 outcomes that ended before the
-        # current W30 begins. Short reference rolls every session.
         prior = wq.loc[wq["end_index"].astype(int) < s]
         short = prior.loc[prior["end_index"].astype(int) >= s - SHORT_REF]
         long = prior.loc[prior["end_index"].astype(int) >= s - LONG_REF]
-
-        # Require a full three-year lookback and usable empirical support.
         if s < LONG_REF or len(short) < 20 or len(long) < 100:
             continue
-
-        c40 = float(short["C"].quantile(LOW_QTL))
-        c60 = float(short["C"].quantile(HIGH_QTL))
-        q40 = float(short["Q"].quantile(LOW_QTL))
-        q60 = float(short["Q"].quantile(HIGH_QTL))
-        c50_3y = float(long["C"].quantile(LONG_QTL))
-        q50_3y = float(long["Q"].quantile(LONG_QTL))
-
+        c40 = float(short["C"].quantile(LOW_QTL)); c60 = float(short["C"].quantile(HIGH_QTL))
+        q40 = float(short["Q"].quantile(LOW_QTL)); q60 = float(short["Q"].quantile(HIGH_QTL))
+        c50_3y = float(long["C"].quantile(LONG_QTL)); q50_3y = float(long["Q"].quantile(LONG_QTL))
         short_high = float(row.C) >= c60 and float(row.Q) <= q60
         short_low = float(row.C) <= c40 and float(row.Q) >= q40
         long_high = float(row.C) > c50_3y and float(row.Q) < q50_3y
         long_low = float(row.C) < c50_3y and float(row.Q) > q50_3y
-
-        if short_high and long_high:
-            state = "high"
-        elif short_low and long_low:
-            state = "low"
-        else:
-            state = "neutral"
-
-        rows.append(
-            {
-                "start_index": s,
-                "end_index": int(row.end_index),
-                "start_date": row.start_date,
-                "end_date": row.end_date,
-                "C": float(row.C),
-                "Q": float(row.Q),
-                "state": state,
-                "short_C40": c40,
-                "short_C60": c60,
-                "short_Q40": q40,
-                "short_Q60": q60,
-                "long_C50": c50_3y,
-                "long_Q50": q50_3y,
-                "short_reference_count": int(len(short)),
-                "long_reference_count": int(len(long)),
-                "short_high": int(short_high),
-                "short_low": int(short_low),
-                "long_high": int(long_high),
-                "long_low": int(long_low),
-            }
-        )
+        state = "high" if short_high and long_high else ("low" if short_low and long_low else "neutral")
+        rows.append({"start_index":s,"end_index":int(row.end_index),"start_date":row.start_date,"end_date":row.end_date,"C":float(row.C),"Q":float(row.Q),"state":state,"short_C40":c40,"short_C60":c60,"short_Q40":q40,"short_Q60":q60,"long_C50":c50_3y,"long_Q50":q50_3y,"short_reference_count":int(len(short)),"long_reference_count":int(len(long)),"short_high":int(short_high),"short_low":int(short_low),"long_high":int(long_high),"long_low":int(long_low)})
 
     if not rows:
         raise RuntimeError("no rolling 90D + 3Y classifications produced")
     out = pd.DataFrame(rows)
     out.to_csv(OUTPUT, index=False)
 
+    print(f"S1 CQROLL START ticker={TICKER} rows={audit.rows} first={audit.start} last={audit.end} W={WINDOW} short_ref={SHORT_REF} long_ref={LONG_REF} classified={len(out)}")
+    print("S1 CQROLL DEFINITION short=rolling90_C40_C60_Q40_Q60 long=rolling3Y_C50_Q50 high=(C>=short_C60 and Q<=short_Q60 and C>long_C50 and Q<long_Q50) low=(C<=short_C40 and Q>=short_Q40 and C<long_C50 and Q>long_Q50)")
+    counts = out["state"].value_counts().to_dict(); short_high_n=int(out["short_high"].sum()); short_low_n=int(out["short_low"].sum()); high_n=int(counts.get("high",0)); low_n=int(counts.get("low",0))
+    print(f"S1 CQROLL TOTAL high={high_n} neutral={counts.get('neutral',0)} low={low_n} short_high={short_high_n} short_low={short_low_n} removed_false_high={short_high_n-high_n} removed_false_low={short_low_n-low_n}")
+    for state in ("high","neutral","low"):
+        g=out.loc[out["state"]==state]
+        if g.empty: continue
+        print(f"S1 CQROLL FACT state={state} n={len(g)} C_mean={g['C'].mean():.6f} C_median={g['C'].median():.6f} C_p10={g['C'].quantile(0.10):.6f} C_p90={g['C'].quantile(0.90):.6f} Q_mean={g['Q'].mean():.6f} Q_median={g['Q'].median():.6f} Q_p10={g['Q'].quantile(0.10):.6f} Q_p90={g['Q'].quantile(0.90):.6f}")
+    bad_high=out.loc[(out["state"]=="high") & ~((out["C"]>out["long_C50"]) & (out["Q"]<out["long_Q50"]))]
+    bad_low=out.loc[(out["state"]=="low") & ~((out["C"]<out["long_C50"]) & (out["Q"]>out["long_Q50"]))]
+    print(f"S1 CQROLL VALIDATE bad_high={len(bad_high)} bad_low={len(bad_low)} contract_ok={len(bad_high)==0 and len(bad_low)==0}")
+
+    # Current fully causal 30-session market/Strategy structure through the latest completed daily bar.
+    cur = events.iloc[-WINDOW:].copy()
+    close = cur["close"].astype(float)
+    volume = cur["volume"].astype(float)
+    last = events.iloc[-1]
+    def r(n: int) -> float:
+        return float(events.iloc[-1]["close"] / events.iloc[-1-n]["close"] - 1.0)
+    window_ret = float(close.iloc[-1] / close.iloc[0] - 1.0)
+    lo = float(close.min()); hi = float(close.max()); last_close = float(close.iloc[-1])
+    range_pos = float((last_close-lo)/(hi-lo)) if hi>lo else 0.5
+    v5 = float(volume.iloc[-5:].mean()); v20 = float(volume.iloc[-20:].mean())
     print(
-        f"S1 CQROLL START ticker={TICKER} rows={audit.rows} first={audit.start} last={audit.end} "
-        f"W={WINDOW} short_ref={SHORT_REF} long_ref={LONG_REF} classified={len(out)}"
+        f"S1 CURRENT30 start={pd.Timestamp(cur.iloc[0]['date']).date()} end={pd.Timestamp(cur.iloc[-1]['date']).date()} "
+        f"close_start={float(close.iloc[0]):.4f} close_end={last_close:.4f} return30={window_ret:.6f} "
+        f"ret5={r(5):.6f} ret10={r(10):.6f} ret20={r(20):.6f} low={lo:.4f} high={hi:.4f} range_pos={range_pos:.6f}"
     )
     print(
-        "S1 CQROLL DEFINITION short=rolling90_C40_C60_Q40_Q60 long=rolling3Y_C50_Q50 "
-        "high=(C>=short_C60 and Q<=short_Q60 and C>long_C50 and Q<long_Q50) "
-        "low=(C<=short_C40 and Q>=short_Q40 and C<long_C50 and Q>long_Q50)"
+        f"S1 CURRENT30 MA ma5={float(last.ma5):.4f} ma10={float(last.ma10):.4f} ma20={float(last.ma20):.4f} "
+        f"close_gt_ma5={int(last_close>float(last.ma5))} close_gt_ma10={int(last_close>float(last.ma10))} close_gt_ma20={int(last_close>float(last.ma20))} "
+        f"ma5_gt_ma10={int(float(last.ma5)>float(last.ma10))} ma10_gt_ma20={int(float(last.ma10)>float(last.ma20))} entry_now={int(bool(last.entry_candidate))}"
     )
-
-    counts = out["state"].value_counts().to_dict()
-    short_high_n = int(out["short_high"].sum())
-    short_low_n = int(out["short_low"].sum())
-    high_n = int(counts.get("high", 0))
-    low_n = int(counts.get("low", 0))
     print(
-        f"S1 CQROLL TOTAL high={high_n} neutral={counts.get('neutral',0)} low={low_n} "
-        f"short_high={short_high_n} short_low={short_low_n} "
-        f"removed_false_high={short_high_n-high_n} removed_false_low={short_low_n-low_n}"
+        f"S1 CURRENT30 EVENTS legal_entries30={int(cur.entry_candidate.sum())} legal_entries10={int(cur.entry_candidate.iloc[-10:].sum())} legal_entries5={int(cur.entry_candidate.iloc[-5:].sum())} "
+        f"exit5_events30={int(cur.exit5_event.sum())} exit10_events30={int(cur.exit10_event.sum())} breakout20_events30={int(cur.breakout20_event.sum())}"
     )
-
-    for state in ("high", "neutral", "low"):
-        g = out.loc[out["state"] == state]
-        if g.empty:
-            continue
-        print(
-            f"S1 CQROLL FACT state={state} n={len(g)} "
-            f"C_mean={g['C'].mean():.6f} C_median={g['C'].median():.6f} "
-            f"C_p10={g['C'].quantile(0.10):.6f} C_p90={g['C'].quantile(0.90):.6f} "
-            f"Q_mean={g['Q'].mean():.6f} Q_median={g['Q'].median():.6f} "
-            f"Q_p10={g['Q'].quantile(0.10):.6f} Q_p90={g['Q'].quantile(0.90):.6f}"
-        )
-
-    # Explicit validation of the two-layer contract.
-    bad_high = out.loc[
-        (out["state"] == "high")
-        & ~((out["C"] > out["long_C50"]) & (out["Q"] < out["long_Q50"]))
-    ]
-    bad_low = out.loc[
-        (out["state"] == "low")
-        & ~((out["C"] < out["long_C50"]) & (out["Q"] > out["long_Q50"]))
-    ]
     print(
-        f"S1 CQROLL VALIDATE bad_high={len(bad_high)} bad_low={len(bad_low)} "
-        f"contract_ok={len(bad_high)==0 and len(bad_low)==0}"
+        f"S1 CURRENT30 VOLUME avg5={v5:.0f} avg20={v20:.0f} ratio5to20={v5/v20:.6f} last={float(volume.iloc[-1]):.0f} last_to20={float(volume.iloc[-1])/v20:.6f}"
     )
     print(f"S1 CQROLL OUTPUT file={OUTPUT} rows={len(out)}")
     print("S1 CQROLL COMPLETE")
-
 
 if __name__ == "__main__":
     main()
