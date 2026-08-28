@@ -89,9 +89,10 @@ def main() -> None:
     centered = build_centered_entries(df, paths)
 
     # Exact previous W window for Entry t is [t-W, t-1].
-    prev = gate.rename(columns={"start_index":"prev_start","end_index":"prev_end","state":"prev_state"})
-    merged = centered.merge(prev[["prev_start","prev_end","prev_state","past_C","past_Q"]],
-                            left_on="entry_index", right_on=prev.prev_end + 1, how="left")
+    prev = gate.rename(columns={"start_index":"prev_start","end_index":"prev_end","state":"prev_state"}).copy()
+    prev["entry_index"] = prev["prev_end"].astype(int) + 1
+    merged = centered.merge(prev[["entry_index","prev_start","prev_end","prev_state","past_C","past_Q"]],
+                            on="entry_index", how="left")
     matched = merged.loc[merged.prev_state.notna()].copy()
     matched["decision"] = np.where(matched.prev_state.eq("neutral"), "block", "pass")
 
