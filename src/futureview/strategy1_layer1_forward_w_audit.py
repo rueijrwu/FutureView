@@ -47,9 +47,10 @@ def _classify(wq: pd.DataFrame) -> pd.DataFrame:
 
 
 def _corr(a: pd.Series, b: pd.Series, method: str) -> float:
-    if len(a) < 3 or a.nunique() < 2 or b.nunique() < 2:
+    x = pd.DataFrame({"a": a, "b": b}).dropna()
+    if len(x) < 3 or x.a.nunique() < 2 or x.b.nunique() < 2:
         return float("nan")
-    return float(a.corr(b, method=method))
+    return float(x.a.corr(x.b, method=method))
 
 
 def main() -> None:
@@ -60,63 +61,75 @@ def main() -> None:
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
     events = add_strategy1_events(df).reset_index(drop=True)
     paths = build_deterministic_path_table(events)
+    entry_idx = paths["entry_index"].astype(int).to_numpy()
+
     windows = build_representation_a_table(df, paths, window=W, stride=1, random_samples=20, random_seed=SEED)
     wq = build_window_q(windows, paths).sort_values("start_index").reset_index(drop=True)
     classified = _classify(wq)
-
     future_by_start = wq.set_index("start_index")
+
     rows = []
     for r in classified.itertuples(index=False):
         future_start = int(r.end_index) + 1
         future_end = future_start + W - 1
-        if future_start not in future_by_start.index or future_end >= len(df):
+        if future_end >= len(df):
             continue
-        f = future_by_start.loc[future_start]
-        if isinstance(f, pd.DataFrame):
-            f = f.iloc[0]
+
+        future_entries = int(((entry_idx >= future_start) & (entry_idx <= future_end)).sum())
+        future_C = float("nan")
+        future_Q = float("nan")
+        if future_start in future_by_start.index:
+            f = future_by_start.loc[future_start]
+            if isinstance(f, pd.DataFrame):
+                f = f.iloc[0]
+            future_C = float(f.C)
+            future_Q = float(f.Q)
+
         rows.append({
             **r._asdict(),
             "future_start": future_start,
             "future_end": future_end,
-            "future_C": float(f.C),
-            "future_Q": float(f.Q),
-            "future_entries": int(f.entry_count),
+            "future_C": future_C,
+            "future_Q": future_Q,
+            "future_entries": future_entries,
         })
 
     out = pd.DataFrame(rows)
+    cq = out.dropna(subset=["future_C", "future_Q"])
     out.to_csv(OUTPUT, index=False)
 
     print(
         f"S1 L1FW START ticker={TICKER} rows={audit.rows} W={W} "
-        f"classified={len(classified)} paired_nonoverlap={len(out)}"
+        f"classified={len(classified)} full_future_W={len(out)} cq_pairs={len(cq)}"
     )
     print(
         "S1 L1FW CORR overall "
-        f"C_pearson={_corr(out.past_C,out.future_C,'pearson'):.6f} "
-        f"C_spearman={_corr(out.past_C,out.future_C,'spearman'):.6f} "
-        f"Q_pearson={_corr(out.past_Q,out.future_Q,'pearson'):.6f} "
-        f"Q_spearman={_corr(out.past_Q,out.future_Q,'spearman'):.6f} "
+        f"C_pearson={_corr(cq.past_C,cq.future_C,'pearson'):.6f} "
+        f"C_spearman={_corr(cq.past_C,cq.future_C,'spearman'):.6f} "
+        f"Q_pearson={_corr(cq.past_Q,cq.future_Q,'pearson'):.6f} "
+        f"Q_spearman={_corr(cq.past_Q,cq.future_Q,'spearman'):.6f} "
         f"entries_pearson={_corr(out.past_entries,out.future_entries,'pearson'):.6f} "
         f"entries_spearman={_corr(out.past_entries,out.future_entries,'spearman'):.6f}"
     )
 
     for state in ("high", "neutral", "low"):
         g = out.loc[out.state == state]
+        gcq = g.dropna(subset=["future_C", "future_Q"])
         if g.empty:
             continue
         print(
-            f"S1 L1FW STATE state={state} n={len(g)} "
-            f"past_C_mean={g.past_C.mean():.6f} future_C_mean={g.future_C.mean():.6f} "
-            f"past_Q_mean={g.past_Q.mean():.6f} future_Q_mean={g.future_Q.mean():.6f} "
+            f"S1 L1FW STATE state={state} n={len(g)} cq_n={len(gcq)} "
+            f"past_C_mean={g.past_C.mean():.6f} future_C_mean={gcq.future_C.mean():.6f} "
+            f"past_Q_mean={g.past_Q.mean():.6f} future_Q_mean={gcq.future_Q.mean():.6f} "
             f"past_entries_mean={g.past_entries.mean():.3f} future_entries_mean={g.future_entries.mean():.3f} "
             f"future_entries_median={g.future_entries.median():.3f} future_entries_zero={(g.future_entries==0).mean():.6f}"
         )
         print(
             f"S1 L1FW STATECORR state={state} "
-            f"C_pearson={_corr(g.past_C,g.future_C,'pearson'):.6f} "
-            f"C_spearman={_corr(g.past_C,g.future_C,'spearman'):.6f} "
-            f"Q_pearson={_corr(g.past_Q,g.future_Q,'pearson'):.6f} "
-            f"Q_spearman={_corr(g.past_Q,g.future_Q,'spearman'):.6f} "
+            f"C_pearson={_corr(gcq.past_C,gcq.future_C,'pearson'):.6f} "
+            f"C_spearman={_corr(gcq.past_C,gcq.future_C,'spearman'):.6f} "
+            f"Q_pearson={_corr(gcq.past_Q,gcq.future_Q,'pearson'):.6f} "
+            f"Q_spearman={_corr(gcq.past_Q,gcq.future_Q,'spearman'):.6f} "
             f"entries_pearson={_corr(g.past_entries,g.future_entries,'pearson'):.6f} "
             f"entries_spearman={_corr(g.past_entries,g.future_entries,'spearman'):.6f}"
         )
