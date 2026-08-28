@@ -42,7 +42,7 @@ def _build() -> pd.DataFrame:
             q = 0.0
         rows.append({
             "entry_index": int(t),
-            "entry_date": pd.Timestamp(df.index[t]),
+            "entry_date": pd.Timestamp(df["date"].iloc[t]),
             "C": float(u - wr.B_periodic),
             "Q": float(q),
         })
@@ -93,7 +93,6 @@ def main() -> None:
                 f"top3={top3} top3_share={(top3/len(g) if len(g) else 0):.6f} sizes={';'.join(map(str,sizes))}"
             )
 
-    # Chronological thirds to reveal concentration without arbitrary calendar-year lengths.
     n = len(out)
     cuts = [0, n//3, 2*n//3, n]
     for i in range(3):
