@@ -48,9 +48,17 @@ jobs:
           FUTUREVIEW_EPOCHS: '120'
           FUTUREVIEW_SEED: '20260827'
           FUTUREVIEW_LAYER1_GATE_CSV: strategy1-layer1-gate.csv
+          FUTUREVIEW_MODEL_OUTPUT: strategy1-layer2-centered-cq.pt
         run: |
           set -o pipefail
           python -m futureview.strategy1_layer2_centered_train 2>&1 | tee strategy1-layer2-centered-train.log
+      - name: Upload trained model
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-layer2-centered-cq
+          path: strategy1-layer2-centered-cq.pt
+          if-no-files-found: error
       - name: Summary
         if: always()
         shell: bash
@@ -65,6 +73,6 @@ jobs:
             echo '## Strategy 1 — Layer 2 centered-2W training'
             echo
             echo '```text'
-            grep -E '^S1 L2 CENTER' strategy1-layer2-centered-train.log || true
+            grep -E '^S1 L2 (CENTER|LIVE)' strategy1-layer2-centered-train.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
