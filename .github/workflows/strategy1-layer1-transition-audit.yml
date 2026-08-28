@@ -11,7 +11,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -e .
+      - run: |
+          pip install -e .
+          pip install numba
       - name: Run transition episode audit
         env:
           FUTUREVIEW_TICKER: TSLA
