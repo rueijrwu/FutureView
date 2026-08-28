@@ -42,7 +42,7 @@ C is larger-is-better. Q is smaller-is-better and Q is non-negative by construct
 
 The current interpretation is:
 
-- **C** measures how much exploitable fixed-Strategy opportunity the evaluated region has already contained relative to the periodic baseline. A high C does not mean that more opportunity must remain in the future.
+- **C** measures how much exploitable fixed-Strategy opportunity the evaluated region has contained relative to the periodic baseline. A high C does not mean that more opportunity must remain in the future.
 - **Q** measures how far a legal Entry is from the best legal Entry available in the same retrospective region. Small Q means the Entry is close to the region upper bound; large Q means poorer timing relative to that upper bound.
 
 Therefore C is a region-opportunity measure and Q is an Entry-quality / timing-distance measure. Neither quantity is itself a directional market forecast.
@@ -91,7 +91,7 @@ LongLow:\quad C<C^{3Y}_{50}\land Q>Q^{3Y}_{50}.
 
 This removes a locally relative High that is still poor on a longer historical scale, and removes a locally relative Low that is still strong on that longer scale.
 
-## Locked provisional classification
+## Locked classification
 
 \[
 \boxed{High=ShortHigh\land LongHigh}
@@ -103,7 +103,7 @@ This removes a locally relative High that is still poor on a longer historical s
 
 Everything else is Neutral.
 
-The current TSLA audit using rolling 90D plus rolling 3Y produced a clean ordering in which High had higher C and lower Q than Neutral, and Low had lower C and higher Q than Neutral.
+The **40/60 short-reference thresholds are retained**. A temporary sensitivity check that narrowed the Neutral region toward 50% produced nearly the same forward-W High result, but it did not improve the core interpretation enough to justify changing the baseline. The working Layer 1 therefore remains the original 40/60 definition.
 
 For the 5-year TSLA audit the classified W30 population is:
 
@@ -113,43 +113,39 @@ For the 5-year TSLA audit the classified W30 population is:
 
 across 303 evaluable rolling W30 states.
 
-These thresholds and counts are unchanged by the forward-W analysis below.
-
 ## Semantic interpretation of High and Low
 
 The current evidence changes the interpretation of the labels, but not their formulas.
 
 ### High
 
-High means that the evaluated W30 region has already shown:
+High means that the evaluated W30 region has shown:
 
 \[
-\boxed{\text{high realized Strategy opportunity + relatively good Entry timing}}
+\boxed{\text{high Strategy opportunity + relatively good Entry timing}}
 \]
 
 because C is high and Q is low relative to both the short and long references.
 
-A High state should therefore be interpreted as a **mature / already-realized opportunity region**, not as "the next W sessions should also be good."
-
-This is consistent with a take-profit interpretation: if a region has already generated strong Strategy opportunity and Entries were already close to the local upper bound, part of that opportunity may already have been realized.
+It must **not** be interpreted as "the next W sessions should also be good." The historical forward-W audit instead shows that High is associated with lower next-W C on average.
 
 ### Low
 
-Low means that the evaluated W30 region has already shown:
+Low means that the evaluated W30 region has shown:
 
 \[
-\boxed{\text{low realized Strategy opportunity + relatively poor Entry timing}}
+\boxed{\text{low Strategy opportunity + relatively poor Entry timing}}
 \]
 
 because C is low and Q is high relative to both references.
 
-A Low state should therefore be interpreted as a **poor / inefficient Strategy-opportunity region**, not as "the next W sessions should remain bad."
+Low must not be interpreted as "the next W sessions should remain bad." In the historical audit, Low was followed on average by higher C and lower Q than the just-completed Low region.
 
-The audit also shows that Low regions can contain many legal Entries. This means Low does not imply "no Entry." It can instead mean that many legal Entries occurred but, retrospectively, those Entries were inefficient relative to the best Entry in the region and the Strategy did not outperform the periodic baseline strongly.
+The audit also shows that Low regions can contain many legal Entries. This means Low does not imply "no Entry." It can instead mean that many legal Entries occurred but those Entries were inefficient relative to the best Entry in the region and the Strategy did not outperform the periodic baseline strongly.
 
 ## Past-W versus next-W audit
 
-To test what the retrospective Layer 1 state says about the immediately following equal-length region, each classified W30 state ending at t was paired with the completely non-overlapping next W30:
+To test whether the retrospective Layer 1 state contains information about the immediately following equal-length region, each classified W30 state ending at t was paired with the completely non-overlapping next W30:
 
 \[
 Past_W=[t-W+1,t]
@@ -191,7 +187,15 @@ Corr_P(N_{past},N_{future})=-0.329,
 Corr_S(N_{past},N_{future})=-0.330.
 \]
 
-The dominant descriptive pattern is therefore **mean reversion rather than persistence**.
+The important conclusion is not that High means future High or Low means future Low. The important conclusion is that the historical C/Q state is **associated with the following W30**, and the dominant observed direction is negative rather than persistent.
+
+In compact form:
+
+\[
+\boxed{\text{Past C/Q structure contains information about next-W opportunity, with historical mean-reverting association.}}
+\]
+
+This association is useful even though its direction differs from the original continuation intuition.
 
 ### High state forward behavior
 
@@ -208,7 +212,7 @@ For High states:
 - next-W Entry count median: 7;
 - next-W zero-Entry rate: 33.8%.
 
-Thus a High retrospective state was, on average, followed by a materially lower-opportunity region. This is consistent with an **opportunity exhaustion / maturity** interpretation and is directionally compatible with the idea of taking profit after a strong realized Strategy region.
+Thus High is historically associated with a materially lower-opportunity next W30. This is evidence of a relationship between the previous C/Q structure and the following region; it is not evidence that High should be treated as a bullish continuation label.
 
 ### Neutral state forward behavior
 
@@ -257,6 +261,32 @@ Corr_P(N_{past},N_{future})=-0.593.
 
 This supports interpreting Low as a retrospectively inefficient / crowded Entry region that can be followed by normalization or recovery, rather than as a forward bearish label.
 
+## 50% sensitivity check
+
+A temporary sensitivity test changed only the short-reference cut from 40/60 to approximately 44.1/55.9 while preserving the same W30, 3Y median confirmation, next-W construction, C/Q calculation, and data period.
+
+The key High result was almost unchanged:
+
+\[
+C^{future}_{High}:\ -9.57\%\rightarrow -9.48\%.
+\]
+
+The state counts changed from
+
+\[
+77/146/80
+\]
+
+to
+
+\[
+78/137/88
+\]
+
+for High/Neutral/Low respectively. Low next-W C changed more materially, from -3.70% to -5.94%.
+
+Therefore the sensitivity check did **not** overturn the main conclusion that High is followed by weak next-W C. Because the original 40/60 definition already exhibits the association and is the locked baseline, the experiment is closed and Layer 1 remains at 40/60.
+
 ## Implication for Layer 1 meaning
 
 The forward-W audit supports the following distinction:
@@ -281,15 +311,7 @@ In particular:
 \boxed{Low\neq future\ bearish}
 \]
 
-The labels currently describe where the just-completed W30 lies in the historical C/Q opportunity structure.
-
-A useful working interpretation is:
-
-- **High:** mature / already-realized Strategy opportunity;
-- **Neutral:** intermediate Strategy-opportunity state;
-- **Low:** poor / inefficient Strategy-opportunity state with potential for normalization.
-
-These names are semantic interpretations only. The locked High/Neutral/Low formulas remain unchanged.
+The useful result is the existence of a historical relationship between past C/Q structure and the following W30, even though the relationship is primarily mean-reverting rather than continuation-like.
 
 ## Gate pass rule
 
@@ -309,14 +331,8 @@ High and Low must remain distinct downstream states.
 
 ## Relationship to Layer 2
 
-For a current decision point t with W=30, Layer 2 uses the previous W sessions of causal price-volume information and asks what C/Q outcome will be realized after the centered 2W region
+For a current decision point t with W=30, Layer 2 uses causal price-volume information available at the Entry and learns the Entry-centered C/Q target after the centered region is completed historically.
 
-\[
-R_t=[t-W+1,t+W]
-\]
+Layer 1 selects the non-Neutral historical contexts. Layer 2 performs the actual price-volume prediction problem. Layer 1 itself has no neural network.
 
-is completed historically.
-
-Layer 1 therefore selects the two retrospective extremes. Layer 2 performs the actual price-volume prediction problem. Layer 1 itself has no neural network.
-
-The forward-W audit should not be treated as proof of independent predictive significance because the 303 Layer 1 states are stride-1 rolling windows and therefore overlap heavily across adjacent t. The result is descriptive evidence about the semantics and temporal behavior of the Layer 1 state, not yet an OOS predictive claim.
+The forward-W audit should not be treated as proof of independent predictive significance because the 303 Layer 1 states are stride-1 rolling windows and therefore overlap heavily across adjacent t. The result is descriptive historical evidence of association and temporal structure, not yet an independent OOS predictive claim.
