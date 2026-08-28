@@ -1,0 +1,25 @@
+name: Strategy 1 Layer 1 Transition Audit
+
+on:
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e .
+      - name: Run transition episode audit
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 5y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_SEED: '20260827'
+        run: python -m futureview.strategy1_layer1_transition_audit
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-layer1-transition-audit
+          path: strategy1-layer1-transition-audit.csv
