@@ -111,6 +111,12 @@ def weighted_mean(loss: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     return (loss * weight).sum() / weight.sum()
 
 
+def decode_cq(raw: torch.Tensor, c_mu: torch.Tensor, c_sd: torch.Tensor, q_scale: torch.Tensor) -> torch.Tensor:
+    c = raw[:, 0:1] * c_sd + c_mu
+    q = torch.nn.functional.softplus(raw[:, 1:2]) * q_scale
+    return torch.cat([c, q], dim=1)
+
+
 def main() -> None:
     if W != 30 or MODEL_HISTORY != 90:
         raise ValueError("prediction smoke model locked to W=30 and model_history=90")
@@ -127,10 +133,13 @@ def main() -> None:
     forward = build_forward_dataset(classified, len(df), MODEL_HISTORY)
     data = build_training_data(df, forward)
 
-    y_mu = data.y_cq.mean(dim=0, keepdim=True)
-    y_sd = data.y_cq.std(dim=0, keepdim=True, unbiased=False)
-    y_sd = torch.where(y_sd < 1e-6, torch.ones_like(y_sd), y_sd)
-    target_z = (data.y_cq - y_mu) / y_sd
+    c_mu = data.y_cq[:, 0:1].mean(dim=0, keepdim=True)
+    c_sd = data.y_cq[:, 0:1].std(dim=0, keepdim=True, unbiased=False)
+    c_sd = torch.where(c_sd < 1e-6, torch.ones_like(c_sd), c_sd)
+    q_scale = data.y_cq[:, 1:2].std(dim=0, keepdim=True, unbiased=False)
+    q_scale = torch.where(q_scale < 1e-6, torch.ones_like(q_scale), q_scale)
+    target_c_z = (data.y_cq[:, 0:1] - c_mu) / c_sd
+    target_q_scaled = data.y_cq[:, 1:2] / q_scale
 
     model = ForwardCQStateNet()
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
@@ -139,18 +148,21 @@ def main() -> None:
 
     for _ in range(EPOCHS):
         model.train()
-        pred_z, logits = model(data.x)
-        reg_each = reg_fn(pred_z, target_z).mean(dim=1)
+        raw, logits = model(data.x)
+        pred_c_z = raw[:, 0:1]
+        pred_q_scaled = torch.nn.functional.softplus(raw[:, 1:2])
+        reg_c = reg_fn(pred_c_z, target_c_z).squeeze(1)
+        reg_q = reg_fn(pred_q_scaled, target_q_scaled).squeeze(1)
         cls_each = cls_fn(logits, data.y_state)
-        loss = weighted_mean(reg_each + cls_each, data.weight)
+        loss = weighted_mean(0.5 * (reg_c + reg_q) + cls_each, data.weight)
         opt.zero_grad()
         loss.backward()
         opt.step()
 
     model.eval()
     with torch.no_grad():
-        pred_z, logits = model(data.x)
-        pred_cq = pred_z * y_sd + y_mu
+        raw, logits = model(data.x)
+        pred_cq = decode_cq(raw, c_mu, c_sd, q_scale)
         prob = torch.softmax(logits, dim=1)
 
     pred_np = pred_cq.numpy()
@@ -182,8 +194,8 @@ def main() -> None:
     live_start = live_end - MODEL_HISTORY + 1
     live_x = torch.from_numpy(make_input_features(df, live_start, live_end)[None, ...])
     with torch.no_grad():
-        live_z, live_logits = model(live_x)
-        live_cq = (live_z * y_sd + y_mu).numpy()[0]
+        live_raw, live_logits = model(live_x)
+        live_cq = decode_cq(live_raw, c_mu, c_sd, q_scale).numpy()[0]
         live_p = torch.softmax(live_logits, dim=1).numpy()[0]
 
     input_start_date = pd.Timestamp(df.iloc[live_start]["date"]).date()
