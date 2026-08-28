@@ -2,13 +2,13 @@
 
 ## Research question
 
-Layer 1 is a deterministic historical gate. Layer 2 does **not** relearn the gate.
+Layer 1 is a deterministic historical gate. Layer 2 does **not** relearn, recompute, or inherit the gate.
 
 The Layer 2 question is:
 
-> Given the price-volume structure observed during the previous W sessions and the current fixed-Strategy decision point, can the model predict the C/Q outcome that will be realized when the corresponding centered 2W region is completed?
+> Among legal Strategy Entries that have already passed Layer 1 as High or Low, can the causal price-volume structure observed during the previous W sessions predict the C/Q outcome that will be realized when the corresponding centered 2W region is completed?
 
-For the current decision session t and W=30, define
+For the current legal Entry session t and W=30, define
 
 \[
 \boxed{R_t=[t-W+1,\ t+W]}.
@@ -16,13 +16,32 @@ For the current decision session t and W=30, define
 
 At decision time t only the left half is observable. The right half is future. Historical training can use the complete realized region after it has occurred.
 
-The modeling relation is
+Layer 1 first determines sample eligibility. Layer 2 then learns only
 
 \[
-\boxed{X_{t-W+1:t},D_t,G_t\rightarrow p(C_t,Q_t)}.
+\boxed{X_{t-W+1:t}\rightarrow p(C_t,Q_t)\qquad\text{for Entries with }G_t\in\{High,Low\}}.
 \]
 
-Here D_t is the fixed current decision. In the first baseline, samples are legal Strategy Entries, so the decision is represented by sample selection rather than by an engineered technical-indicator channel.
+The legal Entry condition and Layer 1 PASS are represented by sample selection, not by engineered input channels.
+
+## Layer 1 handoff
+
+Layer 1 remains unchanged and produces the rolling W30 High/Neutral/Low state table using its existing 90-session and 3-year references.
+
+For a legal Entry at session t, Layer 2 uses an **exact same-session handoff**:
+
+\[
+\boxed{\text{Layer1.end\_index}=t}.
+\]
+
+There is no search for the latest previous Gate state and no inheritance of an older High/Low state.
+
+- High: keep the Entry for Layer 2.
+- Low: keep the Entry for Layer 2.
+- Neutral: filter the Entry.
+- No exact Layer 1 state at t: the Entry is not a Layer 2 sample.
+
+High/Low labels may be retained for support counts and stratified evaluation, but they are **not model inputs**.
 
 ## Target definition
 
@@ -56,8 +75,6 @@ Thus one decision sample has exactly one C and one Q target:
 \boxed{1\ \text{legal Entry}\rightarrow1\ C+1\ Q}.
 \]
 
-This removes the previous one-anchor-to-many-Q ambiguity.
-
 ## Interpretation
 
 C measures how much fixed-Strategy opportunity exists in the completed centered 2W region relative to the periodic baseline. Larger C is better.
@@ -69,32 +86,6 @@ The desired region is
 \[
 \boxed{C\text{ high},\quad Q\text{ small}}.
 \]
-
-## Layer 1 gate used by Layer 2
-
-The current gate definition is locked provisionally as:
-
-- short reference: rolling 90 trading sessions;
-- short High threshold: C at/above the rolling 60th percentile and Q at/below the rolling 60th percentile;
-- short Low threshold: C at/below the rolling 40th percentile and Q at/above the rolling 40th percentile;
-- long reference: trailing 3 years, operationalized as 756 trading sessions;
-- long confirmation: 50th percentile (median) for both C and Q.
-
-High requires both short-relative and long-term confirmation:
-
-\[
-\boxed{C\ge C^{90}_{60}\land Q\le Q^{90}_{60}\land C>C^{3Y}_{50}\land Q<Q^{3Y}_{50}}.
-\]
-
-Low requires
-
-\[
-\boxed{C\le C^{90}_{40}\land Q\ge Q^{90}_{40}\land C<C^{3Y}_{50}\land Q>Q^{3Y}_{50}}.
-\]
-
-Neutral is filtered. If later training proves too difficult, the neutral region may be widened, but thresholds are not changed before that evidence exists.
-
-High and Low remain distinct gate states and are passed downstream as conditioning information.
 
 ## Model input
 
@@ -122,17 +113,18 @@ For the current baseline the temporal input is the previous W=30 sessions:
 
 The 60-session denominator needed for the longest normalization remains causal and is computed from history preceding each row.
 
-No realized future C/Q, future price rows, technical indicators, baseline values, or percentile thresholds are injected into X.
+No Gate value, realized future C/Q, future price rows, technical indicators, baseline values, or percentile thresholds are injected into X.
 
 ## First training baseline
 
 The first model is intentionally small and diagnostic:
 
 - multi-scale 1D CNN with kernel sizes 5/10/20;
-- gate state High/Low retained as a one-dimensional condition;
+- **no Gate input feature**;
 - two continuous outputs, C and Q;
 - Smooth-L1 loss on train-set standardized C/Q targets;
 - chronological train/validation/test split;
-- a 2W purge gap between partitions to reduce overlap leakage from centered targets.
+- purge/embargo between partitions to reduce overlap leakage from centered targets;
+- High/Low retained only for support and stratified reporting.
 
-This is not yet the final probabilistic head. Its purpose is to test whether the causal left-half price-volume structure contains learnable information about the completed centered-2W C/Q outcome. A distributional head should only be selected after this baseline and target-support audit are understood.
+This is not yet the final probabilistic head. Its purpose is to test whether the causal left-half price-volume structure contains learnable information about the completed centered-2W C/Q outcome after Layer 1 has already selected the Entry population.
