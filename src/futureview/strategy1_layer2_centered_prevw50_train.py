@@ -60,7 +60,7 @@ def split_train_test(x, y, idx):
     order = np.argsort(idx)
     x, y, idx = x[order], y[order], idx[order]
     n = len(idx)
-    cut_pos = max(1, min(n - 1, int(n * 0.60)))
+    cut_pos = max(1, min(n - 1, int(n * 0.50)))
     cut = int(idx[cut_pos])
     train_mask = idx < cut - W
     test_mask = idx >= cut + W
@@ -114,7 +114,7 @@ def main() -> None:
     x, y, idx = build_samples(df, joined)
     train, test, cut = split_train_test(x, y, idx)
     xtr, ytr, itr = train; xte, yte, ite = test
-    print(f"S1 L2PW50 SAMPLES finite_pass={len(y)} train={len(ytr)} test={len(yte)} embargo={W} cut={cut} split=60_40")
+    print(f"S1 L2PW50 SAMPLES finite_pass={len(y)} train={len(ytr)} test={len(yte)} embargo={W} cut={cut} split=50_50")
     if len(ytr) < 10 or len(yte) < 5:
         raise RuntimeError(f"split too small train={len(ytr)} test={len(yte)} total={len(y)}")
 
