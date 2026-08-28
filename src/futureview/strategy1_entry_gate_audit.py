@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import numpy as np
 import pandas as pd
 
 from .data import download_ticker_daily, validate_daily_ohlcv
@@ -19,11 +18,14 @@ SEED = int(os.environ.get("FUTUREVIEW_SEED", "20260827"))
 
 
 def classify_entry_gates(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
-    """Entry-centric Layer-1 gate.
+    """Entry-centric Layer-1 gate while preserving the original Layer-1 reference contract.
 
     For each legal Entry t:
-      current C/Q := W30 window [t-W+1, t]
-      90D/3Y references := prior W30 windows with end_index < t only.
+      current C/Q := W30 window [s, t], where s=t-W+1
+      90D/3Y references := prior W30 windows with end_index < s
+
+    This is exactly the original gate time contract, merely sampled at Entry-anchored
+    current windows instead of every evaluable rolling W30 window.
     """
     windows = build_representation_a_table(
         df, paths, window=W, stride=1, random_samples=20, random_seed=SEED
@@ -33,16 +35,19 @@ def classify_entry_gates(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
 
     rows: list[dict[str, float | int]] = []
     for t in paths["entry_index"].astype(int).to_numpy():
+        s = t - W + 1
         if t not in by_end.index:
             continue
         cur = by_end.loc[t]
         if isinstance(cur, pd.DataFrame):
             cur = cur.iloc[-1]
 
-        prior = wq.loc[wq["end_index"].astype(int) < t]
-        short = prior.loc[prior["end_index"].astype(int) >= t - SHORT_REF]
-        long = prior.loc[prior["end_index"].astype(int) >= t - LONG_REF]
-        if t < LONG_REF or len(short) < 20 or len(long) < 100:
+        # Original Layer-1 contract: references must be completed before the
+        # current W30 window begins. No overlapping current/reference windows.
+        prior = wq.loc[wq["end_index"].astype(int) < s]
+        short = prior.loc[prior["end_index"].astype(int) >= s - SHORT_REF]
+        long = prior.loc[prior["end_index"].astype(int) >= s - LONG_REF]
+        if s < LONG_REF or len(short) < 20 or len(long) < 100:
             continue
 
         c40, c60 = (float(short["C"].quantile(q)) for q in (0.40, 0.60))
@@ -58,7 +63,7 @@ def classify_entry_gates(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
         rows.append(
             {
                 "entry_index": int(t),
-                "window_start": int(cur.start_index),
+                "window_start": int(s),
                 "window_end": int(t),
                 "C_hist": c,
                 "Q_hist": q,
@@ -68,6 +73,8 @@ def classify_entry_gates(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
                 "Q90_60": q60,
                 "C3Y_50": c50,
                 "Q3Y_50": q50,
+                "short_reference_count": int(len(short)),
+                "long_reference_count": int(len(long)),
                 "gate": gate,
             }
         )
@@ -84,10 +91,9 @@ def main() -> None:
     paths = build_deterministic_path_table(events)
     gates = classify_entry_gates(df, paths)
 
-    centered_ok = []
-    for t in gates["entry_index"].astype(int):
-        centered_ok.append(t - W + 1 >= 0 and t + W < len(df))
-    gates["centered_2W_available"] = centered_ok
+    gates["centered_2W_available"] = [
+        t - W + 1 >= 0 and t + W < len(df) for t in gates["entry_index"].astype(int)
+    ]
 
     high = gates.loc[gates.gate == 1]
     neutral = gates.loc[gates.gate == 0]
@@ -97,7 +103,8 @@ def main() -> None:
 
     print(
         f"S1 ENTRYGATE START ticker={TICKER} rows={audit.rows} legal_entries={len(paths)} "
-        f"classified_entries={len(gates)} W={W} short_ref={SHORT_REF} long_ref={LONG_REF}"
+        f"classified_entries={len(gates)} W={W} short_ref={SHORT_REF} long_ref={LONG_REF} "
+        "reference_contract=end_before_current_window_start"
     )
     print(
         f"S1 ENTRYGATE TOTAL high={len(high)} neutral={len(neutral)} low={len(low)} "
