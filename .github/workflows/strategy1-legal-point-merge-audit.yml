@@ -1,0 +1,43 @@
+name: Strategy 1 Legal Point Merge Audit
+
+on:
+  push:
+    branches: [strategy-profitability-restart]
+    paths:
+      - 'src/futureview/strategy1_legal_point_merge_audit.py'
+      - '.github/workflows/strategy1-legal-point-merge-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54"
+          python -m pip install -e . --no-deps
+      - name: Run audit
+        shell: bash
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 10y
+          FUTUREVIEW_MERGE_GAP: '3'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_legal_point_merge_audit 2>&1 | tee strategy1-legal-point-merge-audit.log
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Strategy 1 — legal point +/-3 merge audit'
+            echo
+            echo '```text'
+            grep -E '^S1 LPM' strategy1-legal-point-merge-audit.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
