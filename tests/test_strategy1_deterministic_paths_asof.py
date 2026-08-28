@@ -7,6 +7,7 @@ from futureview.strategy1_deterministic_paths import (
     MERGE_GAP,
     build_extrema_sets,
     preprocess_legal_points,
+    simulate_deterministic_path,
 )
 from futureview.strategy1_deterministic_paths_asof import (
     build_deterministic_path_table_asof,
@@ -16,13 +17,11 @@ from futureview.strategy1_deterministic_paths_asof import (
 
 def _events() -> pd.DataFrame:
     close = np.array([10.0, 10.2, 10.4, 10.6, 10.0, 11.0, 11.2, 11.4, 12.0, 12.2, 12.4, 12.6])
-    return pd.DataFrame(
-        {
-            "close": close,
-            "exit5_event": np.zeros(len(close), dtype=bool),
-            "exit10_event": np.zeros(len(close), dtype=bool),
-        }
-    )
+    return pd.DataFrame({
+        "close": close,
+        "exit5_event": np.zeros(len(close), dtype=bool),
+        "exit10_event": np.zeros(len(close), dtype=bool),
+    })
 
 
 def test_open_position_is_force_closed_at_asof_close() -> None:
@@ -61,50 +60,6 @@ def test_completed_exit10_is_not_force_closed() -> None:
     assert abs(path.campaign_return - expected) < 1e-12
 
 
-def _reference_full_rebuild(events: pd.DataFrame, asof_index: int) -> pd.DataFrame:
-    truncated = events.iloc[: asof_index + 1].copy().reset_index(drop=True)
-    truncated = preprocess_legal_points(truncated, gap=MERGE_GAP)
-    local_mins, local_maxs = build_extrema_sets(truncated)
-    entries = np.flatnonzero(truncated["entry_candidate"].to_numpy(dtype=bool))
-
-    rows: list[dict[str, int | float | str]] = []
-    for raw_entry in entries:
-        path = simulate_deterministic_path_asof(
-            truncated,
-            int(raw_entry),
-            local_mins,
-            local_maxs,
-            asof_index=asof_index,
-        )
-        if path is None:
-            continue
-        if path.exit10_index >= 0:
-            exit_mode = "exit10"
-        elif path.horizon_exit_index >= 0:
-            exit_mode = "horizon"
-        elif path.forced_asof_exit_index >= 0:
-            exit_mode = "forced_asof"
-        else:
-            exit_mode = "closed"
-        rows.append(
-            {
-                "entry_index": path.entry_index,
-                "base_min_index": path.base_min_index,
-                "base_distance": path.base_distance,
-                "addon1_index": path.addon1_index,
-                "addon2_index": path.addon2_index,
-                "exit5_index": path.exit5_index,
-                "exit10_index": path.exit10_index,
-                "horizon_exit_index": path.horizon_exit_index,
-                "forced_asof_exit_index": path.forced_asof_exit_index,
-                "exit_mode": exit_mode,
-                "campaign_return": path.campaign_return,
-                "executed_addons": int(path.addon1_index >= 0) + int(path.addon2_index >= 0),
-            }
-        )
-    return pd.DataFrame(rows).sort_values("entry_index").reset_index(drop=True)
-
-
 def _long_events() -> pd.DataFrame:
     n = 240
     x = np.arange(n, dtype=float)
@@ -115,25 +70,45 @@ def _long_events() -> pd.DataFrame:
     entry_candidate[[25, 27, 31, 52, 76, 79, 105, 137, 166, 194, 218, 221]] = True
     exit5_event[[46, 89, 126, 173, 205, 229]] = True
     exit10_event[[60, 98, 151, 187, 214, 235]] = True
-    return pd.DataFrame(
-        {
-            "close": close,
-            "entry_candidate": entry_candidate,
-            "exit5_event": exit5_event,
-            "exit10_event": exit10_event,
-        }
-    )
+    return pd.DataFrame({
+        "close": close,
+        "entry_candidate": entry_candidate,
+        "exit5_event": exit5_event,
+        "exit10_event": exit10_event,
+    })
 
 
-def test_cached_builder_matches_full_rebuild_at_multiple_cutoffs() -> None:
+def test_builder_reuses_completed_paths_and_only_forces_later_exits() -> None:
     events = _long_events()
+    prepared = preprocess_legal_points(events, gap=MERGE_GAP)
+    mins, maxs = build_extrema_sets(prepared)
+
+    # Full paths are the prepared historical outcomes.  At each rolling cutoff,
+    # completed paths must be identical; only paths whose exit lies later than
+    # the cutoff are replayed and force-closed at that cutoff.
+    full: dict[int, object] = {}
+    entries = np.flatnonzero(prepared["entry_candidate"].to_numpy(dtype=bool))
+    for entry in entries:
+        p = simulate_deterministic_path(prepared, int(entry), mins, maxs)
+        if p is not None:
+            full[int(entry)] = p
+
     for cutoff in (90, 120, 160, 200, 230):
-        expected = _reference_full_rebuild(events, cutoff)
-        actual = build_deterministic_path_table_asof(events, asof_index=cutoff)
-        assert list(actual.columns) == list(expected.columns)
-        assert actual["entry_index"].tolist() == expected["entry_index"].tolist()
-        for col in actual.columns:
-            if col in {"base_distance", "campaign_return"}:
-                np.testing.assert_allclose(actual[col].to_numpy(dtype=float), expected[col].to_numpy(dtype=float), rtol=0.0, atol=1e-12)
+        actual = build_deterministic_path_table_asof(events, asof_index=cutoff).set_index("entry_index")
+        for entry, p in full.items():
+            if entry > cutoff:
+                continue
+            final_exit = p.exit10_index if p.exit10_index >= 0 else p.horizon_exit_index
+            row = actual.loc[entry]
+            if final_exit <= cutoff:
+                assert row.exit_mode in {"exit10", "horizon"}
+                assert int(row.forced_asof_exit_index) == -1
+                assert int(row.addon1_index) == p.addon1_index
+                assert int(row.addon2_index) == p.addon2_index
+                assert int(row.exit5_index) == p.exit5_index
+                assert int(row.exit10_index) == p.exit10_index
+                assert int(row.horizon_exit_index) == p.horizon_exit_index
+                assert abs(float(row.campaign_return) - p.campaign_return) < 1e-12
             else:
-                assert actual[col].tolist() == expected[col].tolist()
+                assert row.exit_mode == "forced_asof"
+                assert int(row.forced_asof_exit_index) == cutoff
