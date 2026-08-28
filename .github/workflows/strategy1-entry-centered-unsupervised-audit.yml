@@ -1,0 +1,46 @@
+name: Strategy 1 Entry Centered Unsupervised Audit
+
+on:
+  push:
+    branches:
+      - tmp-entry-centered-cq
+    paths:
+      - 'src/futureview/strategy1_entry_centered_unsupervised_audit.py'
+      - '.github/workflows/strategy1-entry-centered-unsupervised-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "scikit-learn>=1.5"
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e . --no-deps
+      - name: Run unsupervised representation audit
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 5y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_SEED: '20260827'
+          FUTUREVIEW_EPOCHS: '300'
+          FUTUREVIEW_LATENT: '8'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_entry_centered_unsupervised_audit 2>&1 | tee strategy1-entry-centered-unsupervised-audit.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Entry-centered unsupervised representation audit'
+            echo
+            echo '```text'
+            grep -E '^S1 UREP' strategy1-entry-centered-unsupervised-audit.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
