@@ -22,6 +22,7 @@ SEED = int(os.environ.get("FUTUREVIEW_SEED", "20260827"))
 LR = float(os.environ.get("FUTUREVIEW_LR", "0.001"))
 BATCH = int(os.environ.get("FUTUREVIEW_BATCH", "32"))
 LAYER1_GATE_CSV = os.environ.get("FUTUREVIEW_LAYER1_GATE_CSV", "strategy1-layer1-gate.csv")
+MODEL_OUTPUT = os.environ.get("FUTUREVIEW_MODEL_OUTPUT", "strategy1-layer2-centered-cq.pt")
 
 
 @dataclass
@@ -96,8 +97,6 @@ def _load_layer1_gate() -> pd.DataFrame:
 
 
 def _select_layer2_entries(targets: pd.DataFrame, gate: pd.DataFrame) -> pd.DataFrame:
-    # Exact same-session handoff only: a legal Entry at t uses the Layer 1 W30
-    # state whose end_index is exactly t. No latest-state search and no inheritance.
     joined = targets.merge(
         gate,
         how="left",
@@ -307,6 +306,45 @@ def main() -> None:
             + " "
             + " ".join(f"{k}={v:.6f}" for k, v in m.items())
         )
+
+    torch.save(
+        {
+            "model_state_dict": {k: v.detach().cpu() for k, v in model.state_dict().items()},
+            "y_mu": y_mu.detach().cpu(),
+            "y_sd": y_sd.detach().cpu(),
+            "W": W,
+            "seed": SEED,
+            "data_period": DATA_PERIOD,
+            "ticker": TICKER,
+            "feature_channels": [
+                "price_5", "price_10", "price_20", "price_60",
+                "volume_5", "volume_10", "volume_20", "volume_60",
+            ],
+        },
+        MODEL_OUTPUT,
+    )
+    print(f"S1 L2 CENTER MODEL file={MODEL_OUTPUT}")
+
+    legal = np.flatnonzero(events["entry_candidate"].to_numpy(dtype=bool))
+    if len(legal) == 0:
+        raise RuntimeError("no legal Entry available for live inference")
+    live_t = int(legal[-1])
+    live_s = live_t - W + 1
+    feats = _feature_series(df)
+    live_x = feats[live_s : live_t + 1].T.astype(np.float32)
+    if live_x.shape != (8, W) or not np.isfinite(live_x).all():
+        raise RuntimeError("latest legal Entry does not have a finite W30 input")
+    model.eval()
+    with torch.no_grad():
+        live_raw = model(torch.from_numpy(live_x[None, ...]).to(device))
+        live_pred = live_raw * y_sd + y_mu
+    live_pred = live_pred.detach().cpu().numpy()[0]
+    start_date = pd.Timestamp(df.iloc[live_s]["date"]).date()
+    entry_date = pd.Timestamp(df.iloc[live_t]["date"]).date()
+    print(
+        f"S1 L2 LIVE entry_index={live_t} entry_date={entry_date} input_start={start_date} input_end={entry_date} "
+        f"pred_C={float(live_pred[0]):.6f} pred_Q={float(live_pred[1]):.6f}"
+    )
     print("S1 L2 CENTER COMPLETE")
 
 
