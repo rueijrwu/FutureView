@@ -12,6 +12,10 @@ on:
 jobs:
   audit:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        w: [15, 30, 60]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,21 +31,22 @@ jobs:
         env:
           FUTUREVIEW_TICKER: TSLA
           FUTUREVIEW_DATA_PERIOD: 5y
-          FUTUREVIEW_W: '30'
+          FUTUREVIEW_W: '${{ matrix.w }}'
           FUTUREVIEW_SHORT_REF: '90'
           FUTUREVIEW_LONG_REF: '756'
           FUTUREVIEW_SEED: '20260827'
+          FUTUREVIEW_OUTPUT: 'strategy1-layer1-forward-w-audit-w${{ matrix.w }}.csv'
         run: |
           set -o pipefail
-          python -m futureview.strategy1_layer1_forward_w_audit 2>&1 | tee strategy1-layer1-forward-w-audit.log
+          python -m futureview.strategy1_layer1_forward_w_audit 2>&1 | tee strategy1-layer1-forward-w-audit-w${{ matrix.w }}.log
       - name: Summary
         if: always()
         shell: bash
         run: |
           {
-            echo '## Strategy 1 — Layer 1 past-W vs next-W audit'
+            echo '## Strategy 1 — Layer 1 past-W vs next-W audit (W=${{ matrix.w }})'
             echo
             echo '```text'
-            grep -E '^S1 L1FW' strategy1-layer1-forward-w-audit.log || true
+            grep -E '^S1 L1FW' strategy1-layer1-forward-w-audit-w${{ matrix.w }}.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
