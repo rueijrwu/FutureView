@@ -33,7 +33,8 @@ jobs:
           FUTUREVIEW_W: '30'
           FUTUREVIEW_MODEL_HISTORY: '90'
           FUTUREVIEW_TRAIN_YEARS: '5'
-          FUTUREVIEW_VALID_YEARS: '3'
+          FUTUREVIEW_VALID_YEARS: '1'
+          FUTUREVIEW_RETRAIN_EVERY: '15'
           FUTUREVIEW_NEUTRAL_ALPHA: '0.2'
           FUTUREVIEW_EPOCHS: '300'
           FUTUREVIEW_SEED: '20260827'
@@ -51,7 +52,7 @@ jobs:
         if: always()
         run: |
           {
-            echo '## Strategy 1 — Layer2 rolling 8Y / 5Y train / final 3Y validation'
+            echo '## Strategy 1 — Layer2 rolling 8Y / 5Y train / final 1Y validation / retrain every 15 sessions'
             echo
             echo '```text'
             grep -E '^S1 L2ROLL' strategy1-layer2-rolling-8y.log || true
