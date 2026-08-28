@@ -1,0 +1,42 @@
+name: Strategy 1 Entry Centered Cluster Audit
+
+on:
+  push:
+    branches: [tmp-entry-centered-cq]
+    paths:
+      - 'src/futureview/strategy1_entry_centered_cluster_audit.py'
+      - '.github/workflows/strategy1-entry-centered-cluster-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61" "scikit-learn>=1.5"
+          python -m pip install -e . --no-deps
+      - name: Run cluster audit
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 5y
+          FUTUREVIEW_W: 30
+          FUTUREVIEW_SEED: 20260827
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_entry_centered_cluster_audit 2>&1 | tee strategy1-entry-centered-cluster-audit.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Entry-centered temporal concentration audit'
+            echo
+            echo '```text'
+            grep -E '^S1 ECQCL' strategy1-entry-centered-cluster-audit.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
