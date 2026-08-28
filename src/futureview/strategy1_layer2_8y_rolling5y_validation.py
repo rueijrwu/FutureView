@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,7 @@ NEUTRAL_ALPHA = float(os.environ.get("FUTUREVIEW_NEUTRAL_ALPHA", "0.2"))
 EPOCHS = int(os.environ.get("FUTUREVIEW_EPOCHS", "100"))
 LR = float(os.environ.get("FUTUREVIEW_LR", "0.003"))
 SEED = int(os.environ.get("FUTUREVIEW_SEED", "20260828"))
+MAX_WORKERS = int(os.environ.get("FUTUREVIEW_MAX_WORKERS", "4"))
 OUTPUT = os.environ.get("FUTUREVIEW_ROLLING_OUTPUT", "strategy1-layer2-8y-rolling5y-validation.csv")
 
 
@@ -80,7 +82,7 @@ def train_one(
     all_data,
     train_mask: np.ndarray,
     test_i: int,
-    seed: int,
+    base_state: dict[str, torch.Tensor],
 ) -> tuple[np.ndarray, np.ndarray]:
     idx = np.flatnonzero(train_mask)
     if len(idx) == 0:
@@ -99,8 +101,10 @@ def train_one(
     target_c_z = (y_cq[:, 0:1] - c_mu) / c_sd
     target_q_scaled = y_cq[:, 1:2] / q_scale
 
-    torch.manual_seed(seed)
+    # Every day is a fresh model. All daily models start from the same locked
+    # initialization so parallel execution does not share learned weights.
     model = ForwardCQStateNet()
+    model.load_state_dict(base_state)
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     reg_fn = nn.SmoothL1Loss(reduction="none")
     cls_fn = nn.CrossEntropyLoss(reduction="none")
@@ -130,6 +134,8 @@ def main() -> None:
         raise ValueError("rolling validation locked to train=5y, validation=3y, label_lag=60")
     if abs(NEUTRAL_ALPHA - 0.2) > 1e-12:
         raise ValueError("rolling validation locked to neutral alpha=0.2")
+    if MAX_WORKERS < 1:
+        raise ValueError("max_workers must be >= 1")
 
     np.random.seed(SEED)
     torch.manual_seed(SEED)
@@ -161,11 +167,10 @@ def main() -> None:
     if len(validation_indices) == 0:
         raise RuntimeError("no validation samples")
 
-    rows_out: list[dict[str, object]] = []
+    tasks: list[tuple[int, pd.Timestamp, int, np.ndarray, int]] = []
     skipped_empty = 0
     train_sizes: list[int] = []
-
-    for k, i in enumerate(validation_indices):
+    for i in validation_indices:
         current_date = pd.Timestamp(start_dates[i])
         current_target_index = int(start_idx[i])
         train_mask = rolling_train_mask(
@@ -180,44 +185,60 @@ def main() -> None:
             skipped_empty += 1
             continue
         train_sizes.append(n_train)
-        pred, probs = train_one(all_data, train_mask, int(i), SEED + k)
-        actual_c = float(all_data.y_cq[i, 0])
-        actual_q = float(all_data.y_cq[i, 1])
-        state = str(forward.iloc[i].state)
-        rows_out.append({
-            "target_start_date": current_date.date().isoformat(),
-            "target_end_date": pd.Timestamp(df.iloc[int(end_idx[i])]["date"]).date().isoformat(),
-            "calendar_year": int(current_date.year),
-            "rolling_train_start": (current_date - pd.DateOffset(years=TRAIN_YEARS)).date().isoformat(),
-            "rolling_train_end": pd.Timestamp(df.iloc[current_target_index - 1]["date"]).date().isoformat(),
-            "rolling_train_samples": n_train,
-            "actual_state": state,
-            "sample_weight": 1.0 if state in ("high", "low") else NEUTRAL_ALPHA,
-            "actual_C": actual_c,
-            "pred_C": float(pred[0]),
-            "diff_C": float(pred[0] - actual_c),
-            "abs_error_C": float(abs(pred[0] - actual_c)),
-            "actual_Q": actual_q,
-            "pred_Q": float(pred[1]),
-            "diff_Q": float(pred[1] - actual_q),
-            "abs_error_Q": float(abs(pred[1] - actual_q)),
-            "P_H": float(probs[STATE_TO_ID["high"]]),
-            "P_N": float(probs[STATE_TO_ID["neutral"]]),
-            "P_L": float(probs[STATE_TO_ID["low"]]),
-        })
-        if (k + 1) % 50 == 0:
-            print(f"S1 L2ROLL PROGRESS done={k+1} total={len(validation_indices)}")
+        tasks.append((int(i), current_date, current_target_index, train_mask, n_train))
 
-    out = pd.DataFrame(rows_out)
-    if out.empty:
+    if not tasks:
         raise RuntimeError("all rolling validation samples skipped")
+
+    torch.manual_seed(SEED)
+    base_model = ForwardCQStateNet()
+    base_state = {k: v.detach().clone() for k, v in base_model.state_dict().items()}
+
+    def run_task(task):
+        i, current_date, current_target_index, train_mask, n_train = task
+        pred, probs = train_one(all_data, train_mask, i, base_state)
+        return i, current_date, current_target_index, n_train, pred, probs
+
+    rows_out: list[dict[str, object]] = []
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        for done, result in enumerate(executor.map(run_task, tasks), start=1):
+            i, current_date, current_target_index, n_train, pred, probs = result
+            actual_c = float(all_data.y_cq[i, 0])
+            actual_q = float(all_data.y_cq[i, 1])
+            state = str(forward.iloc[i].state)
+            rows_out.append({
+                "target_start_date": current_date.date().isoformat(),
+                "target_end_date": pd.Timestamp(df.iloc[int(end_idx[i])]["date"]).date().isoformat(),
+                "calendar_year": int(current_date.year),
+                "rolling_train_start": (current_date - pd.DateOffset(years=TRAIN_YEARS)).date().isoformat(),
+                "rolling_train_end": pd.Timestamp(df.iloc[current_target_index - 1]["date"]).date().isoformat(),
+                "rolling_train_samples": n_train,
+                "actual_state": state,
+                "sample_weight": 1.0 if state in ("high", "low") else NEUTRAL_ALPHA,
+                "actual_C": actual_c,
+                "pred_C": float(pred[0]),
+                "diff_C": float(pred[0] - actual_c),
+                "abs_error_C": float(abs(pred[0] - actual_c)),
+                "actual_Q": actual_q,
+                "pred_Q": float(pred[1]),
+                "diff_Q": float(pred[1] - actual_q),
+                "abs_error_Q": float(abs(pred[1] - actual_q)),
+                "P_H": float(probs[STATE_TO_ID["high"]]),
+                "P_N": float(probs[STATE_TO_ID["neutral"]]),
+                "P_L": float(probs[STATE_TO_ID["low"]]),
+            })
+            if done % 50 == 0:
+                print(f"S1 L2ROLL PROGRESS done={done} total={len(tasks)}")
+
+    out = pd.DataFrame(rows_out).sort_values("target_start_date").reset_index(drop=True)
     out.to_csv(OUTPUT, index=False)
 
     print(
         f"S1 L2ROLL START ticker={TICKER} rows={audit.rows} W={W} history={MODEL_HISTORY} "
         f"train_years={TRAIN_YEARS} validation_years={VALIDATION_YEARS} label_lag={LABEL_LAG} "
         f"classified={len(classified)} forward={len(forward)} validation_candidates={len(validation_indices)} "
-        f"validation_used={len(out)} skipped_empty={skipped_empty} alpha={NEUTRAL_ALPHA:.3f} epochs={EPOCHS}"
+        f"validation_used={len(out)} skipped_empty={skipped_empty} alpha={NEUTRAL_ALPHA:.3f} "
+        f"epochs={EPOCHS} workers={MAX_WORKERS}"
     )
     print(
         f"S1 L2ROLL RANGE final_date={final_date.date().isoformat()} validation_start={validation_start.date().isoformat()} "
