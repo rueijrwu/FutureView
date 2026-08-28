@@ -4,6 +4,7 @@ on:
   push:
     branches: [strategy-profitability-restart]
     paths:
+      - 'src/futureview/strategy1_cq_90d_rank_audit.py'
       - 'src/futureview/strategy1_layer2_centered_train.py'
       - 'Layer1.md'
       - 'Layer2.md'
@@ -23,20 +24,44 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install "numpy>=1.26" "pandas>=2.2" "yfinance>=0.2.54" "numba>=0.61" "scikit-learn>=1.5" "torch>=2.6"
           python -m pip install -e . --no-deps
+      - name: Run locked Layer 1 gate
+        shell: bash
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 5y
+          FUTUREVIEW_WINDOW: '30'
+          FUTUREVIEW_SHORT_REF: '90'
+          FUTUREVIEW_LONG_REF: '756'
+          FUTUREVIEW_LOW_QTL: '0.40'
+          FUTUREVIEW_HIGH_QTL: '0.60'
+          FUTUREVIEW_LONG_QTL: '0.50'
+          FUTUREVIEW_CQ_90D_OUTPUT: strategy1-layer1-gate.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_cq_90d_rank_audit 2>&1 | tee strategy1-layer1-gate.log
       - name: Train Layer 2 baseline
+        shell: bash
         env:
           FUTUREVIEW_TICKER: TSLA
           FUTUREVIEW_DATA_PERIOD: 5y
           FUTUREVIEW_W: '30'
-          FUTUREVIEW_SHORT_REF: '90'
-          FUTUREVIEW_LONG_REF: '756'
           FUTUREVIEW_EPOCHS: '120'
           FUTUREVIEW_SEED: '20260827'
-        run: python -m futureview.strategy1_layer2_centered_train 2>&1 | tee strategy1-layer2-centered-train.log
+          FUTUREVIEW_LAYER1_GATE_CSV: strategy1-layer1-gate.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer2_centered_train 2>&1 | tee strategy1-layer2-centered-train.log
       - name: Summary
         if: always()
+        shell: bash
         run: |
           {
+            echo '## Strategy 1 — Locked Layer 1 gate'
+            echo
+            echo '```text'
+            grep -E '^S1 CQROLL' strategy1-layer1-gate.log || true
+            echo '```'
+            echo
             echo '## Strategy 1 — Layer 2 centered-2W training'
             echo
             echo '```text'
