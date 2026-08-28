@@ -5,6 +5,7 @@ on:
     branches: [strategy-profitability-restart]
     paths:
       - 'src/futureview/strategy1_layer1_forward_w_audit.py'
+      - 'src/futureview/strategy1_deterministic_paths.py'
       - '.github/workflows/strategy1-layer1-forward-w-audit.yml'
   workflow_dispatch:
 
