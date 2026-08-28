@@ -1,3 +1,5 @@
+"""Descriptive audit for the simple causal Layer1 1/2/3 sample-weight rule."""
+
 from __future__ import annotations
 
 import os
@@ -115,6 +117,12 @@ def main() -> None:
     out = build_weight_table(classified, history=HISTORY)
     out.to_csv(OUTPUT, index=False)
 
+    print(
+        "S1 L1WEIGHT DEFINITION "
+        "weight1=no_reversal_and_extreme_coverage_lt_threshold "
+        "weight2=no_reversal_and_extreme_coverage_ge_threshold "
+        "weight3=true_high_low_reversal"
+    )
     print(
         f"S1 L1WEIGHT START ticker={TICKER} rows={audit.rows} W={W} history={HISTORY} "
         f"classified={len(classified)} samples={len(out)} threshold={EXTREME_THRESHOLD:.3f}"
