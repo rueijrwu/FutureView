@@ -112,10 +112,29 @@ def weighted_mean(loss: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     return (loss * weight).sum() / weight.sum()
 
 
+def nonnegative_q(raw_q: torch.Tensor) -> torch.Tensor:
+    # Square is nonnegative while still allowing an exact zero output.
+    return raw_q.square()
+
+
 def decode_cq(raw: torch.Tensor, c_mu: torch.Tensor, c_sd: torch.Tensor, q_scale: torch.Tensor) -> torch.Tensor:
     c = raw[:, 0:1] * c_sd + c_mu
-    q = torch.nn.functional.softplus(raw[:, 1:2]) * q_scale
+    q = nonnegative_q(raw[:, 1:2]) * q_scale
     return torch.cat([c, q], dim=1)
+
+
+def _diff_stats(name: str, actual: np.ndarray, pred: np.ndarray) -> None:
+    diff = pred - actual
+    print(
+        f"S1 L2SMOKE DIFF metric={name} n={len(diff)} "
+        f"actual_mean={actual.mean():.6f} pred_mean={pred.mean():.6f} "
+        f"diff_mean={diff.mean():.6f} diff_median={np.median(diff):.6f} "
+        f"diff_p10={np.quantile(diff,0.10):.6f} diff_p25={np.quantile(diff,0.25):.6f} "
+        f"diff_p75={np.quantile(diff,0.75):.6f} diff_p90={np.quantile(diff,0.90):.6f} "
+        f"diff_min={diff.min():.6f} diff_max={diff.max():.6f} "
+        f"pred_above_actual={int((diff>0).sum())} pred_below_actual={int((diff<0).sum())} "
+        f"pred_equal_actual={int(np.isclose(diff,0.0,atol=1e-8).sum())}"
+    )
 
 
 def main() -> None:
@@ -151,7 +170,7 @@ def main() -> None:
         model.train()
         raw, logits = model(data.x)
         pred_c_z = raw[:, 0:1]
-        pred_q_scaled = torch.nn.functional.softplus(raw[:, 1:2])
+        pred_q_scaled = nonnegative_q(raw[:, 1:2])
         reg_c = reg_fn(pred_c_z, target_c_z).squeeze(1)
         reg_q = reg_fn(pred_q_scaled, target_q_scaled).squeeze(1)
         cls_each = cls_fn(logits, data.y_state)
@@ -167,9 +186,12 @@ def main() -> None:
         prob = torch.softmax(logits, dim=1)
 
     pred_np = pred_cq.numpy()
+    actual_np = data.y_cq.numpy()
     prob_np = prob.numpy()
     prob_sum_error = float(np.max(np.abs(prob_np.sum(axis=1) - 1.0)))
     q_negative = int((pred_np[:, 1] < 0).sum())
+    q_zero = int(np.isclose(pred_np[:, 1], 0.0, atol=1e-8).sum())
+    actual_q_zero = int(np.isclose(actual_np[:, 1], 0.0, atol=1e-8).sum())
 
     print(
         f"S1 L2SMOKE START ticker={TICKER} rows={audit.rows} W={W} model_history={MODEL_HISTORY} "
@@ -178,8 +200,25 @@ def main() -> None:
     print(
         f"S1 L2SMOKE SANITY prob_sum_max_error={prob_sum_error:.8f} "
         f"pred_C_min={pred_np[:,0].min():.6f} pred_C_max={pred_np[:,0].max():.6f} "
-        f"pred_Q_min={pred_np[:,1].min():.6f} pred_Q_max={pred_np[:,1].max():.6f} pred_Q_negative={q_negative}"
+        f"pred_Q_min={pred_np[:,1].min():.6f} pred_Q_max={pred_np[:,1].max():.6f} "
+        f"pred_Q_negative={q_negative} pred_Q_zero={q_zero} actual_Q_zero={actual_q_zero}"
     )
+
+    _diff_stats("C", actual_np[:, 0], pred_np[:, 0])
+    _diff_stats("Q", actual_np[:, 1], pred_np[:, 1])
+
+    for state in ("high", "neutral", "low"):
+        mask = data.rows.state.to_numpy() == state
+        for col, metric in ((0, "C"), (1, "Q")):
+            actual = actual_np[mask, col]
+            pred = pred_np[mask, col]
+            diff = pred - actual
+            print(
+                f"S1 L2SMOKE STATEDIFF state={state} metric={metric} n={len(diff)} "
+                f"actual_mean={actual.mean():.6f} pred_mean={pred.mean():.6f} "
+                f"diff_mean={diff.mean():.6f} diff_median={np.median(diff):.6f} "
+                f"diff_p25={np.quantile(diff,0.25):.6f} diff_p75={np.quantile(diff,0.75):.6f}"
+            )
 
     comparison_rows: list[dict[str, object]] = []
     for j, r in data.rows.iterrows():
@@ -192,8 +231,10 @@ def main() -> None:
                 "target_end_date": pd.Timestamp(df.iloc[target_end]["date"]).date().isoformat(),
                 "actual_C": float(r.C),
                 "pred_C": float(pred_np[j, 0]),
+                "diff_C": float(pred_np[j, 0] - float(r.C)),
                 "actual_Q": float(r.Q),
                 "pred_Q": float(pred_np[j, 1]),
+                "diff_Q": float(pred_np[j, 1] - float(r.Q)),
                 "actual_state": str(r.state),
                 "P_H": float(p[0]),
                 "P_N": float(p[1]),
