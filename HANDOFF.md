@@ -4,19 +4,19 @@ Last consolidated: 2026-08-28
 
 Branch: `strategy-profitability-restart`
 
-This document is the current research-state handoff. It intentionally distinguishes **current locked definitions**, **current validated observations**, **archived/invalidated experiments**, and **remaining open questions**. When older documents conflict with this handoff, use the current code and the latest verified audit runs described here.
+This document is the current research-state handoff. It distinguishes **locked definitions**, **validated observations**, **archived/invalidated experiments**, and **open questions**. When older documents conflict with this handoff, use the current code and the latest verified audit runs described here.
 
 ---
 
 # 0. Current objective
 
-The Strategy itself is fixed. The research is not trying to optimize Entry rules, Addon rules, Exit rules, capital allocation, or invent a better trading strategy.
+The Strategy itself is fixed. This research is not trying to optimize Entry rules, Addon rules, Exit rules, capital allocation, or invent a better trading strategy.
 
 The narrow research question is:
 
-> Given the fixed Strategy, does the historical price/volume state contain information about whether the Strategy is operating in a favorable or unfavorable C/Q opportunity region, and later can a causal model estimate the C/Q distribution of a current cleaned legal Entry?
+> Given the fixed Strategy, does historical price/volume structure contain information about whether a trader-defined trading interval is operating in a favorable or unfavorable C/Q opportunity region, and later can a causal model learn the corresponding price/volume structure from longer historical context?
 
-Current work has been intentionally stepped back from Layer 2. The immediate task is to validate the **cleaned legal-point data and Layer 1 statistical structure first**.
+Current work has intentionally stepped back from Layer 2. The immediate task is to understand the **cleaned legal-point data and Layer 1 statistical structure** before rebuilding any model.
 
 Current high-level pipeline:
 
@@ -28,18 +28,18 @@ raw daily market data
 → cleaned legal Entry / Exit data
 → deterministic Strategy paths
 → R(e)
-→ W30 U / B / C / Q
-→ Layer 1 historical state statistics
+→ trader-defined W → U / B / C / Q
+→ Layer 1 historical state / importance statistics
 → only after Layer 1 is accepted: rebuild Layer 2
 ```
 
-A key methodological decision is that the legal-point merge is a **data preprocessing step before all Strategy outcome/CQ/model construction**. Raw legal events are not the formal downstream dataset.
+A key methodological decision is that legal-point merging is a **data preprocessing step before all Strategy outcome/CQ/model construction**. Raw legal events are detection results only and are not formal downstream observations.
 
 ---
 
-# 1. Legal Entry rule
+# 1. Legal Entry rule — LOCKED
 
-The raw legal Entry condition is unchanged:
+The raw legal Entry condition is:
 
 ```text
 close > MA5
@@ -55,39 +55,29 @@ Equivalently:
 close > MA5 > MA10 > MA20
 ```
 
-Every session satisfying this condition is first recorded as a **raw legal Entry**. Do not perform merging while scanning; the complete raw set must exist first.
-
-This point is important because the preprocessing must not change which raw points are legally detected.
+Every session satisfying this condition is first recorded as a **raw legal Entry**. Do not merge while scanning; the complete raw set must exist first.
 
 ---
 
 # 2. Legal Entry / Exit preprocessing — LOCKED
 
-This is a data-cleaning rule applied **after the complete raw scan** and **before deterministic paths/CQ/modeling**.
+This cleaning rule is applied **after the complete raw scan** and **before deterministic paths/CQ/modeling**.
 
 ## 2.1 Forward-anchor rule
 
-Let the sorted raw legal points be:
+Let sorted raw legal points be:
 
 ```text
 p0 < p1 < p2 < ...
 ```
 
-Take the earliest currently unconsumed point `p0` as the anchor.
-
-Merge every same-type raw legal point occurring within the next 3 trading sessions:
+Take the earliest currently unconsumed point `p0` as anchor. Merge every same-type raw legal point occurring within the next 3 trading sessions:
 
 ```text
 pi - p0 <= 3
 ```
 
-into `p0`.
-
-The anchor itself is retained as the cleaned point.
-
-All absorbed members are permanently consumed and **cannot propagate the cluster farther forward**.
-
-Then choose the next unconsumed raw point as the next anchor and repeat.
+The anchor is retained as the cleaned point. Absorbed members are permanently consumed and **cannot propagate or extend the cluster farther forward**. Then the next unconsumed point becomes the next anchor.
 
 Therefore:
 
@@ -97,7 +87,7 @@ NOT transitive / connected-component clustering
 NOT scan-and-merge simultaneously
 ```
 
-It is specifically:
+Specifically:
 
 ```text
 complete raw scan
@@ -107,85 +97,36 @@ complete raw scan
 → next unconsumed anchor
 ```
 
-## 2.2 Example
-
-Raw Entry indices:
+Example:
 
 ```text
-100, 103, 106, 107
+raw Entry indices = 100, 103, 106, 107
+100 absorbs 103
+106 is NOT absorbed through 103
+106 becomes next anchor and absorbs 107
+cleaned set = {100, 106}
 ```
 
-First anchor = 100.
+The same rule is applied to Exit events after the raw scan. Current implementation treats 5-day Exit and 10-day Exit as separate event types and cleans each independently.
 
-```text
-103 - 100 = 3
-```
-
-so 103 is merged into 100.
-
-106 is NOT merged into the first cluster because:
-
-```text
-106 - 100 = 6
-```
-
-Even though:
-
-```text
-106 - 103 = 3
-```
-
-103 was already absorbed and therefore cannot extend the cluster.
-
-Next anchor = 106, and 107 is absorbed:
-
-```text
-106,107 → 106
-```
-
-Final cleaned Entry set:
-
-```text
-{100,106}
-```
-
-## 2.3 Exit preprocessing
-
-The same forward-anchor preprocessing is applied after scanning all raw Exit events.
-
-Current implementation treats 5-day Exit events and 10-day Exit events as separate event types and cleans each type independently.
-
-This preserves their different Strategy meanings.
-
-## 2.4 Formal code
-
-The current implementation is in:
+Current implementation:
 
 ```text
 src/futureview/strategy1_deterministic_paths.py
-```
-
-with:
-
-```text
 MERGE_GAP = 3
 merge_legal_points_after_scan(...)
 preprocess_legal_points(...)
 ```
 
-`build_deterministic_path_table()` calls `preprocess_legal_points()` before constructing Strategy paths.
-
-Therefore the current deterministic-path pipeline now uses cleaned legal points by construction.
+`build_deterministic_path_table()` preprocesses legal points before constructing Strategy paths.
 
 ---
 
-# 3. Raw points versus formal data — LOCKED distinction
+# 3. Raw points versus formal data — LOCKED
 
-Raw Entry/Exit points are detection results only.
+Raw Entry/Exit points are detection results only. They are not formal Strategy observations and are not model samples.
 
-They are not formal Strategy observations and are not model samples.
-
-The correct order is:
+Correct order:
 
 ```text
 raw legal points
@@ -196,97 +137,72 @@ raw legal points
 → Layer1 / Layer2
 ```
 
-The following order is wrong:
+Wrong order:
 
 ```text
 raw Entry
-→ Strategy outcome or C/Q
+→ Strategy outcome/CQ
 → merge later
 ```
 
-This means all Layer 2 results produced from the previous raw-entry population are now historical/invalid for the current formal dataset and must eventually be rebuilt.
+All previous Layer 2 results produced from the raw-entry population are therefore historical/invalid for the current formal dataset.
 
 ---
 
 # 4. Fixed deterministic Strategy path — LOCKED
 
-Legal-point preprocessing changed the data population; it did not change the fixed Strategy execution semantics.
-
-For each cleaned legal Entry there is one deterministic Strategy path.
-
-Current path semantics:
+For each cleaned legal Entry there is exactly one deterministic Strategy path.
 
 1. Initial Entry deploys `1/3` of total campaign capital.
 2. Find the most recent retrospective local minimum before Entry from the union of 5-session and 10-session local minima.
-3. Define:
-
-```text
-D_b = Entry price - base-minimum price
-```
-
-and require `D_b > 0`.
-4. Addon candidates are later retrospective local maxima from the 5/10-session maxima union.
-5. The first chronological qualifying candidate satisfying
-
-```text
-candidate_price - last_buy_price > D_b
-```
-
-becomes the next Addon.
-6. Reuse the original `D_b` for every Addon.
-7. Maximum deployment count is:
-
-```text
-Entry + Addon1 + Addon2
-```
-
+3. Define `D_b = Entry price - base-minimum price`, requiring `D_b > 0`.
+4. Addon candidates are later retrospective local maxima from the union of 5-session and 10-session maxima.
+5. The first chronological candidate satisfying `candidate_price - last_buy_price > D_b` becomes the next Addon.
+6. Reuse the ORIGINAL `D_b` for every Addon.
+7. Maximum deployment is `Entry + Addon1 + Addon2`.
 8. Each deployment uses exactly `1/3` of the original total-capital denominator.
 9. First cleaned legal 5-day Exit after Entry sells `40%` of then-current shares.
 10. The 5-day partial Exit happens at most once and does not disable later Addons.
 11. Cleaned legal 10-day Exit liquidates all remaining shares and terminates the campaign.
-12. Same-day priority is:
+12. Same-day priority: `10-day Exit > 5-day partial Exit > Addon`.
+13. Maximum path horizon = 60 sessions.
+14. Remaining shares at horizon liquidate at horizon close.
+15. No 3-day re-entry cooldown in this locked deterministic C/Q path.
 
-```text
-10-day Exit > 5-day partial Exit > Addon
-```
-
-13. Maximum path horizon is 60 sessions.
-14. Any remaining shares at the horizon are liquidated at the horizon close.
-15. There is no 3-day re-entry cooldown in this locked deterministic C/Q path.
-
-Do not substitute the broader legacy behavior in `strategy1.py` for these deterministic C/Q semantics.
+Do not substitute broader legacy behavior in `strategy1.py`.
 
 ---
 
-# 5. Outcome notation — LOCKED
+# 5. Outcome notation and W membership — LOCKED
 
-The current formal return notation is:
+Use:
 
 ```text
 R(e)
 ```
 
-where `e` is a cleaned legal Entry and:
+where `e` is a cleaned legal Entry and `R(e)` is the realized return of the unique deterministic Strategy path starting at `e`.
 
-```text
-R(e) = realized return of the unique deterministic Strategy path starting at e
-```
-
-Older documents/code comments may use `E(e)`. For current discussion and documentation, use `R(e)`.
-
-For an evaluation region `W`, define the cleaned legal Entry set:
+For an evaluation region `W`:
 
 ```text
 I_W = { cleaned legal Entries whose initial Entry lies inside W }
-```
-
-The best Strategy return in that region is:
-
-```text
 U_W = max_{e in I_W} R(e)
 ```
 
-`U` is not an optimized Strategy. It is simply the best realized return among all cleaned legal Entries of the already-fixed Strategy in that region.
+Window membership is determined only by the initial Entry date/index. If Addons or Exit occur after W, the Entry remains assigned to W and `R(e)` uses the complete deterministic path outcome.
+
+Therefore:
+
+```text
+W is NOT a holding-period cutoff.
+W is an Entry-cohort / statistical grouping interval.
+Do NOT truncate a Strategy path at the W boundary.
+```
+
+Historical future path information is used only to determine retrospective outcome/label; it is not an Entry-time feature.
+
+`U` is not an optimized Strategy. It is the best realized return among cleaned legal Entries of the already-fixed Strategy in that region.
 
 ---
 
@@ -294,37 +210,26 @@ U_W = max_{e in I_W} R(e)
 
 Let `B_W` be the periodic baseline return over the same evaluation region.
 
-Current central definition:
-
 ```text
 C_W = U_W - B_W
 ```
 
-This supersedes old historical definitions such as `C=U-L`.
+This supersedes old definitions such as `C=U-L`.
 
 Interpretation:
 
-- `R(e)` = realized return of one specific cleaned Entry.
-- `U` = best fixed-Strategy Entry return available in the region.
-- `B` = periodic baseline return over the same region.
-- `C=U-B` = how much the region's best legal fixed-Strategy opportunity beats or trails the periodic baseline.
-
-Therefore:
-
 ```text
-C > 0  → region contains a legal Strategy opportunity outperforming periodic baseline
-C < 0  → even the best legal Entry in the region underperformed periodic baseline
+C > 0 → region contains a legal fixed-Strategy opportunity outperforming periodic baseline
+C < 0 → even the best legal Entry in the region underperformed periodic baseline
 ```
 
 C is a **region opportunity-quality measure**, not the return of the current Entry and not a directional trend score.
-
-A large historical C also does not mean that opportunity must remain after the evaluation region has completed.
 
 ---
 
 # 7. Q — LOCKED
 
-For a cleaned legal Entry `e` in the same evaluation region:
+For a cleaned legal Entry `e` in the same region:
 
 ```text
 Q(e) = U - R(e)
@@ -334,24 +239,12 @@ Properties:
 
 ```text
 Q >= 0
-Q = 0 → this Entry itself attains the region upper bound U
-smaller Q → Entry is closer to the region's best legal Entry
-larger Q → Entry is farther below the best legal Entry
+Q = 0 → Entry itself attains regional U
+smaller Q → Entry closer to region's best legal Entry
+larger Q → Entry farther below region's best legal Entry
 ```
 
-Q is an Entry-quality / timing-distance measure.
-
-Q is NOT:
-
-```text
-trend strength
-market direction
-normalized by C
-(U-R)/C
-volatility-normalized regret
-```
-
-Those alternatives are closed unless explicitly reopened.
+Q is Entry-quality / timing-distance. It is NOT trend strength, market direction, `(U-R)/C`, or volatility-normalized regret.
 
 Desired semantic combination:
 
@@ -359,98 +252,84 @@ Desired semantic combination:
 C large + Q small
 ```
 
-meaning a favorable Strategy-opportunity region and an Entry near that region's best legal Entry.
+= favorable Strategy-opportunity region + Entry near the best legal Entry.
 
 ---
 
-# 8. W30 Layer 1 construction
+# 8. Layer 1 construction — CURRENT REFERENCE
 
-Current Layer 1 works on rolling:
+The current reference implementation has primarily used rolling:
 
 ```text
 W = 30 trading sessions
 stride = 1 session
 ```
 
-For each W30 state, C is computed from `U-B` using cleaned Entry outcomes.
+W15 and W60 have also been audited to study how the same Layer 1 construction behaves at different **trader-defined trading interval lengths**.
 
-A window-level Q statistic is constructed from cleaned legal Entries in the W30 and used by Layer 1. The current gate logic is based on the historical C/Q state of the completed W30.
+Crucial semantic clarification:
 
-Layer 1 is retrospective. It labels what the completed W30 looked like under the fixed Strategy; it is not itself a forward market-direction classifier.
+> W is not a model-selected optimum and is not the model input lookback. W represents the interval length the trader chooses to evaluate as a trading opportunity.
+
+Therefore W15/W30/W60 comparisons describe the historical behavior of different trader-selected trading scales. They are not an instruction for the algorithm to choose whichever W has the largest correlation.
+
+Layer 1 is retrospective. It labels what a completed W looked like under the fixed Strategy; it is not itself a forward market-direction classifier.
 
 ---
 
 # 9. Layer 1 reference structure — LOCKED
 
-Layer 1 uses two reference scales.
-
-## 9.1 Short reference
-
-Rolling 90-session historical reference:
+Short reference: rolling 90-session history:
 
 ```text
-C90_40
-C90_60
-Q90_40
-Q90_60
+C90_40, C90_60, Q90_40, Q90_60
 ```
 
-Short-high condition:
+Short-high:
 
 ```text
-C >= C90_60
-and Q <= Q90_60
+C >= C90_60 and Q <= Q90_60
 ```
 
-Short-low condition:
+Short-low:
 
 ```text
-C <= C90_40
-and Q >= Q90_40
+C <= C90_40 and Q >= Q90_40
 ```
 
-## 9.2 Long reference
-
-Trailing 756 sessions, approximately 3 years:
+Long reference: trailing 756 sessions (~3 years):
 
 ```text
-C3Y_50
-Q3Y_50
+C3Y_50, Q3Y_50
 ```
 
 Long-high:
 
 ```text
-C > C3Y_50
-and Q < Q3Y_50
+C > C3Y_50 and Q < Q3Y_50
 ```
 
 Long-low:
 
 ```text
-C < C3Y_50
-and Q > Q3Y_50
+C < C3Y_50 and Q > Q3Y_50
 ```
 
-## 9.3 Final state
+Final state:
 
 ```text
 High = ShortHigh AND LongHigh
-Low  = ShortLow  AND LongLow
+Low = ShortLow AND LongLow
 Neutral = otherwise
 ```
 
-The short reference remains the original **40/60** definition.
-
-A previous ~50% sensitivity experiment is closed. It did not produce enough conceptual improvement to replace the 40/60 baseline.
-
-Do not tune the gate simply to obtain desired class proportions.
+The short reference remains the original 40/60 definition. The previous ~50% sensitivity experiment is closed. Do not tune the gate to obtain desired class proportions.
 
 ---
 
-# 10. Layer 1 semantics — LOCKED
+# 10. Layer 1 semantics and downstream role — LOCKED / UPDATED
 
-Current labels mean:
+State semantics:
 
 ```text
 High    = retrospectively high Strategy opportunity + relatively good Entry timing
@@ -465,84 +344,112 @@ High ≠ future bullish
 Low  ≠ future bearish
 ```
 
-The observed historical relationship is primarily mean-reverting, not continuation-like.
+Observed historical relationship is primarily mean-reverting, not continuation-like.
 
-Layer 1's intended downstream role is a Neutral prefilter:
+## 10.1 Layer 1 is a data filter / importance layer
+
+The intended Layer 1 role is now clarified more precisely:
+
+> Layer 1 does not decide the final trade direction, does not learn the reversal itself, and does not dictate Layer 2's effective historical receptive field. Its job is to identify how informative historical regions are for training and to provide a gate / importance weight.
+
+Current qualitative weighting policy:
 
 ```text
-High → PASS
-Low → PASS
-Neutral → FILTER / BLOCK
+High    → high training importance
+Low     → high training importance
+Neutral → lower training importance
 ```
 
-High and Low remain distinct states downstream.
+High and Low remain distinct. Layer 1 is not a Good-vs-Bad classifier.
 
-Layer 1 is not a Good-vs-Bad classifier.
+Neutral should generally be **down-weighted rather than deleted**, because a long Layer 2 input may contain transitions such as:
+
+```text
+High → Neutral → Low
+Low → Neutral → High
+```
+
+and the Neutral portion can be part of the price/volume transition structure that Layer 2 must observe. Hard deletion could cut the transition trajectory and remove useful context.
+
+No exact numerical weight formula is locked yet. The current principle is only:
+
+```text
+weight(Neutral) < weight(High/Low)
+```
+
+with the detailed weighting function to be decided only after the historical state/transition statistics are sufficiently understood.
 
 ---
 
-# 11. Original pre-cleaning Layer 1 finding — HISTORICAL CONTEXT
+# 11. Trader-defined W versus Layer 2 history length — LOCKED CONCEPTUAL DISTINCTION
 
-Before the new legal-point preprocessing, the 5-year W30 Layer 1 audit produced:
-
-```text
-High = 77
-Neutral = 146
-Low = 80
-```
-
-Past versus completely non-overlapping next-W30 correlations were:
+Three concepts must remain separate:
 
 ```text
-C Pearson  = -0.333
-C Spearman = -0.374
-Q Pearson  = -0.173
-Q Spearman = -0.099
+W_trade   = trader-defined interval whose Strategy opportunity is being evaluated
+Layer1    = historical C/Q-based importance/filtering of that trading interval
+L_model   = amount of historical price/volume context supplied to Layer 2
 ```
 
-This was the first important evidence that past C/Q structure was associated with the following W30, but with a negative / mean-reverting direction rather than continuation.
+Therefore:
 
-Those numbers are now **historical baseline values only**, because the legal Entry/Exit dataset has changed.
+```text
+W_trade ≠ L_model
+```
 
-Do not use them as the current Layer 1 population.
+Example:
+
+```text
+W_trade = 30 sessions
+L_model = 90 sessions
+```
+
+is conceptually valid.
+
+A 90-session Layer 2 input contains the shorter 15/30/60-session price/volume structures as subsets. Providing long history does **not** imply that the model must trade on a 90-session horizon.
+
+Instead, long historical input provides a maximum available context from which Layer 2 may learn an effective shorter or longer receptive field depending on the price/volume structure.
+
+The purpose of Layer 1 weighting is not to pre-specify that effective length. If the model architecture and objective permit it, Layer 2 should be able to learn whether a useful pattern depends mainly on recent short history or on a longer preceding structure.
+
+Thus:
+
+```text
+W_trade = what interval the trader wants to evaluate
+L_model = how much history the model is allowed to inspect to understand that opportunity
+```
 
 ---
 
-# 12. Previous-W Neutral-gate experiment — HISTORICAL BUT CONCEPTUALLY IMPORTANT
+# 12. Long-context training and transition information — UPDATED DESIGN PRINCIPLE
 
-A separate experiment tested whether the exact previous W30 state could act as a Neutral filter for a later target population.
+Suppose Layer 2 is eventually trained with 90 sessions of causal price/volume history while the trader-defined opportunity scale is W30.
 
-Using the old population and previous window:
-
-```text
-[t-30, t-1]
-```
-
-results included:
+Layer 1 can generate a rolling W30 state/importance trajectory inside that long context. A 90-session sample may therefore contain:
 
 ```text
-exact previous-W matches = 73
-PASS (previous High/Low) n = 39
-BLOCK (previous Neutral) n = 34
+stable High
+stable Low
+High → Neutral
+Neutral → Low
+Low → Neutral
+Neutral → High
+High → Neutral → Low
+Low → Neutral → High
 ```
 
-Target non-Neutral rate:
+A long region that is continuously in one W30 state is still valid data, but it may contain less transition information than a sample spanning a state change.
+
+However Layer 1 should not directly encode a handcrafted reversal target or force Layer 2 to learn a specific reversal duration. Its role remains **data importance weighting/filtering**.
+
+Because Neutral is down-weighted rather than removed, the Layer 2 model can still see the complete price/volume evolution through reversal regions. In principle, this allows Layer 2 to learn from the full long context which shorter/longer structures are relevant and what historical durations tend to correspond to tradeable opportunity.
+
+This is the preferred conceptual separation:
 
 ```text
-PASS  = 61.54%
-BLOCK = 35.29%
+Layer 1: where training information is more/less important
+Layer 2: what price/volume structure explains that information and what effective history length matters
 ```
-
-Target Neutral rate:
-
-```text
-PASS  = 38.46%
-BLOCK = 64.71%
-```
-
-This supported the conceptual use of Layer 1 as a **Neutral prefilter**, not Good/Bad prediction.
-
-However this audit also predates the new legal-point preprocessing. Its exact numbers must be recomputed before formal reuse.
 
 ---
 
@@ -556,13 +463,7 @@ run: 33177328828
 source commit: 449aeeade02d77c57dd2e88a00f19edff0e06963
 ```
 
-The Python job completed with:
-
-```text
-S1 CQ FULL COMPLETE
-```
-
-TSLA 5-year data, W30:
+TSLA 5-year, W30:
 
 ```text
 rows = 1255
@@ -575,45 +476,43 @@ entries/window median = 3.0
 C distribution:
 
 ```text
-mean   = -4.5863%
-min    = -51.8393%
-P01    = -41.2296%
-P05    = -31.1970%
-P10    = -23.5464%
-P25    = -11.1253%
-median = -3.0118%
-P75    = +4.2117%
-P90    = +11.0524%
-P95    = +15.9037%
-P99    = +23.5950%
-max    = +26.5654%
+mean -4.5863%
+min -51.8393%
+P01 -41.2296%
+P05 -31.1970%
+P10 -23.5464%
+P25 -11.1253%
+median -3.0118%
+P75 +4.2117%
+P90 +11.0524%
+P95 +15.9037%
+P99 +23.5950%
+max +26.5654%
 ```
 
 Q distribution:
 
 ```text
-mean   = 2.3183%
-min    = 0
-P01    = 0
-P05    = 0
-P10    = 0
-P25    = 0
-median = 1.0481%
-P75    = 3.8188%
-P90    = 6.1764%
-P95    = 8.3563%
-P99    = 15.3116%
-max    = 17.3204%
-Q=0 rate = 35.0769%
+mean 2.3183%
+min 0
+P01 0
+P05 0
+P10 0
+P25 0
+median 1.0481%
+P75 3.8188%
+P90 6.1764%
+P95 8.3563%
+P99 15.3116%
+max 17.3204%
+Q=0 rate 35.0769%
 ```
 
-Interpretation:
-
-The forward-anchor cleaning sharply reduced repeated nearby Entry observations while preserving a broad and non-trivial C/Q outcome distribution.
+Forward-anchor cleaning reduced repeated nearby Entry observations while preserving broad C/Q variation.
 
 ---
 
-# 14. Current cleaned-data Layer 1 forward-W audit — CURRENT
+# 14. Current cleaned-data Layer 1 forward-W audit — W30 CURRENT
 
 Verified workflow:
 
@@ -624,31 +523,18 @@ job: 98869231054
 source commit: 449aeeade02d77c57dd2e88a00f19edff0e06963
 ```
 
-The Python job completed with:
-
-```text
-S1 L1FW COMPLETE
-```
-
-Current cleaned-data support:
+Support:
 
 ```text
 classified states = 297
 complete future-W states = 297
 valid future C/Q pairs = 212
-```
-
-Current Layer 1 population:
-
-```text
 High = 60
 Neutral = 158
 Low = 79
 ```
 
-These supersede the old `77/146/80` pre-cleaning counts.
-
-## 14.1 Overall past-W versus future-W relationship
+Overall current-W versus immediately following non-overlapping W30:
 
 ```text
 C Pearson  = -0.301316
@@ -659,401 +545,410 @@ Entry-count Pearson  = -0.333279
 Entry-count Spearman = -0.329285
 ```
 
-The central qualitative result survived preprocessing:
+State means:
 
-> Past C/Q state remains associated with the immediately following non-overlapping W30, and the dominant relationship remains negative / mean reverting.
+```text
+High:
+  current C = +4.3149%
+  next-W C  = -10.1022%
+  current Q = 0.1030%
+  next-W Q  = 1.7766%
+  current Entries = 1.633
 
-Q association is now materially more negative than in the pre-cleaning audit.
+Neutral:
+  current C = -4.9793%
+  next-W C  = -7.3691%
+  current Q = 1.5805%
+  next-W Q  = 2.3116%
+  current Entries = 2.892
 
-## 14.2 High state
+Low:
+  current C = -21.7962%
+  next-W C  = -3.5628%
+  current Q = 3.2475%
+  next-W Q  = 1.8205%
+  current Entries = 4.241
+```
+
+Key result:
+
+> Current C/Q state is historically associated with the immediately following non-overlapping W, and the dominant relationship is negative / mean-reverting rather than continuation-like.
+
+More legal Entries does not imply better opportunity. W30 Low has the highest mean Entry count.
+
+These are descriptive historical statistics. Adjacent rolling W rows overlap strongly and are not independent observations.
+
+---
+
+# 15. Row-level persistence / reversal definitions — CURRENT
+
+Primary unit = every classified rolling W row. Do NOT compress consecutive High/Low runs into episodes for the primary statistic.
+
+For a High/Low source row at start index `t`:
+
+## 15.1 Leave / persistence
+
+Search forward to the first row whose state differs from the current state.
+
+```text
+days_until_leave = first_different_state.start_index - source.start_index
+future_same_days = max(days_until_leave - 1, 0)
+```
+
+If none exists, `leave_censored=True`.
+
+## 15.2 True opposite-state first passage
+
+```text
+High opposite = Low
+Low opposite  = High
+```
+
+Search forward to the first true opposite state. Neutral and same-side returns are allowed before reaching the opposite.
+
+```text
+days_to_opposite
+neutral_days_before_opposite
+same_state_days_before_opposite
+```
+
+If no opposite before the data ends, `opposite_censored=True`.
+
+Example:
+
+```text
+H H H N N H N N L
+```
+
+From the first H, persistence ends at the first N, but the true H→L reversal occurs only at the final L. H→N→H does not terminate the eventual reversal search.
+
+---
+
+# 16. W30 row-level transition audit — CURRENT
+
+Workflow:
+
+```text
+Strategy 1 Layer 1 Transition Audit
+run: 33185034632
+job: 98895710885
+```
+
+W30:
+
+```text
+classified = 297
+extreme rows = 139
+```
+
+High:
 
 ```text
 n = 60
-valid C/Q future pairs = 48
-past C mean   = +4.3149%
-future C mean = -10.1022%
-past Q mean   = 0.1030%
-future Q mean = 1.7766%
-past Entry count mean   = 1.633
-future Entry count mean = 2.617
-future Entry median     = 3
-future zero-Entry rate  = 20.00%
+leave median = 12 sessions
+future_same_days median = 11
+H→L valid = 52, censored = 8
+H→L first-opposite median = 28.5
+Neutral before H→L median = 21
+same-High rows before H→L median = 8
 ```
 
-Within-High correlations:
-
-```text
-C Pearson  = -0.119278
-C Spearman = +0.005970
-Q Pearson  = -0.389945
-Q Spearman = -0.400625
-Entry Pearson  = +0.297882
-Entry Spearman = +0.331816
-```
-
-High remains retrospectively strong but is followed by weak mean future C on average.
-
-## 14.3 Neutral state
-
-```text
-n = 158
-valid C/Q future pairs = 105
-past C mean   = -4.9793%
-future C mean = -7.3691%
-past Q mean   = 1.5805%
-future Q mean = 2.3116%
-past Entry count mean   = 2.892
-future Entry count mean = 2.348
-future Entry median     = 2
-future zero-Entry rate  = 23.42%
-```
-
-Within-Neutral correlations:
-
-```text
-C Pearson  = -0.393451
-C Spearman = -0.343127
-Q Pearson  = -0.499359
-Q Spearman = -0.506040
-Entry Pearson  = -0.478362
-Entry Spearman = -0.509541
-```
-
-## 14.4 Low state
+Low:
 
 ```text
 n = 79
-valid C/Q future pairs = 59
-past C mean   = -21.7962%
-future C mean = -3.5628%
-past Q mean   = 3.2475%
-future Q mean = 1.8205%
-past Entry count mean   = 4.241
-future Entry count mean = 2.570
-future Entry median     = 3
-future zero-Entry rate  = 25.32%
+leave median = 9 sessions
+future_same_days median = 8
+L→H valid = 79, censored = 0
+L→H first-opposite median = 28
+Neutral before L→H median = 17
+same-Low rows before L→H median = 11
 ```
 
-Within-Low correlations:
-
-```text
-C Pearson  = -0.045347
-C Spearman = +0.092987
-Q Pearson  = -0.496601
-Q Spearman = -0.460711
-Entry Pearson  = -0.622465
-Entry Spearman = -0.600802
-```
-
-Low still shows strong average recovery in C and improvement in Q in the following W30, while Entry density falls substantially.
+`days_until_leave` is the remaining lifetime conditional on observing the state at a particular rolling row; it is not an episode duration.
 
 ---
 
-# 15. What legal-point preprocessing changed
+# 17. W15 / W30 / W60 transition-scale audit — CURRENT
 
-The most obvious mechanical effect is reduced nearby-Entry duplication.
+The transition audit was parameterized by `FUTUREVIEW_W` and W15/W60 were run using the same definitions.
 
-Pre-cleaning mean Entry counts per state versus current cleaned data were approximately:
-
-```text
-High:    5.61 → 1.63
-Neutral: 7.73 → 2.89
-Low:    12.36 → 4.24
-```
-
-Therefore the cleaning is not cosmetic. It materially changes the downstream observation population.
-
-At the same time, the main Layer 1 historical relationship remained:
+Current branch head after this audit workflow change:
 
 ```text
-pre-cleaning C correlation ≈ -0.33 / -0.37
-post-cleaning C correlation ≈ -0.30 / -0.32
+94871aaa8c1145c6388c9c49069f56fc2ff899ee
 ```
 
-This is useful because it suggests the earlier Layer 1 relationship was not solely an artifact of counting long runs of adjacent stacked-MA Entry days as separate formal Entries.
-
-Current interpretation:
+Workflow run:
 
 ```text
-3-session forward-anchor preprocessing
-→ strongly reduces duplicate nearby legal points
-→ preserves broad C/Q variation
-→ preserves the main historical Layer1 mean-reverting association
+33185373484
 ```
+
+## 17.1 Median first-opposite passage
+
+```text
+W15: H→L = 23.5, L→H = 14
+W30: H→L = 28.5, L→H = 28
+W60: H→L = 71,   L→H = 62
+```
+
+## 17.2 Median persistence / leave
+
+```text
+W15: High = 13.5, Low = 5
+W30: High = 12,   Low = 9
+W60: High = 36,   Low = 14
+```
+
+## 17.3 Median Neutral rows before true opposite
+
+```text
+W15: H→L = 9,  L→H = 6
+W30: H→L = 21, L→H = 17
+W60: H→L = 57, L→H = 34
+```
+
+Important censoring:
+
+```text
+W15 Low: 2/67 opposite censored
+W30 High: 8/60 H→L censored
+W60 High: 54/81 H→L censored; only 27 valid H→L first passages
+```
+
+The W60 H→L median therefore applies only to the 27 uncensored cases and must not be treated as an unconditional population median.
+
+W60 H→L neutral-days are all 57 among those 27 valid rows, likely because heavily overlapping rolling rows share a small number of underlying transition structures. Do not interpret 57 as a universal constant.
 
 ---
 
-# 16. Overlap and statistical interpretation
+# 18. Interpretation of W-scale tests — UPDATED
 
-W30 states use stride 1, so adjacent states overlap heavily.
+The W15/W30/W60 experiment shows that measured state-transition time scales materially with W.
 
-That does NOT mean adjacent legal Entries are unreal or invalid decisions. It means statistical evaluation must distinguish:
+Therefore:
+
+> Persistence or reversal duration alone cannot be used to identify an "optimal W".
+
+This is partly mechanical: Layer 1 state itself is constructed from rolling W C/Q, so larger W naturally changes more slowly.
+
+Approximate first-opposite median divided by W:
 
 ```text
-valid operational samples
+W15: H→L 1.57W, L→H 0.93W
+W30: H→L 0.95W, L→H 0.93W
+W60: H→L 1.18W, L→H 1.03W
+```
+
+The more useful interpretation is:
+
+> Different trader-selected trading interval lengths naturally imply different opportunity-state dynamics and different practical decision/update frequencies.
+
+This is valuable information for understanding the trading cadence associated with a chosen strategy interval, but it is **not** a reason for Layer 1 to choose W on behalf of the trader.
+
+---
+
+# 19. Historical current-W → next-W statistics — SCOPE CLARIFICATION
+
+Correlation between the current historical W and the immediately following non-overlapping W is a desired Layer 1 statistic.
+
+It should be interpreted as a retrospective historical state-transition relationship:
+
+```text
+P(S_{W+1} | S_W)
+```
+
+where state includes C/Q or High/Neutral/Low.
+
+This is not yet causal/OOS model evaluation and should not be confused with future inference.
+
+Current analysis mode is deliberately:
+
+```text
+NO chronological folds
+NO fold-based model evaluation
+aggregate descriptive historical statistics
+```
+
+If W15/W30/W60 are compared further, the immediate fair comparison is current-W → next non-overlapping same-length W correlation strength and state-conditioned future C/Q behavior for each W.
+
+This would characterize how historical relationships differ across trader-selected time scales. It is not an optimization criterion that automatically selects W.
+
+---
+
+# 20. Overlap and statistical interpretation
+
+Rolling states use stride 1, so adjacent states overlap heavily.
+
+Distinguish:
+
+```text
+valid operational observations
 from
 independent statistical observations
 ```
 
-The forward-W audit pairs each completed W30 with the completely non-overlapping immediately following W30:
-
-```text
-Past_W   = [t-W+1, t]
-Future_W = [t+1, t+W]
-```
-
-However adjacent Past_W states still overlap one another because stride=1.
-
-Therefore the current correlations and state means are best described as:
+Current correlations, transition counts, state means, and waiting-time summaries are best described as:
 
 ```text
 historical descriptive temporal association
 ```
 
-not yet:
+not:
 
 ```text
 independent predictive significance
 ```
 
-For future model Train/Validation/Test evaluation, centered C/Q targets also overlap strongly for neighboring Entry dates. Chronological partitioning with purge/embargo is therefore required to prevent near-identical target regions from straddling train/test boundaries.
+Dependence-aware inference can be considered later if significance becomes a research question. It is not the present goal.
 
 ---
 
-# 17. Layer 2 research question — ARCHIVED UNTIL REBUILD
+# 21. Layer 2 status — PAUSED / MUST REBUILD FROM CLEANED DATA
 
-The intended Layer 2 question remains conceptually useful:
+Old Layer 2 CNN/OOS/checkpoints/live inference used the old raw-entry population and are invalidated by the legal-point preprocessing change.
 
-> At a current cleaned legal Entry t, using only causal price-volume information available through t, can a model estimate the C/Q distribution of the Entry-centered local region?
+Do not use the old checkpoint or old 2026-08-27 live prediction as current evidence.
 
-For W=30, intended causal input is:
+Do not resume old AE/CNN assumptions automatically.
 
-```text
-X_t = [t-29, t]
-```
+When Layer 2 eventually restarts, it must be built from the cleaned legal-point population and from the clarified Layer 1 role in Sections 10–12.
 
-including the Entry day.
-
-Historical centered target region was:
+Current conceptual direction is:
 
 ```text
-R_t = [t-29, t+30]
+long causal price/volume history
+→ model learns relevant multiscale structure
+→ Layer 1 supplies training importance / filtering based on trader-defined W opportunity
 ```
 
-The future half is used only to construct historical labels after it has happened. It is not an input feature.
+The model input history should not automatically be set equal to W.
 
-The desired conceptual mapping is nonlinear/probabilistic:
+A candidate such as:
 
 ```text
-X_t → p(C_t, Q_t | information available at cleaned legal Entry t)
+W_trade = 30
+L_model = 90
 ```
 
-Do not revert to linear-regression/R² framing as the primary research method; previous work already showed that a simple linear interpretation is not the intended problem.
+is conceptually reasonable, but the actual Layer 2 lookback is not yet locked.
 
 ---
 
-# 18. Previous Layer 2 baseline — INVALIDATED BY DATA REDEFINITION
+# 22. Stale / invalidated directions
 
-A previous formal baseline used a small multiscale 1D CNN and the old legal-Entry population.
-
-Architecture included:
+Do not reopen casually:
 
 ```text
-8 causal price/volume channels
-kernels 5 / 10 / 20
-continuous C and Q outputs
-SmoothL1 loss
-chronological train/val/test split
-30-session embargo
-```
-
-The old 10-year formal run had:
-
-```text
-Layer1 classified rows = 1382
-exact gate matches = 440
-PASS Entries = 197
-train = 135
-val = 11
-test = 17
-```
-
-Old test metrics included:
-
-```text
-C MAE  ≈ 0.0776
-Q MAE  ≈ 0.0399
-C corr ≈ -0.050
-Q corr ≈ -0.815
-```
-
-and a live old-population TSLA Entry at 2026-08-27 produced:
-
-```text
-C_hat = -0.150477
-Q_hat =  0.095224
-```
-
-These results are now **not current model results** because the legal Entry/Exit preprocessing changed the formal dataset before Strategy paths are constructed.
-
-The saved checkpoint and live prediction must not be used for current research conclusions.
-
-When Layer 2 resumes, it must be retrained from the cleaned legal-point population from the beginning.
-
----
-
-# 19. Important unresolved Layer 1 → Layer 2 handoff issue
-
-Before preprocessing changed the dataset, two different Layer 1 handoff concepts existed:
-
-1. Previous-W causal gate concept:
-
-```text
-Layer1 window = [t-30, t-1]
-```
-
-2. Current `Layer2.md` / old formal training code used exact same-session handoff:
-
-```text
-Layer1.end_index = t
-```
-
-These are not the same architecture.
-
-Do not silently claim they are equivalent.
-
-This issue is intentionally unresolved because Layer 2 is currently paused. Before rebuilding Layer 2, explicitly decide which gate timing is conceptually correct under the cleaned Entry dataset.
-
-Separately, Layer 2 input itself is intended to include the current Entry day:
-
-```text
-[t-29, t]
-```
-
-Do not confuse the Layer 1 gate-timing question with the Layer 2 causal feature window.
-
----
-
-# 20. Documentation staleness warning
-
-Some repository documents still contain pre-cleaning values or notation.
-
-In particular, current `Layer1.md` still contains historical values such as:
-
-```text
-High/Neutral/Low = 77/146/80
-E(e)
-old pre-cleaning forward-W statistics
-```
-
-These are now stale as the formal current state.
-
-`Layer2.md` also describes the old pre-cleaning Layer 2 dataset and exact same-session handoff.
-
-Until those documents are separately revised, this `HANDOFF.md`, the current deterministic-path code, and the latest verified post-cleaning audit runs are the authoritative state for the ongoing discussion.
-
----
-
-# 21. Current conclusions — what is actually supported
-
-## Supported
-
-1. The correct formal Entry/Exit data should be produced only after the complete raw legal-point scan and the forward-anchor 3-session preprocessing.
-2. The preprocessing materially reduces repeated nearby legal Entry observations.
-3. The cleaned data still produces a broad C/Q distribution.
-4. The Layer 1 High/Neutral/Low structure remains well populated after cleaning.
-5. Historical past-W C remains negatively associated with next-W C.
-6. Historical past-W Q also shows a negative next-W association after cleaning.
-7. High is not a continuation label; on average it is followed by much weaker future C.
-8. Low is not a bearish continuation label; on average future C improves substantially and Q becomes smaller.
-9. Therefore the useful Layer 1 finding is historical temporal structure / mean reversion, not directional continuation.
-
-## Not yet supported
-
-1. Independent predictive significance.
-2. A deployable trading signal from Layer 1 alone.
-3. A validated Layer 2 C/Q predictor using the cleaned dataset.
-4. The old Layer 2 checkpoint or old 2026-08-27 live prediction.
-5. A final decision on previous-W versus same-session Layer 1 handoff for future Layer 2.
-6. Any claim that low trade count is inherently bad; lower decision frequency may simply mean fewer informative/valid opportunities.
-
----
-
-# 22. Closed / rejected directions
-
-Do not reopen these casually:
-
-```text
-C = U-L                         → rejected; current C = U-B
-Q = (U-R)/C                     → rejected
-normalize Q by C or |C|         → rejected
-50% Layer1 threshold replacement→ closed; keep 40/60
-Layer1 as Good/Bad classifier   → rejected
-Neutral as a useful PASS state  → current rule is Neutral FILTER
-linear regression / R² as the primary Layer2 framing → rejected
-AE as required first layer      → not current architecture
+C = U-L                           → rejected; current C = U-B
+Q = (U-R)/C                       → rejected
+normalize Q by C or |C|           → rejected
+50% Layer1 threshold replacement  → closed; keep 40/60
+Layer1 as Good/Bad classifier     → rejected
+Neutral as equal-importance PASS  → rejected; Neutral is lower importance
+hard-delete Neutral by default    → not current design; prefer down-weighting
+linear regression / R² as primary Layer2 framing → rejected
+AE as required first layer        → rejected
+old raw-entry Layer2 dataset      → invalid
+old CNN checkpoint/live inference → invalid
 Strategy optimization during this research → out of scope
+chronological folds as current Layer1 analysis → rejected for present work
 ```
 
-The fixed Strategy should not be modified merely to improve model statistics.
+`Layer1.md` and `Layer2.md` contain older assumptions/results and are stale where they conflict with this handoff.
 
 ---
 
-# 23. Immediate next step
+# 23. Current supported conclusions
 
-Do NOT immediately retrain Layer 2.
+1. Formal Entry/Exit data is produced only after complete raw legal scan + forward-anchor 3-session preprocessing.
+2. Preprocessing materially reduces repeated nearby Entry observations.
+3. Cleaned data still produces broad C/Q distributions.
+4. Layer 1 High/Neutral/Low remains populated after cleaning.
+5. W is an Entry-cohort/statistical grouping interval and represents a trader-selected trading opportunity scale; it is not a holding-period cutoff.
+6. Complete Strategy outcomes may intentionally extend outside W.
+7. Current-W → next non-overlapping W correlation is a desired retrospective statistic, not model/OOS prediction evaluation.
+8. W30 current-to-next historical C/Q relationships are mean-reverting.
+9. More legal Entries does not imply better opportunity; W30 Low has the most Entries on average.
+10. Main persistence/reversal analysis is row-level, not episode-compressed.
+11. Time until leaving a state and time until first true opposite state are distinct statistics.
+12. W15/W30/W60 show transition time scales materially with W; reversal duration cannot by itself select an optimal W.
+13. The selected W defines the trading interval the trader wants to evaluate. The model does not choose W merely from correlation strength.
+14. Layer 1's downstream role is data filtering / importance weighting, not final trade prediction.
+15. High and Low should receive higher training importance than Neutral; Neutral should generally be down-weighted rather than removed.
+16. Preserving Neutral in long contexts allows Layer 2 to observe complete High↔Low transition trajectories.
+17. Layer 2 input history length `L_model` is separate from trader-defined `W_trade` and may be substantially longer.
+18. A long model input contains shorter structures, allowing the model in principle to learn which effective history length is relevant, provided the architecture/training objective supports it.
+19. Current Layer 1 work uses aggregate descriptive statistics with no folds.
+20. Rolling rows are dependent; inferential significance requires dependence-aware treatment only if later needed.
 
-The next small falsifiable question should remain inside Layer 1:
+---
 
-> After legal-point preprocessing, are the High / Neutral / Low C/Q separations and their forward-W behavior stable across time, rather than being dominated by one chronological regime?
+# 24. Immediate next questions — CURRENT
 
-Suggested next audit without changing any definitions:
+Do NOT retrain Layer 2 yet.
+
+Do NOT return to chronological folds for current Layer 1 analysis.
+
+The next small statistical questions should remain descriptive and falsifiable. The most direct remaining question is:
+
+> For trader-selected W15/W30/W60, how strong is the historical relationship between current-W C/Q and the immediately following non-overlapping same-length W, and how does state-conditioned next-W behavior differ by W?
+
+Recommended statistics:
 
 ```text
-1. Keep W=30, 40/60 short thresholds, 3Y median, cleaned Entry/Exit data.
-2. Split the available history into several chronological evaluation periods/folds.
-3. For each fold report High/Neutral/Low support.
-4. Report C and Q distribution by state: mean, median, quantiles.
-5. Report non-overlapping next-W C/Q distribution by prior state.
-6. Check whether the ordering / mean-reversion direction is consistent across folds.
-7. Do not train a model in this step.
+1. C current-W → next same-length W Pearson/Spearman
+2. Q current-W → next same-length W Pearson/Spearman
+3. future C/Q means and distributions conditioned on current High/Neutral/Low
+4. state/sample support and valid-pair counts
+5. no folds
 ```
 
-The purpose is not to maximize correlation. It is to determine whether the first-layer statistical structure is sufficiently stable to justify using it as a gate/context definition for a rebuilt Layer 2.
+This comparison is for understanding the historical information content and trading cadence of different trader-defined intervals. It should not automatically be interpreted as selecting the "best" W.
+
+A later Layer 2 design question, after Layer 1 is accepted, is how long `L_model` must be to let a model learn the relevant price/volume structure while Layer 1 supplies importance weighting.
 
 ---
 
-# 24. Key GitHub state
+# 25. Key GitHub state
 
-Current formal branch:
+Authoritative handoff branch:
 
 ```text
 strategy-profitability-restart
 ```
 
-Key post-cleaning source/audit commit:
+Key cleaned-data audit commit:
 
 ```text
 449aeeade02d77c57dd2e88a00f19edff0e06963
 ```
 
-Verified current audit runs:
+Transition-audit implementation/workflow branch head before this documentation update:
+
+```text
+94871aaa8c1145c6388c9c49069f56fc2ff899ee
+```
+
+Verified runs:
 
 ```text
 C/Q Full Audit:
   run 33177328828
-  completion marker: S1 CQ FULL COMPLETE
 
-Layer1 Forward-W Audit:
+Layer1 Forward-W Audit W30:
   run 33177328925
   job 98869231054
-  completion marker: S1 L1FW COMPLETE
+
+Layer1 Transition Audit W30:
+  run 33185034632
+  job 98895710885
+
+Layer1 Transition Audit W15/W60:
+  run 33185373484
+  W15 job 98896891387
+  W60 job 98896891618
 ```
 
-Previous handoff-only commit:
-
-```text
-6dde759c4c3909f8c14f78c25702b65120c7cf7a
-```
-
-This rewritten handoff supersedes that shorter summary.
+This handoff supersedes older Layer1/Layer2 documents and earlier fold-oriented next-step language where they conflict with the definitions above.
