@@ -30,7 +30,8 @@ DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "8y")
 W = int(os.environ.get("FUTUREVIEW_W", "30"))
 MODEL_HISTORY = int(os.environ.get("FUTUREVIEW_MODEL_HISTORY", "90"))
 TRAIN_YEARS = int(os.environ.get("FUTUREVIEW_TRAIN_YEARS", "5"))
-VALID_YEARS = int(os.environ.get("FUTUREVIEW_VALID_YEARS", "3"))
+VALID_YEARS = int(os.environ.get("FUTUREVIEW_VALID_YEARS", "1"))
+RETRAIN_EVERY = int(os.environ.get("FUTUREVIEW_RETRAIN_EVERY", "15"))
 NEUTRAL_ALPHA = float(os.environ.get("FUTUREVIEW_NEUTRAL_ALPHA", "0.2"))
 EPOCHS = int(os.environ.get("FUTUREVIEW_EPOCHS", "300"))
 LR = float(os.environ.get("FUTUREVIEW_LR", "0.003"))
@@ -72,7 +73,7 @@ def _build_wq_from_paths(df: pd.DataFrame, paths: pd.DataFrame, cutoff: int) -> 
     return pd.DataFrame(rows).sort_values("start_index").reset_index(drop=True)
 
 
-def _train_and_predict(df: pd.DataFrame, train_rows: pd.DataFrame, pred_start: int, pred_end: int, seed: int) -> tuple[float, float, np.ndarray]:
+def _train_model(df: pd.DataFrame, train_rows: pd.DataFrame, seed: int):
     np.random.seed(seed)
     torch.manual_seed(seed)
     train = build_training_data(df, train_rows)
@@ -89,6 +90,7 @@ def _train_and_predict(df: pd.DataFrame, train_rows: pd.DataFrame, pred_start: i
     reg_fn = nn.SmoothL1Loss(reduction="none")
     cls_fn = nn.CrossEntropyLoss(reduction="none")
     for _ in range(EPOCHS):
+        model.train()
         raw, logits = model(train.x)
         reg_c = reg_fn(raw[:, 0:1], target_c_z).squeeze(1)
         reg_q = reg_fn(nonnegative_q(raw[:, 1:2]), target_q_scaled).squeeze(1)
@@ -97,8 +99,13 @@ def _train_and_predict(df: pd.DataFrame, train_rows: pd.DataFrame, pred_start: i
         opt.zero_grad()
         loss.backward()
         opt.step()
+    return model, c_mu, c_sd, q_scale
 
-    x = torch.from_numpy(make_input_features(df, pred_start, pred_end)[None, ...])
+
+def _predict(model, c_mu, c_sd, q_scale, df: pd.DataFrame, target_start: int) -> tuple[float, float, np.ndarray]:
+    x = torch.from_numpy(
+        make_input_features(df, target_start - MODEL_HISTORY, target_start - 1)[None, ...]
+    )
     model.eval()
     with torch.no_grad():
         raw, logits = model(x)
@@ -117,7 +124,11 @@ def _stats(prefix: str, g: pd.DataFrame, actual_col: str, pred_col: str) -> None
     ae = np.abs(d)
     pearson = float(pd.Series(a).corr(pd.Series(p), method="pearson")) if len(x) >= 3 and np.std(a) > 0 and np.std(p) > 0 else float("nan")
     spearman = float(pd.Series(a).corr(pd.Series(p), method="spearman")) if len(x) >= 3 and np.std(a) > 0 and np.std(p) > 0 else float("nan")
-    print(f"{prefix} n={len(x)} actual_mean={a.mean():.6f} pred_mean={p.mean():.6f} bias={d.mean():.6f} mae={ae.mean():.6f} medae={np.median(ae):.6f} pearson={pearson:.6f} spearman={spearman:.6f}")
+    print(
+        f"{prefix} n={len(x)} actual_mean={a.mean():.6f} pred_mean={p.mean():.6f} "
+        f"bias={d.mean():.6f} mae={ae.mean():.6f} medae={np.median(ae):.6f} "
+        f"pearson={pearson:.6f} spearman={spearman:.6f}"
+    )
 
 
 def _full_actual_forward(df: pd.DataFrame) -> pd.DataFrame:
@@ -129,8 +140,8 @@ def _full_actual_forward(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def main() -> None:
-    if DATA_PERIOD != "8y" or W != 30 or MODEL_HISTORY != 90 or TRAIN_YEARS != 5 or VALID_YEARS != 3:
-        raise ValueError("rolling audit locked to 8y raw, prior-5y Entry training, final-3y validation, W30/L90")
+    if DATA_PERIOD != "8y" or W != 30 or MODEL_HISTORY != 90 or TRAIN_YEARS != 5 or VALID_YEARS != 1 or RETRAIN_EVERY != 15:
+        raise ValueError("rolling audit locked to 8y raw, prior-5y training, final-1y validation, retrain every 15 sessions, W30/L90")
     if abs(NEUTRAL_ALPHA - 0.2) > 1e-12:
         raise ValueError("rolling audit locked to neutral alpha=0.2")
 
@@ -144,31 +155,59 @@ def main() -> None:
 
     final_date = pd.Timestamp(dates.iloc[-1]).normalize()
     valid_cut = final_date - pd.DateOffset(years=VALID_YEARS)
-    valid_indices = [i for i in range(MODEL_HISTORY, len(df) - W + 1) if pd.Timestamp(dates.iloc[i]) >= valid_cut]
+    valid_indices = [
+        i for i in range(MODEL_HISTORY, len(df) - W + 1)
+        if pd.Timestamp(dates.iloc[i]) >= valid_cut
+    ]
+
+    print(
+        f"S1 L2ROLL START ticker={TICKER} rows={audit.rows} validation_days={len(valid_indices)} "
+        f"raw_period={DATA_PERIOD} train_years={TRAIN_YEARS} valid_years={VALID_YEARS} "
+        f"retrain_every={RETRAIN_EVERY} W={W} history={MODEL_HISTORY} "
+        f"alpha={NEUTRAL_ALPHA:.3f} epochs={EPOCHS}"
+    )
 
     out_rows: list[dict[str, object]] = []
-    print(f"S1 L2ROLL START ticker={TICKER} rows={audit.rows} validation_days={len(valid_indices)} raw_period={DATA_PERIOD} train_entry_years={TRAIN_YEARS} valid_years={VALID_YEARS} W={W} history={MODEL_HISTORY} alpha={NEUTRAL_ALPHA:.3f} epochs={EPOCHS}")
+    model = None
+    c_mu = c_sd = q_scale = None
+    retrain_id = -1
+    retrain_date = None
+    train_cutoff_date = None
+    floor_date = None
+    train_samples = 0
+    forced_entries = 0
 
     for k, target_start in enumerate(valid_indices):
-        cutoff = target_start - 1
-        floor_date = pd.Timestamp(dates.iloc[cutoff]) - pd.DateOffset(years=TRAIN_YEARS)
+        if k % RETRAIN_EVERY == 0:
+            retrain_id += 1
+            cutoff = target_start - 1
+            floor_date = pd.Timestamp(dates.iloc[cutoff]) - pd.DateOffset(years=TRAIN_YEARS)
 
-        # Only historical Entries in the previous five years are eligible.
-        paths_asof = build_deterministic_path_table_asof(events, asof_index=cutoff)
-        entry_dates = pd.to_datetime(df.iloc[paths_asof.entry_index.astype(int)]["date"].to_numpy())
-        paths_5y = paths_asof.loc[entry_dates >= floor_date].reset_index(drop=True)
-        if paths_5y.empty:
-            continue
+            paths_asof = build_deterministic_path_table_asof(events, asof_index=cutoff)
+            entry_dates = pd.to_datetime(df.iloc[paths_asof.entry_index.astype(int)]["date"].to_numpy())
+            paths_5y = paths_asof.loc[entry_dates >= floor_date].reset_index(drop=True)
+            if paths_5y.empty:
+                raise RuntimeError("no paths available at retrain cutoff")
 
-        # Open Entries at the training cutoff are already force-closed by the as-of builder.
-        forced_entries = int((paths_5y["exit_mode"] == "forced_asof").sum())
-        wq = _build_wq_from_paths(df, paths_5y, cutoff)
-        classified = _classify(wq).sort_values("start_index").reset_index(drop=True)
-        train_rows = build_forward_dataset(classified, cutoff + 1, MODEL_HISTORY)
-        if len(train_rows) < 100:
-            continue
+            forced_entries = int((paths_5y["exit_mode"] == "forced_asof").sum())
+            wq = _build_wq_from_paths(df, paths_5y, cutoff)
+            classified = _classify(wq).sort_values("start_index").reset_index(drop=True)
+            train_rows = build_forward_dataset(classified, cutoff + 1, MODEL_HISTORY)
+            if len(train_rows) < 100:
+                raise RuntimeError("insufficient training rows at retrain cutoff")
 
-        pred_c, pred_q, p = _train_and_predict(df, train_rows, target_start - MODEL_HISTORY, target_start - 1, SEED + target_start)
+            model, c_mu, c_sd, q_scale = _train_model(df, train_rows, SEED + target_start)
+            retrain_date = pd.Timestamp(dates.iloc[target_start]).date().isoformat()
+            train_cutoff_date = pd.Timestamp(dates.iloc[cutoff]).date().isoformat()
+            train_samples = int(len(train_rows))
+            print(
+                f"S1 L2ROLL RETRAIN id={retrain_id} prediction_start={retrain_date} "
+                f"cutoff={train_cutoff_date} floor={floor_date.date().isoformat()} "
+                f"samples={train_samples} forced_entries={forced_entries} epochs={EPOCHS}"
+            )
+
+        assert model is not None and c_mu is not None and c_sd is not None and q_scale is not None
+        pred_c, pred_q, p = _predict(model, c_mu, c_sd, q_scale, df, target_start)
 
         actual_c = float("nan")
         actual_q = float("nan")
@@ -184,10 +223,12 @@ def main() -> None:
         out_rows.append({
             "prediction_date": pd.Timestamp(dates.iloc[target_start]).date().isoformat(),
             "year": int(pd.Timestamp(dates.iloc[target_start]).year),
+            "retrain_id": retrain_id,
+            "retrain_prediction_start": retrain_date,
             "entry_floor_date": floor_date.date().isoformat(),
-            "train_cutoff_date": pd.Timestamp(dates.iloc[cutoff]).date().isoformat(),
-            "train_samples": int(len(train_rows)),
-            "forced_entries_at_cutoff": forced_entries,
+            "train_cutoff_date": train_cutoff_date,
+            "train_samples": train_samples,
+            "forced_entries_at_retrain": forced_entries,
             "actual_C": actual_c,
             "pred_C": pred_c,
             "actual_Q": actual_q,
@@ -198,13 +239,14 @@ def main() -> None:
             "P_L": float(p[STATE_TO_ID["low"]]),
             "pred_state": ID_TO_STATE[int(np.argmax(p))],
         })
-        if (k + 1) % 100 == 0:
-            print(f"S1 L2ROLL PROGRESS processed={k+1}/{len(valid_indices)} rows_out={len(out_rows)}")
 
     out = pd.DataFrame(out_rows)
     out.to_csv(OUTPUT, index=False)
     labeled = out.loc[out["actual_state"] != "unlabeled"].copy()
-    print(f"S1 L2ROLL DATA predictions={len(out)} labeled={len(labeled)} forced_days={int((out['forced_entries_at_cutoff']>0).sum())} forced_entries_total={int(out['forced_entries_at_cutoff'].sum())}")
+    print(
+        f"S1 L2ROLL DATA predictions={len(out)} labeled={len(labeled)} "
+        f"retrain_count={out['retrain_id'].nunique()}"
+    )
 
     _stats("S1 L2ROLL OVERALL metric=C", labeled, "actual_C", "pred_C")
     _stats("S1 L2ROLL OVERALL metric=Q", labeled, "actual_Q", "pred_Q")
@@ -215,7 +257,10 @@ def main() -> None:
         _stats(f"S1 L2ROLL STATE state={state} metric=Q", g, "actual_Q", "pred_Q")
 
     for year, g in labeled.groupby("year", sort=True):
-        print(f"S1 L2ROLL YEAR year={year} n={len(g)} high={int((g.actual_state=='high').sum())} neutral={int((g.actual_state=='neutral').sum())} low={int((g.actual_state=='low').sum())}")
+        print(
+            f"S1 L2ROLL YEAR year={year} n={len(g)} high={int((g.actual_state=='high').sum())} "
+            f"neutral={int((g.actual_state=='neutral').sum())} low={int((g.actual_state=='low').sum())}"
+        )
         _stats(f"S1 L2ROLL YEARSTAT year={year} metric=C", g, "actual_C", "pred_C")
         _stats(f"S1 L2ROLL YEARSTAT year={year} metric=Q", g, "actual_Q", "pred_Q")
         for state in ("high", "neutral", "low"):
