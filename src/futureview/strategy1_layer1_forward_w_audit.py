@@ -17,8 +17,6 @@ SHORT_REF = int(os.environ.get("FUTUREVIEW_SHORT_REF", "90"))
 LONG_REF = int(os.environ.get("FUTUREVIEW_LONG_REF", "756"))
 SEED = int(os.environ.get("FUTUREVIEW_SEED", "20260827"))
 OUTPUT = os.environ.get("FUTUREVIEW_OUTPUT", "strategy1-layer1-forward-w-audit.csv")
-LOW_QTL = 0.441
-HIGH_QTL = 0.559
 
 
 def _classify(wq: pd.DataFrame) -> pd.DataFrame:
@@ -30,12 +28,12 @@ def _classify(wq: pd.DataFrame) -> pd.DataFrame:
         long = prior.loc[prior["end_index"].astype(int) >= s - LONG_REF]
         if s < LONG_REF or len(short) < 20 or len(long) < 100:
             continue
-        c_lo, c_hi = (float(short["C"].quantile(q)) for q in (LOW_QTL, HIGH_QTL))
-        q_lo, q_hi = (float(short["Q"].quantile(q)) for q in (LOW_QTL, HIGH_QTL))
+        c40, c60 = (float(short["C"].quantile(q)) for q in (0.40, 0.60))
+        q40, q60 = (float(short["Q"].quantile(q)) for q in (0.40, 0.60))
         c50 = float(long["C"].median())
         q50 = float(long["Q"].median())
-        high = float(r.C) >= c_hi and float(r.Q) <= q_hi and float(r.C) > c50 and float(r.Q) < q50
-        low = float(r.C) <= c_lo and float(r.Q) >= q_lo and float(r.C) < c50 and float(r.Q) > q50
+        high = float(r.C) >= c60 and float(r.Q) <= q60 and float(r.C) > c50 and float(r.Q) < q50
+        low = float(r.C) <= c40 and float(r.Q) >= q40 and float(r.C) < c50 and float(r.Q) > q50
         state = "high" if high else ("low" if low else "neutral")
         rows.append({
             "start_index": s,
@@ -102,8 +100,7 @@ def main() -> None:
 
     print(
         f"S1 L1FW START ticker={TICKER} rows={audit.rows} W={W} "
-        f"classified={len(classified)} full_future_W={len(out)} cq_pairs={len(cq)} "
-        f"short_qlo={LOW_QTL:.3f} short_qhi={HIGH_QTL:.3f}"
+        f"classified={len(classified)} full_future_W={len(out)} cq_pairs={len(cq)}"
     )
     print(
         "S1 L1FW CORR overall "
