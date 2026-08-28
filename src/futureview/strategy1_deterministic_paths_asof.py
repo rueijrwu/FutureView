@@ -10,8 +10,8 @@ from .strategy1_cq_data import HORIZON
 from .strategy1_deterministic_paths import (
     MERGE_GAP,
     _most_recent_before,
+    build_extrema_sets,
     preprocess_legal_points,
-    retrospective_local_extrema,
     simulate_deterministic_path,
 )
 
@@ -34,10 +34,8 @@ class AsOfDeterministicPath:
 class _HistoryCache:
     source_ref: weakref.ReferenceType[pd.DataFrame]
     prepared: pd.DataFrame
-    mins5: np.ndarray
-    mins10: np.ndarray
-    maxs5: np.ndarray
-    maxs10: np.ndarray
+    local_mins: np.ndarray
+    local_maxs: np.ndarray
     entries: np.ndarray
     canonical_rows: dict[int, dict[str, int | float | str]]
 
@@ -46,12 +44,7 @@ _HISTORY_CACHE: dict[int, _HistoryCache] = {}
 
 
 def _row_from_completed(path) -> dict[str, int | float | str]:
-    if path.exit10_index >= 0:
-        exit_mode = "exit10"
-    elif path.horizon_exit_index >= 0:
-        exit_mode = "horizon"
-    else:
-        exit_mode = "closed"
+    exit_mode = "exit10" if path.exit10_index >= 0 else "horizon"
     return {
         "entry_index": path.entry_index,
         "base_min_index": path.base_min_index,
@@ -68,38 +61,25 @@ def _row_from_completed(path) -> dict[str, int | float | str]:
     }
 
 
-def _get_history_cache(events: pd.DataFrame) -> _HistoryCache:
-    """Precompute history that is invariant across rolling as-of cutoffs.
+def _completed_exit_index(row: dict[str, int | float | str]) -> int:
+    exit10 = int(row["exit10_index"])
+    return exit10 if exit10 >= 0 else int(row["horizon_exit_index"])
 
-    Forward-anchor legal-point preprocessing is prefix-stable: appending later raw
-    points can absorb those later points but cannot change an already retained
-    anchor. Retrospective extrema are also prefix-stable once their right-hand
-    radius is available. We therefore compute both radius families once and
-    expose only the extrema that would have been observable at each cutoff.
-    """
+
+def _get_history_cache(events: pd.DataFrame) -> _HistoryCache:
+    """Prepare the historical Strategy data once for rolling reuse."""
     key = id(events)
     cached = _HISTORY_CACHE.get(key)
     if cached is not None and cached.source_ref() is events:
         return cached
 
     prepared = preprocess_legal_points(events, gap=MERGE_GAP)
-    close = prepared["close"].to_numpy(dtype=float)
-    mins5 = retrospective_local_extrema(close, 5, kind="min")
-    mins10 = retrospective_local_extrema(close, 10, kind="min")
-    maxs5 = retrospective_local_extrema(close, 5, kind="max")
-    maxs10 = retrospective_local_extrema(close, 10, kind="max")
-    full_mins = np.unique(np.concatenate([mins5, mins10])).astype(np.int32)
-    full_maxs = np.unique(np.concatenate([maxs5, maxs10])).astype(np.int32)
+    local_mins, local_maxs = build_extrema_sets(prepared)
     entries = np.flatnonzero(prepared["entry_candidate"].to_numpy(dtype=bool)).astype(np.int32)
 
     canonical_rows: dict[int, dict[str, int | float | str]] = {}
     for raw_entry in entries:
-        path = simulate_deterministic_path(
-            prepared,
-            int(raw_entry),
-            full_mins,
-            full_maxs,
-        )
+        path = simulate_deterministic_path(prepared, int(raw_entry), local_mins, local_maxs)
         if path is not None:
             canonical_rows[int(raw_entry)] = _row_from_completed(path)
 
@@ -109,10 +89,8 @@ def _get_history_cache(events: pd.DataFrame) -> _HistoryCache:
     cache = _HistoryCache(
         source_ref=weakref.ref(events, _drop),
         prepared=prepared,
-        mins5=mins5,
-        mins10=mins10,
-        maxs5=maxs5,
-        maxs10=maxs10,
+        local_mins=local_mins,
+        local_maxs=local_maxs,
         entries=entries,
         canonical_rows=canonical_rows,
     )
@@ -129,11 +107,11 @@ def simulate_deterministic_path_asof(
     asof_index: int,
     horizon: int = HORIZON,
 ) -> AsOfDeterministicPath | None:
-    """Simulate Strategy using only information available through ``asof_index``.
+    """Replay one path through the cutoff and close any remaining shares there.
 
-    If an Entry is still open at the as-of cutoff, all remaining shares are
-    liquidated at that session's close. This is only for rolling/as-of labels;
-    it does not change the canonical full-history deterministic Strategy path.
+    Entry, Addons, and partial exits at or before the cutoff are preserved.  The
+    only rolling-specific rule is that a path whose final exit is after the
+    cutoff is closed at the cutoff close.
     """
     if asof_index >= len(events):
         raise ValueError("asof_index must be inside events")
@@ -142,7 +120,6 @@ def simulate_deterministic_path_asof(
 
     natural_end = entry + horizon - 1
     end = min(natural_end, asof_index)
-
     close = events["close"].to_numpy(dtype=float)
     base_min = _most_recent_before(local_mins, entry)
     if base_min < 0:
@@ -156,43 +133,30 @@ def simulate_deterministic_path_asof(
     cash = 1.0
     shares = 0.0
     tranche = 1.0 / 3.0
-
     shares += tranche / entry_price
     cash -= tranche
     last_buy_price = entry_price
     entries_used = 1
-
-    addon1 = -1
-    addon2 = -1
-    exit5 = -1
-    exit10 = -1
-    horizon_exit = -1
-    forced_asof_exit = -1
+    addon1 = addon2 = exit5 = exit10 = -1
+    horizon_exit = forced_asof_exit = -1
 
     local_max_mask = np.zeros(len(events), dtype=np.bool_)
     local_max_mask[local_maxs] = True
 
     for i in range(entry + 1, end + 1):
         price = float(close[i])
-
         if bool(events.at[i, "exit10_event"]):
             cash += shares * price
             shares = 0.0
             exit10 = i
             break
-
         if exit5 < 0 and bool(events.at[i, "exit5_event"]):
             sold = 0.40 * shares
             cash += sold * price
             shares -= sold
             exit5 = i
             continue
-
-        if (
-            entries_used < 3
-            and bool(local_max_mask[i])
-            and price - last_buy_price > d_b
-        ):
+        if entries_used < 3 and bool(local_max_mask[i]) and price - last_buy_price > d_b:
             if cash + 1e-12 < tranche:
                 raise RuntimeError("Strategy attempted to exceed its fixed total-capital budget")
             shares += tranche / price
@@ -206,7 +170,6 @@ def simulate_deterministic_path_asof(
 
     if shares > 0.0:
         cash += shares * float(close[end])
-        shares = 0.0
         if end < natural_end:
             forced_asof_exit = end
         else:
@@ -227,53 +190,30 @@ def simulate_deterministic_path_asof(
 
 
 def build_deterministic_path_table_asof(events: pd.DataFrame, *, asof_index: int) -> pd.DataFrame:
-    """Build causal as-of Strategy outcomes through ``asof_index``.
+    """Return historical paths at a rolling cutoff with minimal recomputation.
 
-    This is semantically identical to rebuilding a truncated history at every
-    cutoff, but invariant historical work is cached. Only Entries close enough
-    to the cutoff to have an unresolved path or unresolved retrospective
-    extremum are simulated again. Open positions at the cutoff are still
-    force-closed at the cutoff close.
+    Completed paths are reused exactly.  A path is replayed only when its final
+    exit is later than the cutoff (or the full-data path cannot yet complete),
+    in which case remaining shares are closed at the cutoff close.
     """
     if asof_index < 0 or asof_index >= len(events):
         raise ValueError("asof_index must be inside events")
 
     cache = _get_history_cache(events)
-
-    mins = np.unique(
-        np.concatenate(
-            [
-                cache.mins5[cache.mins5 <= asof_index - 5],
-                cache.mins10[cache.mins10 <= asof_index - 10],
-            ]
-        )
-    ).astype(np.int32)
-    maxs = np.unique(
-        np.concatenate(
-            [
-                cache.maxs5[cache.maxs5 <= asof_index - 5],
-                cache.maxs10[cache.maxs10 <= asof_index - 10],
-            ]
-        )
-    ).astype(np.int32)
-
     rows: list[dict[str, int | float | str]] = []
+
     for raw_entry in cache.entries[cache.entries <= asof_index]:
         entry = int(raw_entry)
-
-        # Once the full 60-session path plus the largest retrospective radius
-        # lies before the cutoff, the canonical row is exactly invariant and can
-        # be reused. The +10 guard is what keeps this cache causal.
-        stable_after = entry + HORIZON - 1 + 10
-        if stable_after <= asof_index and entry in cache.canonical_rows:
-            rows.append(cache.canonical_rows[entry].copy())
+        completed = cache.canonical_rows.get(entry)
+        if completed is not None and _completed_exit_index(completed) <= asof_index:
+            rows.append(completed.copy())
             continue
 
         path = simulate_deterministic_path_asof(
             cache.prepared,
             entry,
-            mins,
-            maxs,
+            cache.local_mins,
+            cache.local_maxs,
             asof_index=asof_index,
         )
         if path is None:
@@ -282,26 +222,22 @@ def build_deterministic_path_table_asof(events: pd.DataFrame, *, asof_index: int
             exit_mode = "exit10"
         elif path.horizon_exit_index >= 0:
             exit_mode = "horizon"
-        elif path.forced_asof_exit_index >= 0:
-            exit_mode = "forced_asof"
         else:
-            exit_mode = "closed"
-        rows.append(
-            {
-                "entry_index": path.entry_index,
-                "base_min_index": path.base_min_index,
-                "base_distance": path.base_distance,
-                "addon1_index": path.addon1_index,
-                "addon2_index": path.addon2_index,
-                "exit5_index": path.exit5_index,
-                "exit10_index": path.exit10_index,
-                "horizon_exit_index": path.horizon_exit_index,
-                "forced_asof_exit_index": path.forced_asof_exit_index,
-                "exit_mode": exit_mode,
-                "campaign_return": path.campaign_return,
-                "executed_addons": int(path.addon1_index >= 0) + int(path.addon2_index >= 0),
-            }
-        )
+            exit_mode = "forced_asof"
+        rows.append({
+            "entry_index": path.entry_index,
+            "base_min_index": path.base_min_index,
+            "base_distance": path.base_distance,
+            "addon1_index": path.addon1_index,
+            "addon2_index": path.addon2_index,
+            "exit5_index": path.exit5_index,
+            "exit10_index": path.exit10_index,
+            "horizon_exit_index": path.horizon_exit_index,
+            "forced_asof_exit_index": path.forced_asof_exit_index,
+            "exit_mode": exit_mode,
+            "campaign_return": path.campaign_return,
+            "executed_addons": int(path.addon1_index >= 0) + int(path.addon2_index >= 0),
+        })
 
     table = pd.DataFrame(rows)
     if table.empty:
