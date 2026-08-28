@@ -15,11 +15,11 @@ TICKER = os.environ.get("FUTUREVIEW_TICKER", "TSLA")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "5y")
 W = int(os.environ.get("FUTUREVIEW_W", "30"))
 SEED = int(os.environ.get("FUTUREVIEW_SEED", "20260827"))
-OUTPUT = os.environ.get("FUTUREVIEW_OUTPUT", "strategy1-layer1-transition-audit.csv")
+OUTPUT = os.environ.get("FUTUREVIEW_OUTPUT", f"strategy1-layer1-transition-audit-w{W}.csv")
 
 
 def build_row_level_transitions(classified: pd.DataFrame) -> pd.DataFrame:
-    """Measure persistence and first opposite-state passage from every High/Low W30 row."""
+    """Measure persistence and first opposite-state passage from every High/Low row."""
     x = classified.sort_values("start_index").reset_index(drop=True)
     rows: list[dict[str, object]] = []
 
@@ -30,7 +30,6 @@ def build_row_level_transitions(classified: pd.DataFrame) -> pd.DataFrame:
         opposite = "low" if state == "high" else "high"
         start = int(r.start_index)
 
-        # Question 1: how long does the current state continue from this row?
         leave_idx = None
         for j in range(i + 1, len(x)):
             if str(x.at[j, "state"]) != state:
@@ -45,7 +44,6 @@ def build_row_level_transitions(classified: pd.DataFrame) -> pd.DataFrame:
             days_until_leave = leave_start - start
             future_same_days = max(days_until_leave - 1, 0)
 
-        # Question 2: when is the first true opposite state reached?
         opposite_idx = None
         for j in range(i + 1, len(x)):
             if str(x.at[j, "state"]) == opposite:
@@ -85,19 +83,19 @@ def build_row_level_transitions(classified: pd.DataFrame) -> pd.DataFrame:
 def _dist(name: str, values: pd.Series) -> None:
     a = values.dropna().to_numpy(dtype=float)
     if len(a) == 0:
-        print(f"S1 L1TRANS DIST metric={name} n=0")
+        print(f"S1 L1TRANS DIST W={W} metric={name} n=0")
         return
     q = np.quantile(a, [0.10, 0.25, 0.50, 0.75, 0.90])
     print(
-        f"S1 L1TRANS DIST metric={name} n={len(a)} mean={a.mean():.3f} "
+        f"S1 L1TRANS DIST W={W} metric={name} n={len(a)} mean={a.mean():.3f} "
         f"p10={q[0]:.3f} p25={q[1]:.3f} median={q[2]:.3f} "
         f"p75={q[3]:.3f} p90={q[4]:.3f} max={a.max():.3f}"
     )
 
 
 def main() -> None:
-    if W != 30:
-        raise ValueError("transition audit locked to W=30")
+    if W not in (15, 30, 60):
+        raise ValueError("transition audit supports W in {15,30,60}")
 
     df = download_ticker_daily(TICKER, period=DATA_PERIOD)
     audit = validate_daily_ohlcv(df, minimum_rows=1000)
@@ -112,7 +110,7 @@ def main() -> None:
     out.to_csv(OUTPUT, index=False)
 
     print(
-        f"S1 L1TRANS START ticker={TICKER} rows={audit.rows} "
+        f"S1 L1TRANS START W={W} ticker={TICKER} rows={audit.rows} "
         f"classified={len(classified)} extreme_rows={len(out)}"
     )
 
@@ -121,7 +119,7 @@ def main() -> None:
         leave_valid = g.loc[~g.leave_censored]
         opp_valid = g.loc[~g.opposite_censored]
         print(
-            f"S1 L1TRANS STATE state={state} n={len(g)} "
+            f"S1 L1TRANS STATE W={W} state={state} n={len(g)} "
             f"leave_valid={len(leave_valid)} leave_censored={int(g.leave_censored.sum())} "
             f"opposite={opposite} opposite_valid={len(opp_valid)} "
             f"opposite_censored={int(g.opposite_censored.sum())}"
@@ -129,17 +127,14 @@ def main() -> None:
         _dist(f"{state}_days_until_leave", leave_valid.days_until_leave)
         _dist(f"{state}_future_same_days", leave_valid.future_same_days)
         _dist(f"{state}_to_{opposite}_days", opp_valid.days_to_opposite)
-        _dist(
-            f"{state}_to_{opposite}_neutral_days",
-            opp_valid.neutral_days_before_opposite,
-        )
+        _dist(f"{state}_to_{opposite}_neutral_days", opp_valid.neutral_days_before_opposite)
         _dist(
             f"{state}_to_{opposite}_same_state_days_before_opposite",
             opp_valid.same_state_days_before_opposite,
         )
 
-    print(f"S1 L1TRANS OUTPUT file={OUTPUT} rows={len(out)}")
-    print("S1 L1TRANS COMPLETE")
+    print(f"S1 L1TRANS OUTPUT W={W} file={OUTPUT} rows={len(out)}")
+    print(f"S1 L1TRANS COMPLETE W={W}")
 
 
 if __name__ == "__main__":
