@@ -59,7 +59,7 @@ def classify_entry_gates(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
             {
                 "entry_index": int(t),
                 "window_start": int(cur.start_index),
-                "window_end": int(cur.end_index),
+                "window_end": int(t),
                 "C_hist": c,
                 "Q_hist": q,
                 "C90_40": c40,
@@ -84,7 +84,6 @@ def main() -> None:
     paths = build_deterministic_path_table(events)
     gates = classify_entry_gates(df, paths)
 
-    # Centered-2W target availability for the same Entry population.
     centered_ok = []
     for t in gates["entry_index"].astype(int):
         centered_ok.append(t - W + 1 >= 0 and t + W < len(df))
