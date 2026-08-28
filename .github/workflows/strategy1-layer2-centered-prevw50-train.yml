@@ -25,7 +25,7 @@ jobs:
       - name: Run training audit
         env:
           FUTUREVIEW_TICKER: TSLA
-          FUTUREVIEW_DATA_PERIOD: 5y
+          FUTUREVIEW_DATA_PERIOD: 10y
           FUTUREVIEW_W: '30'
           FUTUREVIEW_EPOCHS: '120'
           FUTUREVIEW_SEED: '20260827'
