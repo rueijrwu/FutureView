@@ -1,174 +1,591 @@
-# FutureView Profitability Research Handoff
+# FutureView Strategy 1 — Handoff
 
-Last consolidated: 2026-08-27
+Last consolidated: 2026-08-28
 
-`Theory.md` is the authoritative theory document. `Implementation.md` is the authoritative implementation framework.
+## 目前研究目標
 
-## Current research objective
+現階段先縮小問題，不碰 Layer2。
 
-The Strategy is fixed. The current research is **not** trying to optimize the Strategy, Addon rule, Exit rule, or capital allocation.
+目前只問：
 
-The core question is:
+> 在重新整理 legal Entry / Exit 資料後，Strategy 1 的 C / Q 結構與 Layer1 統計關係是否仍然存在？
 
-> Given a fixed Strategy, can historical price-volume information identify market/Entry states in which that Strategy is closer to its historically achievable upper-profit region?
+流程必須是：
 
-The immediate historical task is therefore to define the Strategy outcome space correctly, compute its profitability bounds, and study whether high-profit regions have recognizable structure.
+```text
+Raw market data
+→ scan all raw legal Entry/Exit
+→ 3-session forward-anchor preprocessing
+→ cleaned Entry/Exit data
+→ Strategy paths
+→ R,U,B,C,Q
+→ Layer1
+```
 
-## Fixed Strategy path semantics
+模型只能發生在上述資料整理完成之後。
 
-All current historical Strategy calculations use daily close prices.
+---
 
-Over the five-year sample, first identify:
+## 1. Legal Entry / Exit preprocessing — LOCKED
 
-- all legal Entry dates under the fixed Strategy Entry rule;
-- all legal 5-day and 10-day Exit events;
-- all retrospective 5-day and 10-day local minima;
-- all retrospective 5-day and 10-day local maxima.
+這是資料處理規則，不是模型規則。
 
-For a legal Entry `e` with close `P_e`, let `m_b` be the most recent member of the 5/10-day local-minimum union before Entry. Define the fixed campaign distance:
+### Entry
 
-`D_b = P_e - P[m_b]`.
+第一步先完整掃描所有 raw legal Entry。
 
-The initial Entry deploys one third of total campaign capital.
+legal Entry 條件：
 
-Addon candidates are only later members of the 5/10-day local-maximum union. Let `last_buy_price` be the actual price of the Entry or most recent Addon. The first later local maximum satisfying
+```text
+close > MA5
+close > MA10
+close > MA20
+MA5 > MA10
+MA10 > MA20
+```
 
-`candidate_close - last_buy_price > D_b`
+掃描完全部 raw legal Entry 後，再由時間最早開始整理。
 
-becomes the next Addon. The same original `D_b` is reused for every Addon. At most two Addons are allowed, so total capital deployments are at most:
+假設目前最早尚未處理的 Entry 是 `e0`。
 
-`Entry + Addon1 + Addon2`.
+把 `e0` 後面 3 個 trading sessions 以內的 raw legal Entry 全部合併到 `e0`：
 
-Each deployment uses one third of the original total-capital denominator. Unused capital remains cash.
+```text
+ei - e0 <= 3
+```
 
-Exit rules:
+被合併的 Entry 不可以再往後延伸 cluster。
 
-- first legal 5-day exit event: sell 40% of then-current shares;
-- a 5-day partial exit does **not** close the campaign and does **not** disable future Addons;
-- legal 10-day exit event: liquidate all remaining shares and end the campaign;
-- any still-open position is liquidated at the fixed 60-session horizon.
+因此這不是 transitive clustering。
 
-No addon-reference configurations are enumerated. With the Strategy fixed, each eligible legal Entry produces exactly one deterministic Strategy path and one realized outcome `E(e)`.
+例如 raw Entry：
 
-## Evaluation interval and profitability bounds
+```text
+100, 103, 106, 107
+```
 
-Current audit interval:
+100 為 anchor：
 
-- window length `W = 60` trading sessions;
-- stride `= 1` trading session.
+```text
+100,103 → 100
+```
 
-For an interval `W=[t0,t1]`, include every deterministic Strategy path whose **initial Entry** lies inside the interval. The path may continue beyond `t1` until its Strategy exit or 60-session horizon.
+雖然 `106-103=3`，但 103 已被合併，所以不能再往後推。
 
-For the legal Entry set `I_W`, define:
+下一個 anchor 是 106：
 
-`E_W = { E(e) : e in I_W }`
+```text
+106,107 → 106
+```
 
-`L_W = min E_W`
+最後 cleaned Entry：
 
-`U_W = max E_W`
+```text
+{100,106}
+```
 
-`C_W = U_W - L_W`
+不是 `{100}`。
 
-For `C_W > 0`:
+### Exit
 
-`Q_i = (U_W - E_i) / C_W`
+Exit 完全使用相同 preprocessing 原則：
 
-Interpretation:
+1. 先掃描全部 raw legal Exit。
+2. 從最早尚未處理的 Exit 開始。
+3. 合併該 Exit 後 3 個 trading sessions 內的同類 Exit。
+4. 被合併的 Exit 不再成為 anchor。
+5. 繼續下一個未處理 Exit。
 
-- `Q=0`: observed upper-profit bound;
-- `Q=1`: observed lower-profit bound;
-- smaller `Q`: closer to the best observed fixed-Strategy outcome in that interval.
+注意：
 
-Crucially, `U_W` is **not** the result of optimizing the Strategy. It is simply the maximum realized outcome among all legal Entries of the already-fixed Strategy in that interval.
+```text
+不是 ±3
+```
 
-## Baselines
+而是：
 
-Representation A currently uses:
+```text
+anchor 之後 3 個 trading sessions
+```
 
-`A = [L, U, B_periodic, B_random]`
+---
 
-`B_periodic`:
+## 2. Cleaned data 才是正式 Strategy data
 
-- three equal one-third deployments;
-- evenly spaced within the evaluation window;
-- all tranches marked to the common window end.
+raw legal Entry / Exit 只是 preprocessing 的中間資料。
 
-`B_random`:
+正式 downstream analysis 必須使用 cleaned Entry / Exit。
 
-- coarse descriptive indicator only;
-- 20 fixed-seed samples per interval;
-- each sample uses 1-3 random Entry dates, one-third capital per actual deployment;
-- unused capital remains cash;
-- not a research target.
+不能是：
 
-Signed baseline comparison:
+```text
+raw Entry → C/Q → merge
+```
 
-`A_periodic = U - B_periodic`
+必須是：
 
-Negative values are retained and meaningful. They can indicate intervals where even the best legal fixed-Strategy Entry underperformed periodic deployment.
+```text
+raw points
+→ merge
+→ cleaned points
+→ Strategy
+→ C/Q
+```
 
-Do not confuse this with `C = U-L`.
+Layer1 / Layer2 都只能使用 cleaned data。
 
-## Latest deterministic-path audit
+---
 
-SMH, five years, current data span approximately 2021-08-27 through 2026-08-27.
+## 3. Strategy outcome notation — LOCKED
 
-Current deterministic path table:
+對一個正式 legal Entry `e`，沿 deterministic Strategy path 得到：
 
-- eligible legal Entries: 348;
-- deterministic paths: 348;
-- Addon1 rate: 23.85%;
-- Addon2 rate: 2.30%.
+```text
+R(e)
+```
 
-For `W=60`, stride 1:
+其中：
 
-- valid intervals: 1137;
-- median legal paths per interval: 17;
-- mean `U`: +1.21%;
-- median `U`: +0.86%;
-- mean `B_periodic`: +5.52%;
-- median `B_periodic`: +5.92%;
-- `P(U > B_periodic) = 33.69%`;
-- mean `U-B_periodic = -4.31%`;
-- median `U-B_periodic = -4.84%`;
-- maximum observed `U-B_periodic = +24.11%`.
+```text
+R(e) = 該 Entry 的實際 Strategy return
+```
 
-Examples of intervals with large positive Strategy-vs-periodic separation still exist. They are useful state information even when the Strategy itself loses money, because periodic deployment may lose substantially more.
+在 evaluation region `W` 中：
 
-## Representation direction
+```text
+I_W = {cleaned legal Entries in W}
+```
 
-Representation A is descriptive only. Do not use an Autoencoder yet.
+則：
 
-Candidate Representation B remains conceptually:
+```text
+U_W = max_{e in I_W} R(e)
+```
 
-`B = [L, U, B_periodic, B_random, Q10, Q25, Q50, Q75, Q90]`
+`B_W` 為相同 evaluation region 的 periodic baseline return。
 
-with quantiles not yet frozen.
+核心定義：
 
-The distinction is:
+```text
+C_W = U_W - B_W
+```
 
-- `L,U,B_i`: absolute profitability scale and baseline context;
-- `Q` distribution: normalized shape of legal Strategy outcomes between the observed bounds.
+因此：
 
-Do not include exact algebraic duplicates such as `C=U-L` or `U-B_i` as independent AE inputs when their source variables are already present.
+- `R(e)`：單一 Entry 的 Strategy return
+- `U`：該 region 中最好的 legal Entry return
+- `B`：baseline
+- `C`：Strategy 最佳 opportunity 相對 baseline 的優勢
 
-## What not to do next
+不要再用舊的 `E(e)` 作主要符號。
 
-Do **not**:
+---
 
-- optimize the Strategy;
-- compare forced vs optional Addons as a strategy-quality study;
-- reintroduce multiple addon-reference configurations;
-- turn the random baseline into a Monte Carlo research project;
-- move directly to CNN architecture;
-- move directly to AE training before the current profitability-state representation is accepted.
+## 4. Q 定義 — LOCKED
 
-## Immediate next research question
+對 legal Entry `e`：
 
-The current Strategy/path definition is considered locked unless a Strategy-rule bug is found.
+```text
+Q(e) = U - R(e)
+```
 
-The next question is:
+所以：
 
-> Across historical intervals, what structure distinguishes regions where the fixed Strategy has high `U`, or where `U-B_periodic` is strongly positive, from regions where it does not?
+- `Q=0`：該 Entry 本身達到 region 的 upper bound
+- Q 越小：Entry timing 越靠近最佳 legal Entry
+- Q 越大：Entry 距離 region 中最佳 legal Entry 越遠
 
-This is a **state-identification / profitability-representation** problem, not a Strategy-optimization problem.
+Q 不是 trend strength。
+
+Q 不 normalize by C。
+
+---
+
+## 5. C/Q 語意
+
+```text
+C = U - B
+```
+
+C 表示：
+
+> 在這個 evaluation region 裡，固定 Strategy 如果選到最佳合法 Entry，可以比 periodic baseline 好多少。
+
+所以 C 是 local Strategy opportunity quality，不是單一 Entry profit。
+
+單一 Entry profit 是：
+
+```text
+R(e)
+```
+
+Entry quality 是：
+
+```text
+Q(e) = U - R(e)
+```
+
+理想 region / Entry：
+
+```text
+C 大，Q 小
+```
+
+---
+
+## 6. Fixed deterministic Strategy path
+
+Strategy 本身不因 preprocessing 改變。
+
+每個 cleaned legal Entry 進入唯一 deterministic Strategy path。
+
+目前 locked semantics：
+
+- initial Entry：1/3 capital
+- base minimum：Entry 前最近 5d/10d retrospective local minimum union
+- `D_b = P_entry - P_base_min`
+- Addon 只可發生於後續 5d/10d retrospective local maxima
+- candidate 必須滿足 `candidate_close - last_buy_price > D_b`
+- 使用同一個原始 `D_b`
+- 最多 Entry + 2 Addons
+- 每次部署 1/3 original capital
+- first legal SMA5 exit：賣出當時持股 40%，只觸發一次
+- 5d partial exit 後仍可 Addon
+- legal SMA10 exit：全部平倉並終止
+- same-day priority：10d exit > 5d exit > Addon
+- 最長 horizon 60 sessions；未結束部位在 horizon close 平倉
+- 沒有 3-day cooldown
+
+Entry/Exit preprocessing 發生在這些正式 Strategy points 被 downstream 使用之前。
+
+---
+
+## 7. Window / Layer1 reference
+
+目前 Layer1 使用：
+
+```text
+W = 30 trading sessions
+stride = 1
+```
+
+Short rolling reference：
+
+```text
+90 sessions
+```
+
+Long reference：
+
+```text
+756 sessions ≈ 3Y
+```
+
+Reference windows 必須完全在 current W30 之前：
+
+```text
+reference.end < current.start
+```
+
+避免 reference 與 current W30 overlap。
+
+---
+
+## 8. Layer1 thresholds — LOCKED
+
+保留原始 40/60 定義。
+
+Short reference quantiles：
+
+```text
+C90_40, C90_60
+Q90_40, Q90_60
+```
+
+Long 3Y median：
+
+```text
+C3Y_50, Q3Y_50
+```
+
+High：
+
+```text
+C >= C90_60
+and Q <= Q90_60
+and C > C3Y_50
+and Q < Q3Y_50
+```
+
+Low：
+
+```text
+C <= C90_40
+and Q >= Q90_40
+and C < C3Y_50
+and Q > Q3Y_50
+```
+
+Neutral：otherwise。
+
+不要改成 50%。
+
+Layer1 的用途仍然是 Neutral prefilter：
+
+```text
+High → PASS
+Low → PASS
+Neutral → FILTER/BLOCK
+```
+
+不是 Good-vs-Bad classifier。
+
+---
+
+## 9. Layer1 semantic interpretation
+
+High：
+
+```text
+high Strategy opportunity + relatively good Entry timing
+```
+
+Low：
+
+```text
+low Strategy opportunity + relatively poor Entry timing
+```
+
+Neutral 為中間 / 不明確區。
+
+High 不代表下一個 W30 一定繼續 High。
+
+目前歷史結果比較像 mean reversion，而不是 continuation。
+
+---
+
+## 10. Cleaned-data C/Q audit 最新結果
+
+TSLA 5Y，W30。
+
+在加入 forward-anchor 3-session preprocessing 後：
+
+```text
+windows = 798
+Entry-window pairs = 2275
+entries/window mean = 2.851
+entries/window median = 3.0
+```
+
+C：
+
+```text
+mean   = -4.5863%
+median = -3.0118%
+P25    = -11.1253%
+P75    = +4.2117%
+P90    = +11.0524%
+max    = +26.5654%
+```
+
+Q：
+
+```text
+mean   = 2.3183%
+median = 1.0481%
+P75    = 3.8188%
+P90    = 6.1764%
+Q=0 rate = 35.08%
+```
+
+Relevant full-audit run:
+
+```text
+33177328828
+```
+
+---
+
+## 11. Preprocessing 的主要效果
+
+原本相鄰 legal Entry 非常密集。
+
+cleaning 後每 W30 Entry 數量明顯下降。
+
+大致：
+
+```text
+High:    5.61 → 1.63
+Neutral: 7.73 → 2.89
+Low:    12.36 → 4.24
+```
+
+所以 preprocessing 確實移除了大量時間上非常靠近、屬於同一訊號區域的 raw Entry。
+
+---
+
+## 12. Layer1 forward-W 統計仍然存在
+
+cleaning 後：
+
+```text
+Corr_P(C_past, C_future) = -0.301
+Corr_S(C_past, C_future) = -0.322
+```
+
+原本的 C mean-reversion relationship 沒有因為 Entry preprocessing 消失。
+
+分組結果：
+
+### High
+
+```text
+n = 60
+Past C   = +4.31%
+Next-W C = -10.10%
+Past Q   = 0.10%
+Next-W Q = 1.78%
+```
+
+### Neutral
+
+```text
+n = 158
+Past C   = -4.98%
+Next-W C = -7.37%
+Past Q   = 1.58%
+Next-W Q = 2.31%
+```
+
+### Low
+
+```text
+n = 79
+Past C   = -21.80%
+Next-W C = -3.56%
+Past Q   = 3.25%
+Next-W Q = 1.82%
+```
+
+Past W30：
+
+```text
+C_High > C_Neutral > C_Low
+```
+
+Future W30：
+
+```text
+C_future,High < C_future,Neutral < C_future,Low
+```
+
+因此仍然呈現明顯 mean-reversion structure。
+
+Relevant forward-W audit run：
+
+```text
+33177328925
+```
+
+---
+
+## 13. Q forward relationship
+
+cleaning 後：
+
+```text
+Corr_P(Q_past, Q_future) = -0.349
+Corr_S(Q_past, Q_future) = -0.319
+```
+
+相比 preprocessing 前，Q 的 past/future association 更清楚。
+
+目前把它視為值得繼續 investigation 的 historical association，不直接宣稱 independent predictive significance。
+
+---
+
+## 14. 現階段結論
+
+目前可以說：
+
+> 3-session forward-anchor preprocessing 大幅降低 Entry duplication，但沒有破壞 C/Q 與 Layer1 的主要歷史統計結構。
+
+目前 evidence 仍支持：
+
+> Past C/Q state contains historical information about the next W30.
+
+主要 relationship 是 mean reverting，而不是 continuation。
+
+但 W30 stride=1，高度 overlapping，所以目前只稱為 historical descriptive association。
+
+---
+
+## 15. Layer2 暫停
+
+先不要繼續 CNN / Layer2。
+
+之前 Layer2 model、checkpoint、live TSLA inference 都是在舊 legal Entry population 上建立。
+
+因為 preprocessing 已經改變正式 dataset：
+
+```text
+舊 Layer2 sample count、training result、checkpoint、live C/Q prediction 全部需要重建
+```
+
+之前舊模型的：
+
+```text
+C_hat = -15.05%
+Q_hat = 9.52%
+```
+
+不能再視為目前正式模型結果。
+
+---
+
+## 16. 下一個最小問題
+
+下一步不要急著重新 train model。
+
+先繼續 Layer1 statistical investigation。
+
+目前最合理的小問題：
+
+> cleaned Entry data 後，High / Neutral / Low 的 C/Q separation 是否穩定且有意義？
+
+優先檢查：
+
+1. C distribution separation
+2. Q distribution separation
+3. forward-W C/Q distribution
+4. mean 之外的 median / quantiles
+5. High / Low 是否在不同 chronological periods 都呈現同方向 relationship
+
+第一層確認後，再決定 Layer2 training dataset。
+
+---
+
+## GitHub state
+
+Formal branch：
+
+```text
+strategy-profitability-restart
+```
+
+Preprocessing 已接進 deterministic path / C-Q pipeline。
+
+Pre-handoff code/audit commit：
+
+```text
+449aeeade02d77c57dd2e88a00f19edff0e06963
+```
+
+Key audit runs：
+
+```text
+C/Q Full Audit:          33177328828
+Layer1 Forward-W Audit:  33177328925
+```
+
+目前不要回到舊 raw-entry Layer2 結果。
