@@ -65,7 +65,149 @@ Thus one historical sample is
 
 ---
 
-## 2. The key causality fact
+## 2. Historical Entry-centered C/Q audit
+
+Using TSLA 5y history with W=30:
+
+- legal Entries: 250;
+- usable centered Entries with a complete left/right region: 230.
+
+Therefore the current historical supervised population is
+
+\[
+\boxed{230\ Entry\ decision\ samples}.
+\]
+
+Each sample is
+
+\[
+\boxed{(X_t,C_t,Q_t)}
+\]
+
+where X_t is the causal price-volume structure available at that Entry time.
+
+### C distribution
+
+- mean: -8.50%
+- median: -7.46%
+- P20: -21.68%
+- P40: -12.20%
+- P60: -3.47%
+- P80: +7.57%
+- P90: +13.28%
+
+### Q distribution
+
+- mean: 4.67%
+- median: 3.42%
+- P20: 1.04%
+- P40: 2.53%
+- P60: 4.69%
+- P80: 7.65%
+- P90: 11.13%
+- Q=0 rate: 6.52%
+
+C and Q are related but are not redundant:
+
+\[
+Pearson(C,Q)=-0.144,
+\]
+
+\[
+Spearman(C,Q)=-0.275.
+\]
+
+The highest C quintile had mean C of +13.67% and median Q of 1.09%, showing that high-opportunity regions are more likely to contain Entries with relatively good timing quality, while the relationship is far from deterministic.
+
+---
+
+## 3. Provisional Good / Bad / Neutral historical labels
+
+For exploratory analysis only, use the 40/60 joint split:
+
+\[
+Good:\quad C\ge C_{60}\land Q\le Q_{40},
+\]
+
+\[
+Bad:\quad C\le C_{40}\land Q\ge Q_{60}.
+\]
+
+Everything else is Neutral.
+
+The 230 usable Entry-centered samples produced:
+
+- Good: 55 (23.9%)
+- Bad: 44 (19.1%)
+- Neutral: 131 (57.0%)
+
+Thus
+
+\[
+\boxed{99/230=43.0\%}
+\]
+
+of historical legal Entries lie in a clearly favorable or unfavorable joint C/Q region under this provisional split.
+
+This split is not yet the new Layer 1 Gate. It is only a way to inspect how much useful tail structure exists in the Entry-centered labels.
+
+---
+
+## 4. Entry samples remain real decision samples even when temporally clustered
+
+Good and Bad Entries are temporally clustered. That does **not** mean clustered Entries should be collapsed into one training sample.
+
+The research unit is the legal Entry decision itself:
+
+\[
+\boxed{1\ legal\ Entry=1\ real\ decision\ opportunity}.
+\]
+
+Two nearby legal Entries t and t+1 have different causal states:
+
+\[
+X_t\neq X_{t+1},
+\]
+
+and different deterministic Strategy outcomes:
+
+\[
+E(t)\neq E(t+1)
+\]
+
+in general.
+
+They also have different centered regions:
+
+\[
+R_t=[t-W+1,t+W],
+\]
+
+\[
+R_{t+1}=[t-W+2,t+W+1].
+\]
+
+Therefore they can legitimately have different C and Q targets.
+
+The temporal cluster audit found strong correlation structure, but its purpose is only to constrain evaluation methodology. It does **not** reduce the 230 decision samples to a handful of regime samples.
+
+Correct interpretation:
+
+\[
+\boxed{230\ Entry\ samples\ remain\ 230\ Entry\ decisions}
+\]
+
+with temporal dependence between nearby samples.
+
+Consequently:
+
+- retain all Entry samples for learning;
+- do not use random train/test splitting;
+- use chronological OOS evaluation with appropriate purge/embargo so near-duplicate market contexts and overlapping centered targets do not leak across partitions.
+
+---
+
+## 5. The key causality fact
 
 At deployment time t, the centered target cannot be calculated exactly.
 
@@ -81,11 +223,9 @@ has not happened yet. Therefore
 \boxed{C_t\text{ and }Q_t\text{ are historical labels, not causal Entry-time features.}}
 \]
 
-This is the central distinction of the experiment.
+Historical training may use future data only to construct the label. Model inputs must remain causal.
 
-Historical training is allowed to use future data only to construct the label. Model inputs must remain causal.
-
-This is standard supervised-learning structure:
+This is standard supervised-learning structure.
 
 ### Historical training
 
@@ -93,9 +233,8 @@ For historical legal Entry t:
 
 1. freeze the information that was available at t;
 2. construct causal input X_t only from data at or before t;
-3. wait historically until the future region is complete;
-4. calculate the realized centered target (C_t,Q_t);
-5. train a mapping from causal Entry-time information to the later realized label.
+3. after the future region is complete, calculate realized centered target (C_t,Q_t);
+4. learn the relationship between the Entry-time structure and the later realized target.
 
 Formally,
 
@@ -107,7 +246,7 @@ Formally,
 
 For a new legal Entry t, only X_t exists. The realized target does not yet exist.
 
-The system therefore produces an estimate or distribution:
+The system therefore estimates
 
 \[
 \boxed{p(C_t,Q_t\mid X_t)}.
@@ -117,39 +256,37 @@ It does not calculate the true centered C_t or Q_t.
 
 ---
 
-## 3. Why centered C/Q cannot be used by a causal pre-model Gate
+## 6. Why centered C/Q cannot itself be the pre-model Gate
 
-A Gate applied before prediction must use information available at Entry time t.
+A Gate applied at Entry time must use information available at Entry time t.
 
-If the Gate requires the centered target itself,
+If the Gate requires the realized centered target,
 
 \[
 G_t=f(C_t,Q_t),
 \]
 
-then the Gate requires future information and is not deployable.
+then it requires future information and is not deployable.
 
-Therefore the following architecture is invalid for real-time use:
+Therefore this architecture is invalid for real-time use:
 
 \[
-\boxed{\text{true centered C/Q}\rightarrow Gate\rightarrow Model}
+\boxed{\text{true centered C/Q}\rightarrow Gate\rightarrow Model}.
 \]
 
-because the first arrow already uses future information.
-
-This is true even if the centered C/Q is perfectly well-defined historically.
+The historical Good/Bad/Neutral labels above can be targets for analysis or supervision, but they cannot be directly known at Entry time.
 
 ---
 
-## 4. Important issue with the original retrospective Layer 1 Gate
+## 7. Important issue with the original retrospective Layer 1 Gate
 
-The original Layer 1 is still valid as a retrospective historical-state classifier. It classifies rolling W30 regions using their realized C/Q and 90-session plus 3-year references.
+The original Layer 1 remains valid as a retrospective historical-state classifier. It classifies rolling W30 regions using realized C/Q and 90-session plus 3-year references.
 
 However, a separate causality question exists for real-time deployment.
 
 The realized C/Q of a W30 region depends on deterministic Strategy outcomes E(e) for Entries inside that region. An Entry near the end of the W30 can remain active after the W30 end because the Strategy path has a longer horizon.
 
-Therefore, at session t, the apparent "past W30 C/Q" may still require prices after t before every E(e) is complete.
+Therefore, at session t, the apparent past-W30 C/Q may still require prices after t before every E(e) is complete.
 
 Consequently:
 
@@ -161,116 +298,55 @@ This does not invalidate the original Layer 1 analysis. It only limits what role
 
 ---
 
-## 5. Three logically valid ways to handle the Gate
+## 8. Next research question: how should Layer 1 Gate work?
 
-### Option A — No causal Gate before the centered-C/Q model
+This is now the next question and should be answered before training a larger model:
 
-Use every legal Entry as a candidate sample:
+> A legal Entry occurs at t. The true centered C_t and Q_t do not yet exist. What causal, past-only information should Layer 1 use to decide whether this Entry should be passed to the C/Q prediction model?
+
+The Gate must satisfy all of the following:
+
+1. It must be computable at Entry time t.
+2. It must not use realized centered C_t or Q_t.
+3. It must not use incomplete Strategy outcomes that require prices after t.
+4. It should remove genuinely low-information / ambiguous Entries rather than merely reproducing the target definition.
+5. It should preserve enough samples that useful Entry-level signal is not discarded.
+6. Its purpose must be explicit: sample selection, not target prediction disguised as a Gate.
+
+Three candidate directions remain logically valid and must now be compared.
+
+### Candidate A — no pre-model Gate
+
+Every legal Entry is passed:
 
 \[
 Entry_t\rightarrow X_t\rightarrow p(C_t,Q_t).
 \]
 
-Then make the decision after prediction, for example using a favorable region such as
+The final decision Gate is applied to the predicted C/Q distribution.
+
+### Candidate B — causal learned Gate
+
+Use historical centered C/Q only as the target for a separate causal classifier:
 
 \[
-C\text{ sufficiently high},\qquad Q\text{ sufficiently low}.
+X_t\rightarrow p(Good/Neutral/Bad).
 \]
 
-In this architecture, the old Layer 1 remains an offline research/state-analysis tool, not a deployment filter.
+This would make Layer 1 learned rather than deterministic.
 
-This is the cleanest architecture if the research question is simply:
+### Candidate C — deterministic past-only Gate
 
-> Can Entry-time information tell us the likely C/Q quality of this Entry-centered region?
+Build a new causal state statistic using only information fully observable by t, such as completed historical Strategy outcomes or purely price-volume state variables.
 
-### Option B — Learned causal Gate first
+This keeps Layer 1 deterministic but creates a new definition that must be audited separately from the original retrospective Layer 1.
 
-Historically derive a Gate label from the completed centered C/Q, but train a separate classifier using only causal past information:
+No candidate is selected yet.
+
+The immediate next task is therefore:
 
 \[
-X_t\rightarrow p(G_t).
+\boxed{\text{design and audit candidate causal Gate definitions using only information available at Entry time}}.
 \]
 
-Only if the predicted Gate passes does the second model estimate detailed C/Q.
-
-This is valid supervised learning, but it changes the meaning of Layer 1: Layer 1 becomes learned rather than the current deterministic retrospective Gate.
-
-This must not be done silently.
-
-### Option C — Define a strictly matured past-only deterministic Gate
-
-Construct a Gate only from Strategy outcomes that are fully completed before t.
-
-For example, include only historical Entries e whose complete deterministic path is already known by t.
-
-This would be causal and deterministic, but introduces lag and changes the current Layer 1 state definition. It may describe an older market state rather than the immediate W30 ending at t.
-
-Again, this would be a new Gate definition and must be evaluated separately.
-
----
-
-## 6. Current recommendation for this temporary branch
-
-Do not force centered C/Q into the old Layer 1 Gate.
-
-For this experiment, keep the roles separated:
-
-### Offline retrospective analysis
-
-Original Layer 1:
-
-\[
-\boxed{realized\ rolling\ W30\ C/Q\rightarrow High/Neutral/Low}
-\]
-
-This tells us what kind of Strategy state actually occurred historically and remains useful for interpretation, regime analysis, and audits such as past-W versus next-W behavior.
-
-### Entry-centered supervised question
-
-At every historical legal Entry t:
-
-\[
-\boxed{X_{t-W+1:t}\rightarrow(C_t,Q_t)_{centered}}
-\]
-
-with future data used only to construct the target.
-
-At deployment:
-
-\[
-\boxed{X_t\rightarrow p(C_t,Q_t)}.
-\]
-
-Only after this prediction should a deployable decision rule decide whether the Entry is attractive.
-
-This means the temporary centered-C/Q experiment should initially be tested **without the original Layer 1 as a hard deployment Gate**.
-
-The original Layer 1 state can still be attached afterward for retrospective stratified analysis, provided no future-derived state is used as an input to the model.
-
----
-
-## 7. Why this is useful
-
-This architecture asks a cleaner causal question than trying to calculate C/Q at the Entry itself:
-
-\[
-\boxed{\text{Given what I know now, what kind of completed local C/Q region is this Entry likely to belong to?}}
-\]
-
-That is exactly what supervised learning can test.
-
-If the answer is no, then past price-volume information does not contain enough information to estimate centered C/Q.
-
-If the answer is yes, then a later decision Gate can be built from the predicted distribution rather than from unavailable future C/Q.
-
----
-
-## 8. Open question before training
-
-Before changing the architecture further, the next audit should explicitly quantify the time availability of the original Layer 1 metrics:
-
-- for each W30 ending at t, what fraction of Entries inside that W30 have completed deterministic outcomes by t?
-- how much later than t is the final information required to compute the original realized C/Q?
-- does a matured-only causal approximation preserve the original High/Neutral/Low ordering?
-
-Until that audit is completed, do not call the original realized W30 Gate a deployable real-time Gate.
+Do not train Layer 2 until this Gate question is resolved conceptually.
