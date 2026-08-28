@@ -7,6 +7,8 @@ import pandas as pd
 
 from .strategy1_cq_data import HORIZON
 
+MERGE_GAP = 3
+
 
 @dataclass(frozen=True)
 class DeterministicPath:
@@ -59,6 +61,57 @@ def build_extrema_sets(events: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     return mins.astype(np.int32), maxs.astype(np.int32)
 
 
+def merge_legal_points_after_scan(indices: np.ndarray, *, gap: int = MERGE_GAP) -> np.ndarray:
+    """Return cleaned legal points after a complete raw scan.
+
+    The earliest unconsumed raw point is the anchor. Every raw point within
+    anchor+gap trading sessions is merged into that anchor. Merged members never
+    propagate the cluster farther forward. The scan then resumes at the next
+    unconsumed raw point.
+    """
+    if gap < 0:
+        raise ValueError("gap must be non-negative")
+    raw = np.unique(np.asarray(indices, dtype=np.int64))
+    if len(raw) == 0:
+        return np.asarray([], dtype=np.int32)
+
+    kept: list[int] = []
+    i = 0
+    while i < len(raw):
+        anchor = int(raw[i])
+        kept.append(anchor)
+        i += 1
+        while i < len(raw) and int(raw[i]) - anchor <= gap:
+            i += 1
+    return np.asarray(kept, dtype=np.int32)
+
+
+def preprocess_legal_points(events: pd.DataFrame, *, gap: int = MERGE_GAP) -> pd.DataFrame:
+    """Scan all raw legal Entry/Exit points, then create cleaned legal-point data."""
+    out = events.copy()
+
+    raw_entry = np.flatnonzero(out["entry_candidate"].to_numpy(dtype=bool))
+    raw_exit5 = np.flatnonzero(out["exit5_event"].to_numpy(dtype=bool))
+    raw_exit10 = np.flatnonzero(out["exit10_event"].to_numpy(dtype=bool))
+
+    clean_entry = merge_legal_points_after_scan(raw_entry, gap=gap)
+    clean_exit5 = merge_legal_points_after_scan(raw_exit5, gap=gap)
+    clean_exit10 = merge_legal_points_after_scan(raw_exit10, gap=gap)
+
+    out["raw_entry_candidate"] = out["entry_candidate"].astype(bool)
+    out["raw_exit5_event"] = out["exit5_event"].astype(bool)
+    out["raw_exit10_event"] = out["exit10_event"].astype(bool)
+
+    out["entry_candidate"] = False
+    out["exit5_event"] = False
+    out["exit10_event"] = False
+    out.loc[clean_entry, "entry_candidate"] = True
+    out.loc[clean_exit5, "exit5_event"] = True
+    out.loc[clean_exit10, "exit10_event"] = True
+
+    return out
+
+
 def _most_recent_before(indices: np.ndarray, index: int) -> int:
     pos = int(np.searchsorted(indices, index, side="left")) - 1
     return -1 if pos < 0 else int(indices[pos])
@@ -72,7 +125,7 @@ def simulate_deterministic_path(
     *,
     horizon: int = HORIZON,
 ) -> DeterministicPath | None:
-    """Simulate the current deterministic Strategy path from one legal Entry."""
+    """Simulate the current deterministic Strategy path from one cleaned legal Entry."""
     end = entry + horizon - 1
     if end >= len(events):
         return None
@@ -108,15 +161,12 @@ def simulate_deterministic_path(
     for i in range(entry + 1, end + 1):
         price = float(close[i])
 
-        # Full 10-day exit ends the campaign and takes priority on the same session.
         if bool(events.at[i, "exit10_event"]):
             cash += shares * price
             shares = 0.0
             exit10 = i
             break
 
-        # The 5-day exit is used at most once. It reduces the current position by 40%,
-        # but the campaign remains active and later Addons are still allowed.
         if exit5 < 0 and bool(events.at[i, "exit5_event"]):
             sold = 0.40 * shares
             cash += sold * price
@@ -159,7 +209,8 @@ def simulate_deterministic_path(
 
 
 def build_deterministic_path_table(events: pd.DataFrame) -> pd.DataFrame:
-    """Build exactly one deterministic Strategy outcome per eligible legal Entry."""
+    """Build one deterministic Strategy outcome per cleaned legal Entry."""
+    events = preprocess_legal_points(events, gap=MERGE_GAP)
     local_mins, local_maxs = build_extrema_sets(events)
     entries = np.flatnonzero(events["entry_candidate"].to_numpy(dtype=bool))
 
@@ -187,5 +238,5 @@ def build_deterministic_path_table(events: pd.DataFrame) -> pd.DataFrame:
     if table.empty:
         raise RuntimeError("No eligible deterministic Strategy paths were produced")
     if table["entry_index"].duplicated().any():
-        raise RuntimeError("deterministic path table must contain at most one path per Entry")
+        raise RuntimeError("deterministic path table must contain at most one path per cleaned Entry")
     return table
