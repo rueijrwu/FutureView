@@ -35,9 +35,16 @@ jobs:
           FUTUREVIEW_NEUTRAL_ALPHA: '0.2'
           FUTUREVIEW_EPOCHS: '300'
           FUTUREVIEW_SEED: '20260827'
+          FUTUREVIEW_COMPARISON_OUTPUT: strategy1-layer2-forward-comparison.csv
         run: |
           set -o pipefail
           python -m futureview.strategy1_layer2_forward_smoke 2>&1 | tee strategy1-layer2-forward-smoke.log
+      - name: Upload comparison
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-layer2-forward-comparison
+          path: strategy1-layer2-forward-comparison.csv
       - name: Summary
         if: always()
         run: |
