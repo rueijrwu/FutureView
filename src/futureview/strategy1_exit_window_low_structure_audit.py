@@ -50,6 +50,10 @@ def build_windows(df: pd.DataFrame, paths: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _q(g: pd.DataFrame, col: str, p: float) -> float:
+    return float(g[col].quantile(p))
+
+
 def main() -> None:
     if W != 30:
         raise ValueError("audit locked to W30")
@@ -75,6 +79,13 @@ def main() -> None:
             f"paths_mean={g.path_count.mean():.3f} share_below_B_mean={g.share_below_B.mean():.6f}"
         )
         print(
+            f"S1 LOWSTRUCT QUANTILES state={state} "
+            f"C20={_q(g,'C',.2):.6f} C50={_q(g,'C',.5):.6f} C80={_q(g,'C',.8):.6f} "
+            f"U20={_q(g,'U',.2):.6f} U50={_q(g,'U',.5):.6f} U80={_q(g,'U',.8):.6f} "
+            f"B20={_q(g,'B_periodic',.2):.6f} B50={_q(g,'B_periodic',.5):.6f} B80={_q(g,'B_periodic',.8):.6f} "
+            f"Q20={_q(g,'Q',.2):.6f} Q50={_q(g,'Q',.5):.6f} Q80={_q(g,'Q',.8):.6f}"
+        )
+        print(
             f"S1 LOWSTRUCT CONDITIONS state={state} "
             f"U_gt_B={(g.U > g.B_periodic).mean():.6f} "
             f"Pmean_lt_B={(g.P_mean < g.B_periodic).mean():.6f} "
@@ -85,7 +96,6 @@ def main() -> None:
 
     low = classified[classified.state == "low"].copy()
     if len(low):
-        # Low-state internal opportunity/selectivity structure.
         print(
             f"S1 LOWSTRUCT LOW_GAPS n={len(low)} "
             f"U_minus_Pmean={(low.U-low.P_mean).mean():.6f} "
