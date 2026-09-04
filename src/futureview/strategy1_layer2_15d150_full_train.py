@@ -24,6 +24,7 @@ from .strategy1_layer2_price_distribution import (
 from .strategy1_layer2_probability_calibration_audit import build_samples
 from .strategy1_layer2_loss_competition_audit import train
 
+# Productionized training candidate chosen from the 15D walk-forward audit.
 TICKER = os.environ.get("FUTUREVIEW_TICKER", "TSLA")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "8y")
 ROLL_DAYS = int(os.environ.get("FUTUREVIEW_ROLL_DAYS", "15"))
@@ -124,7 +125,6 @@ def main() -> None:
     bottom = oos[oos.pred_p_up <= lo]
     top = oos[oos.pred_p_up >= hi]
 
-    # Final fit for the next deployment interval. Only labels fully realized by the latest data point are allowed.
     final_cut = int(df.index.max())
     eligible_final = rows.cutoff_index <= (final_cut - PURGE_DAYS)
     final_candidates = np.flatnonzero(eligible_final.to_numpy())
