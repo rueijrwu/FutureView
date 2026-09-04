@@ -5,33 +5,35 @@ Branch: `layer2-price-distribution-v1`
 
 This note records the current interpretation of the Layer2 price-distribution experiments. It is intentionally neutral: the purpose is to distinguish what the experiments actually show from stronger conclusions that are not yet supported.
 
-## 1. Research question
+## 1. Current research scope
 
 Layer1 and Layer2 have different roles.
 
-Layer1 uses the fixed Strategy and historical Strategy-path statistics to identify High / Neutral / Low regions. U/C/Q are Strategy-relative quantities; Neutral is the region filtered out for the current Layer2 price-distribution experiment.
+Layer1 uses the fixed Strategy and historical Strategy-path statistics to identify regions where Strategy-relative historical structure is sufficiently non-neutral to justify further analysis. U/C/Q are Strategy-relative quantities.
 
-Layer2 does not predict Strategy return. Its current question is narrower:
+The current research scope is now intentionally narrower:
 
-> Conditional on Layer1 selecting a non-Neutral region, does the preceding normalized price/volume window contain a learnable nonlinear signal associated with the distribution of the stock's price change over the next 3 sessions?
+> Study only the H-selected region and ask whether the preceding normalized price/volume window contains a learnable nonlinear signal associated with the distribution of the stock's price change over the next 3 sessions.
+
+Other Layer1 regions are currently out of scope. They are excluded from Layer2 research rather than treated as separate modeling targets.
 
 Current Layer2 input is the already-defined normalized historical price/volume window. The current output is price only; future volume is deliberately excluded for now. The realized target is the 3-session close-to-close log return `r3`. The small CNN produces price-distribution/ranking outputs including q10, q50, q90 and P(up).
 
-The main quantity of interest at this stage is not trading profit and not a claim of exact price prediction. It is whether model score creates stable conditional separation in the realized future-price distribution.
+The main quantity of interest at this stage is not trading profit and not a claim of exact price prediction. It is whether model score creates stable conditional separation in the realized future-price distribution inside H.
 
-## 2. Three experiments and what differs
+## 2. Earlier experiments and what changed
 
 ### Experiment A — final-year OOS CNN with retrospective Layer1 selection
 
-Layer1 H/N/L classifications were prepared retrospectively from the historical Strategy-path construction. Layer2 training and validation were chronological, but the Layer1 selection itself was not reconstructed as an as-of-t state.
+Layer1 classifications were prepared retrospectively from the historical Strategy-path construction. Layer2 training and validation were chronological, but the Layer1 selection itself was not reconstructed as an as-of-t state.
 
 This experiment produced strong separation in the final-year sample. For q50 buckets, realized P(up) was approximately 25% / 40.6% / 83.3% from bottom / middle / top, with top mean r3 around +2.49% and bottom around -2.99%.
 
-This was evidence that, *given the retrospective Layer1-selected set*, the CNN could find strong price/volume structure associated with future 3-session price behavior. It was not yet evidence that the complete Layer1→Layer2 pipeline could have produced the same selection in real time.
+This was evidence that, given the retrospectively selected historical population, the CNN could find strong price/volume structure associated with future 3-session price behavior. It was not yet evidence that the complete Layer1→Layer2 pipeline could have produced the same selection in real time.
 
 ### Experiment B — yearly chronological OOS CNN with retrospective Layer1 selection
 
-The CNN was then held conceptually fixed and evaluated with expanding chronological folds. Each OOS year was predicted only by a model trained on earlier selected samples. This made Layer2 generalization substantially stricter, while retaining the retrospective Layer1 W classification.
+The CNN was then evaluated with expanding chronological folds. Each OOS year was predicted only by a model trained on earlier selected samples. This made Layer2 generalization substantially stricter while retaining retrospective Layer1 selection.
 
 Pooled q50 buckets across 329 OOS samples were:
 
@@ -77,7 +79,7 @@ Subsequent analysis exposed that a single C/Q characterization is insufficient. 
 - entry-relative C/Q: characterizes the opportunity relative to entry/path construction;
 - exit-relative C/Q: characterizes the opportunity relative to exit/path construction.
 
-Q should preserve its historical meaning as path inefficiency relative to the best path:
+Q preserves its historical meaning as path inefficiency relative to the best path:
 
 ```text
 Q = (U - P) / |C|
@@ -85,29 +87,22 @@ Q = (U - P) / |C|
 
 where applicable to the historical definition. During the later distribution audit, normalization by an externally imposed scale was removed; dispersion is instead inspected using the empirical standard deviation because that scale belongs to the data/Strategy structure itself.
 
-The two H/L classifications should not be collapsed prematurely. The important filtering result is that the strongest definition of Neutral is the overlap where the entry and exit views do not jointly identify a directional Strategy regime. In particular, mixed `(H,L)` and `(L,H)` states are treated as neutral for the current Layer2 experiment rather than forcing them into H or L.
+For the current Layer2 study, the entry and exit views are combined only to determine whether a window qualifies for the H-focused population. Conflicting or neutral combinations are excluded. The important point is that Layer1 acts as a filter; Layer2 is not asked to predict the Layer1 label itself.
 
-The purpose of this filter is not to claim that H/L itself predicts the next price move. Its purpose is to remove regions where the historical Strategy statistics are comparatively neutral, so Layer2 is trained on windows for which the Strategy-conditioned historical structure is more informative.
+## 4. H as the current Layer2 study population
 
-## 4. Interpretation of H and L
+The current research does not interpret H as a generic bull label or as a claim that price will rise.
 
-The H/L labels are Strategy-relative, not generic bull/bear labels.
+H is a Strategy-relative historical region in which path structure appears sufficiently informative to justify a second-stage price-distribution model. Absolute realized return can still be negative. The reason to focus on H is empirical: among the tested populations, H-only evaluation produced the clearest and most stable Layer2 ranking signal.
 
-The distribution audit suggests an asymmetric economic interpretation:
-
-- **L region:** the periodic baseline is comparatively strong. A simple interpretation is that periodic accumulation already fits these regions well; Strategy path selection does not clearly add superior return. Negative/weak C can therefore coexist with attractive absolute U because the baseline itself is hard to beat.
-- **H region:** the periodic baseline is comparatively weak, while the Strategy exhibits stronger downside-resistance/path-selection structure. Absolute realized return can still be negative. H therefore does not mean 'price will rise'; it identifies a region where Strategy-relative path information may matter more.
-
-This distinction is important for Layer2. The model should not be expected to solve the same problem in H and L.
-
-A plausible policy-level hypothesis is therefore:
+The current research question is therefore:
 
 ```text
-L -> periodic baseline may already be sufficient
-H -> Layer2 ranking may have higher marginal value
+Given that a window is in H,
+can normalized recent price/volume structure rank future 3-session outcomes?
 ```
 
-This is a hypothesis supported by the current distribution/model evidence, not yet a completed direct policy comparison. A strict `L periodic vs L Layer2-selected` return comparison on identical OOS windows remains to be performed before promoting it to a strategy rule.
+No parallel Layer2 research program is currently planned for other regions.
 
 ## 5. Layer2 training definition retained after simplification
 
@@ -118,16 +113,16 @@ The retained training definition is deliberately small:
 ```text
 input:          90-session normalized price/volume window
 memory:         most recent 150 eligible training samples
-Layer1 filter:  dual entry/exit H/L consensus; mixed H/L states neutral
+Layer1 scope:   H-focused selection from dual entry/exit C/Q filtering
 retraining:     rolling chronological retraining
-model focus:    conditioned model, with H-only evaluation of primary interest
+model focus:    conditioned/shared model architecture, evaluated on H only
 ```
 
 Unvalidated additions are not considered part of the current baseline merely because they appeared in an intermediate experiment.
 
 ## 6. H-only result and retraining cadence
 
-Separating H and L materially changed the interpretation of Layer2. The clearest current signal occurs in H-only OOS evaluation.
+The clearest current Layer2 signal occurs in H-only OOS evaluation.
 
 With the original 8-year data horizon, 90D normalized P/V input, 150-sample memory and 15D retraining, the H-only conditioned model produced approximately:
 
@@ -157,20 +152,19 @@ The 10D run used `period=8y`, `roll_days=10`, `memory=150`; the Action run was `
 
 The important point is that OOS n stayed at 131. The improvement therefore did not come from adding more H samples. The model was simply refreshed more frequently on the same regime-local training definition.
 
-The current strongest configuration is consequently:
+The current strongest observed configuration is consequently:
 
 ```text
 8y history
 90D normalized P/V input
 150 eligible-sample rolling memory
 10D retrain cadence
-dual entry/exit neutral filtering
-H-only primary Layer2 evaluation
+H-only Layer2 evaluation
 ```
 
 This is the strongest observed configuration, not a claim that 10D is globally optimal.
 
-## 7. Longer history audit: more OOS samples did not improve the signal
+## 7. Longer history audit: more OOS samples did not improve the H signal
 
 The H-only history-length audit deliberately increased available history while retaining the local training concept.
 
@@ -188,7 +182,7 @@ The correct conclusion is not that older data are intrinsically useless. The res
 
 Together with the 10D-vs-15D result, this supports a **regime-local hypothesis**:
 
-> For the current Layer2 representation, adapting more frequently to relatively recent eligible structure appears more useful than indiscriminately increasing historical coverage.
+> For the current H-focused Layer2 representation, adapting more frequently to relatively recent eligible structure appears more useful than indiscriminately increasing historical coverage.
 
 This remains a hypothesis to be stress-tested, not a proof of a specific market-regime model.
 
@@ -217,13 +211,12 @@ Nor does it prove trading profitability after transaction costs, position sizing
 
 The current experiments support the following bounded interpretation:
 
-1. Layer1's role is filtering/conditioning, not direct next-price prediction. Entry-relative and exit-relative Strategy statistics provide complementary views; mixed H/L states are currently removed as Neutral.
-2. H and L should not be interpreted symmetrically. L appears closer to a region where periodic accumulation is already strong; H appears to be the region where Strategy-relative path information has greater marginal relevance.
-3. Layer2's strongest current evidence is therefore H-conditioned ranking rather than a universal H+L predictor.
+1. Layer1's role is filtering/conditioning, not direct next-price prediction. Entry-relative and exit-relative Strategy statistics provide complementary views used to identify the H-focused study population.
+2. The current Layer2 research scope is H only. Other Layer1 regions are excluded from the active research question and are not being modeled or compared at this stage.
+3. Layer2's strongest current evidence is H-conditioned ranking.
 4. Under the original 8-year horizon, 90D normalized P/V input and 150-sample rolling memory, reducing retraining cadence from 15D to 10D improved H-only Spearman from about 0.262 to 0.292 and materially widened the extreme-bucket separation without increasing OOS n.
 5. Extending history to 12 years or maximum available history increased OOS n but sharply weakened H-only ranking. The current mapping is therefore not demonstrably stationary over long history.
 6. Taken together, the results favor a regime-local training interpretation: recent relevant samples plus more frequent updating currently work better than maximizing historical sample count.
-7. L may ultimately require no Layer2 ranking at all if a direct same-window comparison confirms that periodic policy is already sufficient. That comparison is still outstanding.
 
 The present result is evidence of conditional statistical structure. It is not yet evidence of a deployable trading strategy, an optimized retraining interval, or a calibrated probability model.
 
@@ -232,11 +225,10 @@ The present result is evidence of conditional statistical structure. It is not y
 The next experiments should remain narrow and attribution-preserving. Useful unresolved questions are:
 
 ```text
-A. On identical L OOS windows, does Layer2 selection improve anything over periodic baseline?
-B. Is 10D genuinely better than nearby retraining cadences, or is the observed improvement sampling variance?
-C. Does the H-only ranking survive other chronological segments/tickers without redefining H/L?
-D. How stable are top/bottom bucket results under bootstrap or fold-level uncertainty?
-E. Only after ranking stability is established: should P(up) calibration be studied separately?
+A. Is 10D genuinely better than nearby retraining cadences, or is the observed improvement sampling variance?
+B. Does the H-only ranking survive other chronological segments/tickers without redefining H?
+C. How stable are top/bottom bucket results under bootstrap or fold-level uncertainty?
+D. Only after ranking stability is established: should P(up) calibration be studied separately?
 ```
 
-No additional target, purge rule, loss mixture, handcrafted indicator or policy optimization should be treated as approved merely because it is a plausible next step.
+No additional target, purge rule, loss mixture, handcrafted indicator, non-H policy comparison or strategy optimization should be treated as approved merely because it is a plausible next step.
