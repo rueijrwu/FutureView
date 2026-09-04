@@ -22,14 +22,14 @@ ROLL_DAYS = int(os.environ.get("FUTUREVIEW_ROLL_DAYS", "10"))
 L2_MEMORY = int(os.environ.get("FUTUREVIEW_L2_MEMORY", "150"))
 L3_MIN_TRAIN = int(os.environ.get("FUTUREVIEW_L3_MIN_TRAIN", "60"))
 L3_EPOCHS = int(os.environ.get("FUTUREVIEW_L3_EPOCHS", "300"))
-HORIZONS = (5, 10, 15, 20, 25, 30)
+HORIZONS = (5, 10, 15, 20, 25, 30, 45)
 OUTPUT = os.environ.get("FUTUREVIEW_OUTPUT", "strategy1-layer3-multihorizon-audit.csv")
 
 
 class MetaMLP(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.net = nn.Sequential(nn.Linear(24, 16), nn.GELU(), nn.Linear(16, 1))
+        self.net = nn.Sequential(nn.Linear(len(HORIZONS) * 4, 16), nn.GELU(), nn.Linear(16, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x).squeeze(1)
