@@ -1,0 +1,58 @@
+name: Strategy 1 Layer 2 Price Distribution Chronological
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [layer2-price-distribution-v1]
+    paths:
+      - 'src/futureview/strategy1_layer2_price_distribution_chrono.py'
+      - 'tests/test_strategy1_layer2_price_distribution_chrono.py'
+      - '.github/workflows/strategy1-layer2-price-distribution-chrono.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5' pytest torch
+          python -m pip install -e . --no-deps
+      - name: Unit tests
+        run: pytest -q tests/test_strategy1_layer2_price_distribution.py tests/test_strategy1_layer2_price_distribution_chrono.py
+      - name: Run chronological validation
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 8y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_MODEL_HISTORY: '90'
+          FUTUREVIEW_PRICE_HORIZON: '3'
+          FUTUREVIEW_EPOCHS: '300'
+          FUTUREVIEW_SEED: '20260904'
+          FUTUREVIEW_MIN_TRAIN: '100'
+          FUTUREVIEW_MIN_VALID: '20'
+          FUTUREVIEW_OUTPUT: strategy1-layer2-price-distribution-chrono.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer2_price_distribution_chrono 2>&1 | tee strategy1-layer2-price-distribution-chrono.log
+      - name: Upload validation output
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-layer2-price-distribution-chrono
+          path: strategy1-layer2-price-distribution-chrono.csv
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Layer2 Price Distribution Chronological'
+            echo
+            echo '```text'
+            grep -E '^S1 L2PDCH' strategy1-layer2-price-distribution-chrono.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
