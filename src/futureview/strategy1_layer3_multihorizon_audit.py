@@ -38,8 +38,6 @@ class MetaMLP(nn.Module):
 class MetaCNN(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        # Input shape: [batch, 4 channels, 6 horizons]. Convolution is only
-        # across the horizon axis; Layer3 never sees raw price/volume.
         self.conv = nn.Sequential(
             nn.Conv1d(4, 12, kernel_size=3, padding=1), nn.GELU(),
             nn.Conv1d(12, 12, kernel_size=3, padding=1), nn.GELU(),
@@ -85,6 +83,26 @@ def _evaluate(frame: pd.DataFrame, score_col: str, name: str) -> None:
     )
 
 
+def _evaluate_single_horizon(frame: pd.DataFrame, h: int) -> None:
+    score_col = f"pup_{h}"
+    ret_col = f"r{h}"
+    score = frame[score_col].to_numpy(float)
+    y = frame[ret_col].to_numpy(float)
+    rho = float(pd.Series(y).corr(pd.Series(score), method="spearman"))
+    lo, hi = np.quantile(score, [0.2, 0.8])
+    bot = frame[frame[score_col] <= lo]
+    top = frame[frame[score_col] >= hi]
+    print(
+        f"S1 L2H SUMMARY horizon={h} n={len(frame)} folds={frame.l2_fold.nunique()} "
+        f"observed_up={(y>0).mean():.6f} spearman={rho:.6f}"
+    )
+    print(
+        f"S1 L2H BUCKET horizon={h} bottom_n={len(bot)} bottom_up={(bot[ret_col]>0).mean():.6f} "
+        f"bottom_ret={bot[ret_col].mean():.6f} top_n={len(top)} top_up={(top[ret_col]>0).mean():.6f} "
+        f"top_ret={top[ret_col].mean():.6f}"
+    )
+
+
 def main() -> None:
     if MODEL_HISTORY != 90:
         raise ValueError("Layer3 audit requires established 90D normalized P/V Layer2 input")
@@ -103,8 +121,6 @@ def main() -> None:
     ).sort_values("end_index").reset_index(drop=True)
     states["consensus"] = [consensus_label(a, b) for a, b in zip(states.state_entry, states.state_exit)]
 
-    # Layer2 may use the established eligible H/L population for its 150-sample
-    # memory, but Layer3 research/evaluation is H-only.
     rows, xs = [], []
     for r in states.itertuples(index=False):
         if r.consensus not in ("high", "low"):
@@ -122,7 +138,6 @@ def main() -> None:
     x = torch.from_numpy(np.stack(xs)).float()
     c = torch.tensor(np.where(rows.consensus.eq("high"), 1.0, -1.0), dtype=torch.float32)
 
-    # Stage 1: strictly OOS Layer2 predictions for all six horizons.
     l2_out = []
     first_cut, last_cut = int(rows.cutoff_index.min()), int(rows.cutoff_index.max())
     fid = 0
@@ -140,7 +155,8 @@ def main() -> None:
         if len(high_va_idx) == 0:
             continue
 
-        feat = rows.iloc[high_va_idx][["cutoff_index", "r30"]].copy().reset_index(drop=True)
+        keep_cols = ["cutoff_index"] + [f"r{h}" for h in HORIZONS]
+        feat = rows.iloc[high_va_idx][keep_cols].copy().reset_index(drop=True)
         for h in HORIZONS:
             y = torch.tensor(rows[f"r{h}"].to_numpy(float), dtype=torch.float32)
             model = train_conditioned(x[torch.from_numpy(tr_idx)], y[torch.from_numpy(tr_idx)], c[torch.from_numpy(tr_idx)])
@@ -160,15 +176,15 @@ def main() -> None:
         raise RuntimeError("no H-only OOS Layer2 rows for Layer3")
     meta = pd.concat(l2_out, ignore_index=True).sort_values("cutoff_index").reset_index(drop=True)
 
+    _evaluate_single_horizon(meta, 20)
+    _evaluate_single_horizon(meta, 30)
+
     feature_cols = [f"{k}_{h}" for h in HORIZONS for k in ("q10", "q50", "q90", "pup")]
-    # Order into 6 horizons x 4 channels, then flatten for MLP.
     xmeta = meta[feature_cols].to_numpy(np.float32).reshape(len(meta), len(HORIZONS), 4)
     xmeta_mlp = torch.from_numpy(xmeta.reshape(len(meta), -1))
     xmeta_cnn = torch.from_numpy(np.transpose(xmeta, (0, 2, 1)))
     ymeta = torch.tensor((meta.r30.to_numpy(float) > 0).astype(np.float32))
 
-    # Stage 2: Layer3 itself is chronological OOS. It trains only on earlier
-    # Layer2-OOS rows, preventing stacking leakage.
     outs = []
     fid = 0
     for block_start in range(int(meta.cutoff_index.min()), int(meta.cutoff_index.max()) + 1, ROLL_DAYS):
