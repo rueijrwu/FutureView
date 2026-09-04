@@ -5,8 +5,10 @@ import numpy as np
 import pandas as pd
 
 from .data import download_ticker_daily, validate_daily_ohlcv
+from .strategy1 import add_strategy1_events
+from .strategy1_deterministic_paths import build_deterministic_path_table
 from .strategy1_layer2_forward_smoke import make_input_features
-from .strategy1_exit_window_cq_audit import build_exit_window_cq, classify_exit_windows
+from .strategy1_exit_window_cq_audit import build_exit_window_cq, classify_causal
 
 TICKER = os.environ.get("FUTUREVIEW_TICKER", "TSLA")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "8y")
@@ -68,9 +70,10 @@ def _report(g: pd.DataFrame, label: str) -> None:
     lo = float(g["pv_score"].quantile(0.20))
     hi = float(g["pv_score"].quantile(0.80))
     b = np.where(g["pv_score"] <= lo, "bottom20", np.where(g["pv_score"] >= hi, "top20", "middle60"))
-    gg = g.copy(); gg["bucket"] = b
+    gg = g.copy()
+    gg["bucket"] = b
     print(f"S1 EXITPV GROUP label={label} n={len(g)} spearman={rho:.6f} pearson={pear:.6f}")
-    for name in ("bottom20","middle60","top20"):
+    for name in ("bottom20", "middle60", "top20"):
         x = gg.loc[gg.bucket == name, "actual_r3"].to_numpy(dtype=float)
         if len(x):
             print(f"S1 EXITPV BUCKET label={label} bucket={name} n={len(x)} mean={x.mean():.6f} median={np.median(x):.6f} p_up={(x>0).mean():.6f}")
@@ -81,8 +84,10 @@ def main() -> None:
         raise ValueError("audit locked to lookback=60 and horizon=3")
     df = download_ticker_daily(TICKER, period=DATA_PERIOD).reset_index(drop=True)
     audit = validate_daily_ohlcv(df, minimum_rows=1800)
-    wq = build_exit_window_cq(df)
-    classified = classify_exit_windows(wq)
+    events = add_strategy1_events(df).reset_index(drop=True)
+    paths = build_deterministic_path_table(events)
+    wq = build_exit_window_cq(df, paths, window=30)
+    classified = classify_causal(wq)
     all_g = _score_group(classified, df, "all")
     nn_g = _score_group(classified.loc[classified.state != "neutral"], df, "non_neutral")
     n_g = _score_group(classified.loc[classified.state == "neutral"], df, "neutral")
