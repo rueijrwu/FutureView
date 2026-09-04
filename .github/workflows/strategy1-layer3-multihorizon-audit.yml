@@ -39,7 +39,7 @@ jobs:
         if: always()
         run: |
           {
-            echo '## Strategy 1 — Layer3 multi-horizon audit'
+            echo '## Strategy 1 — Layer3 multi-horizon audit / single-horizon checks'
             echo
             echo '```text'
             grep -E '^S1 L3 (CONFIG|SUMMARY|BUCKET)' strategy1-layer3-multihorizon-audit.log || true
