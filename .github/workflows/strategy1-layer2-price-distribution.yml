@@ -1,0 +1,57 @@
+name: Strategy 1 Layer 2 Price Distribution v1
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [layer2-price-distribution-v1]
+    paths:
+      - 'src/futureview/strategy1_layer2_price_distribution.py'
+      - 'tests/test_strategy1_layer2_price_distribution.py'
+      - '.github/workflows/strategy1-layer2-price-distribution.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5' pytest torch
+          python -m pip install -e . --no-deps
+      - name: Unit tests
+        run: pytest -q tests/test_strategy1_layer2_price_distribution.py
+      - name: Run price distribution validation
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 8y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_MODEL_HISTORY: '90'
+          FUTUREVIEW_PRICE_HORIZON: '3'
+          FUTUREVIEW_VALID_YEARS: '1'
+          FUTUREVIEW_EPOCHS: '300'
+          FUTUREVIEW_SEED: '20260904'
+          FUTUREVIEW_OUTPUT: strategy1-layer2-price-distribution.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer2_price_distribution 2>&1 | tee strategy1-layer2-price-distribution.log
+      - name: Upload validation output
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-layer2-price-distribution
+          path: strategy1-layer2-price-distribution.csv
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — Layer2 Price Distribution v1'
+            echo
+            echo '```text'
+            grep -E '^S1 L2PD' strategy1-layer2-price-distribution.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
