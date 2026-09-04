@@ -7,7 +7,6 @@ import pandas as pd
 from .data import download_ticker_daily, validate_daily_ohlcv
 from .strategy1 import add_strategy1_events
 from .strategy1_deterministic_paths import build_deterministic_path_table
-from .strategy1_layer2_forward_smoke import make_input_features
 from .strategy1_exit_window_cq_audit import build_exit_window_cq, classify_causal
 
 TICKER = os.environ.get("FUTUREVIEW_TICKER", "TSLA")
@@ -21,15 +20,21 @@ OUTPUT = os.environ.get("FUTUREVIEW_OUTPUT", "strategy1-exit-filter-pv-signal-au
 
 def _flatten_features(df: pd.DataFrame, end: int) -> np.ndarray:
     start = end - LOOKBACK + 1
-    x = make_input_features(df, start, end)
-    return x.reshape(-1).astype(np.float64)
+    close = df.iloc[start:end+1]["close"].to_numpy(dtype=np.float64)
+    volume = df.iloc[start:end+1]["volume"].to_numpy(dtype=np.float64)
+    if len(close) != LOOKBACK or np.any(close <= 0) or np.any(volume <= 0):
+        raise ValueError("invalid price-volume input")
+    lp = np.log(close)
+    lv = np.log(volume)
+    price = lp - lp[-1]
+    sd = float(lv.std())
+    volume_z = (lv - lv.mean()) / (sd if sd > 1e-8 else 1.0)
+    return np.concatenate([price, volume_z]).astype(np.float64)
 
 
 def _score_group(rows: pd.DataFrame, df: pd.DataFrame, label: str) -> pd.DataFrame:
     rows = rows.sort_values("end_index").reset_index(drop=True)
-    feats: list[np.ndarray] = []
-    y: list[float] = []
-    valid_rows: list[pd.Series] = []
+    feats=[]; y=[]; kept=[]
     close = df["close"].to_numpy(dtype=float)
     for _, r in rows.iterrows():
         e = int(r.end_index)
@@ -37,44 +42,30 @@ def _score_group(rows: pd.DataFrame, df: pd.DataFrame, label: str) -> pd.DataFra
             continue
         feats.append(_flatten_features(df, e))
         y.append(float(np.log(close[e + HORIZON] / close[e])))
-        valid_rows.append(r)
+        kept.append(r)
     if not feats:
         return pd.DataFrame()
-    X = np.stack(feats)
-    Y = np.asarray(y, dtype=float)
-    recs: list[dict[str, object]] = []
+    X=np.stack(feats); Y=np.asarray(y)
+    recs=[]
     for i in range(len(X)):
         if i < MIN_PRIOR:
             continue
-        d = np.mean((X[:i] - X[i]) ** 2, axis=1)
-        nn = np.argsort(d)[: min(K, i)]
-        score = float(np.mean(Y[nn]))
-        r = valid_rows[i]
-        recs.append({
-            "group": label,
-            "state": str(r.state),
-            "end_index": int(r.end_index),
-            "end_date": str(r.end_date),
-            "actual_r3": float(Y[i]),
-            "pv_score": score,
-        })
+        d=np.mean((X[:i]-X[i])**2,axis=1)
+        nn=np.argsort(d)[:min(K,i)]
+        r=kept[i]
+        recs.append({"group":label,"state":str(r.state),"end_index":int(r.end_index),"end_date":str(r.end_date),"actual_r3":float(Y[i]),"pv_score":float(np.mean(Y[nn]))})
     return pd.DataFrame(recs)
 
 
 def _report(g: pd.DataFrame, label: str) -> None:
     if g.empty:
-        print(f"S1 EXITPV GROUP label={label} n=0")
-        return
-    rho = float(g["actual_r3"].corr(g["pv_score"], method="spearman"))
-    pear = float(g["actual_r3"].corr(g["pv_score"], method="pearson"))
-    lo = float(g["pv_score"].quantile(0.20))
-    hi = float(g["pv_score"].quantile(0.80))
-    b = np.where(g["pv_score"] <= lo, "bottom20", np.where(g["pv_score"] >= hi, "top20", "middle60"))
-    gg = g.copy()
-    gg["bucket"] = b
+        print(f"S1 EXITPV GROUP label={label} n=0"); return
+    rho=float(g.actual_r3.corr(g.pv_score,method="spearman")); pear=float(g.actual_r3.corr(g.pv_score,method="pearson"))
+    lo=float(g.pv_score.quantile(.2)); hi=float(g.pv_score.quantile(.8))
+    gg=g.copy(); gg["bucket"]=np.where(gg.pv_score<=lo,"bottom20",np.where(gg.pv_score>=hi,"top20","middle60"))
     print(f"S1 EXITPV GROUP label={label} n={len(g)} spearman={rho:.6f} pearson={pear:.6f}")
-    for name in ("bottom20", "middle60", "top20"):
-        x = gg.loc[gg.bucket == name, "actual_r3"].to_numpy(dtype=float)
+    for name in ("bottom20","middle60","top20"):
+        x=gg.loc[gg.bucket==name,"actual_r3"].to_numpy(dtype=float)
         if len(x):
             print(f"S1 EXITPV BUCKET label={label} bucket={name} n={len(x)} mean={x.mean():.6f} median={np.median(x):.6f} p_up={(x>0).mean():.6f}")
 
@@ -82,24 +73,19 @@ def _report(g: pd.DataFrame, label: str) -> None:
 def main() -> None:
     if LOOKBACK != 60 or HORIZON != 3:
         raise ValueError("audit locked to lookback=60 and horizon=3")
-    df = download_ticker_daily(TICKER, period=DATA_PERIOD).reset_index(drop=True)
-    audit = validate_daily_ohlcv(df, minimum_rows=1800)
-    events = add_strategy1_events(df).reset_index(drop=True)
-    paths = build_deterministic_path_table(events)
-    wq = build_exit_window_cq(df, paths, window=30)
-    classified = classify_causal(wq)
-    all_g = _score_group(classified, df, "all")
-    nn_g = _score_group(classified.loc[classified.state != "neutral"], df, "non_neutral")
-    n_g = _score_group(classified.loc[classified.state == "neutral"], df, "neutral")
-    out = pd.concat([all_g, nn_g, n_g], ignore_index=True)
-    out.to_csv(OUTPUT, index=False)
+    df=download_ticker_daily(TICKER,period=DATA_PERIOD).reset_index(drop=True)
+    audit=validate_daily_ohlcv(df,minimum_rows=1800)
+    events=add_strategy1_events(df).reset_index(drop=True)
+    paths=build_deterministic_path_table(events)
+    wq=build_exit_window_cq(df,paths,window=30)
+    classified=classify_causal(wq)
+    all_g=_score_group(classified,df,"all")
+    nn_g=_score_group(classified.loc[classified.state!="neutral"],df,"non_neutral")
+    n_g=_score_group(classified.loc[classified.state=="neutral"],df,"neutral")
+    out=pd.concat([all_g,nn_g,n_g],ignore_index=True); out.to_csv(OUTPUT,index=False)
     print(f"S1 EXITPV START ticker={TICKER} rows={audit.rows} classified={len(classified)} lookback={LOOKBACK} horizon={HORIZON} k={K} min_prior={MIN_PRIOR}")
-    _report(all_g, "all")
-    _report(nn_g, "non_neutral")
-    _report(n_g, "neutral")
-    print(f"S1 EXITPV OUTPUT file={OUTPUT} rows={len(out)}")
-    print("S1 EXITPV COMPLETE")
-
+    _report(all_g,"all"); _report(nn_g,"non_neutral"); _report(n_g,"neutral")
+    print(f"S1 EXITPV OUTPUT file={OUTPUT} rows={len(out)}"); print("S1 EXITPV COMPLETE")
 
 if __name__ == "__main__":
     main()
