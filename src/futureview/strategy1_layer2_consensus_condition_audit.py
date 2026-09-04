@@ -19,7 +19,7 @@ from .strategy1_layer2_loss_competition_audit import train as train_baseline
 
 TICKER = os.environ.get("FUTUREVIEW_TICKER", "TSLA")
 DATA_PERIOD = os.environ.get("FUTUREVIEW_DATA_PERIOD", "8y")
-ROLL_DAYS = 15
+ROLL_DAYS = int(os.environ.get("FUTUREVIEW_ROLL_DAYS", "15"))
 TRAIN_MEMORY = 150
 OUTPUT = os.environ.get("FUTUREVIEW_OUTPUT", "strategy1-layer2-consensus-condition-audit.csv")
 
@@ -32,8 +32,6 @@ class ConditionedNet(nn.Module):
             nn.Conv1d(16, 24, 5, padding="same"), nn.GELU(),
             nn.AdaptiveAvgPool1d(1),
         )
-        # Concatenate one scalar regime condition after the shared P/V encoder:
-        # high=+1, low=-1. Neutral is not trained in Layer2.
         self.shared = nn.Sequential(nn.Linear(25, 24), nn.GELU())
         self.q_center = nn.Linear(24, 1)
         self.q_lower_gap = nn.Linear(24, 1)
@@ -132,6 +130,7 @@ def main() -> None:
         results.append(out)
     if not results: raise RuntimeError("no eligible conditioned folds")
     pd.concat(results,ignore_index=True).to_csv(OUTPUT,index=False)
+    print(f"S1 COND CONFIG period={DATA_PERIOD} roll_days={ROLL_DAYS} memory={TRAIN_MEMORY}")
     print(f"S1 COND LABEL high={(rows.consensus=='high').sum()} low={(rows.consensus=='low').sum()}")
     print(f"S1 COND OUTPUT file={OUTPUT}")
     print("S1 COND COMPLETE")
