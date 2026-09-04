@@ -11,16 +11,21 @@ on:
 jobs:
   audit:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        w: [30, 45]
     env:
       FUTUREVIEW_TICKER: TSLA
       FUTUREVIEW_DATA_PERIOD: 8y
+      FUTUREVIEW_W: ${{ matrix.w }}
       FUTUREVIEW_MODEL_HISTORY: 90
       FUTUREVIEW_EPOCHS: 300
       FUTUREVIEW_ROLL_DAYS: 10
       FUTUREVIEW_L2_MEMORY: 150
       FUTUREVIEW_L3_MIN_TRAIN: 60
       FUTUREVIEW_L3_EPOCHS: 300
-      FUTUREVIEW_OUTPUT: strategy1-layer3-multihorizon-audit.csv
+      FUTUREVIEW_OUTPUT: strategy1-layer3-multihorizon-audit-W${{ matrix.w }}.csv
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,22 +39,22 @@ jobs:
       - name: Run audit
         run: |
           set -o pipefail
-          python -m futureview.strategy1_layer3_multihorizon_audit 2>&1 | tee strategy1-layer3-multihorizon-audit.log
+          python -m futureview.strategy1_layer3_multihorizon_audit 2>&1 | tee strategy1-layer3-multihorizon-audit-W${{ matrix.w }}.log
       - name: Summary
         if: always()
         run: |
           {
-            echo '## Strategy 1 — Layer3 multi-horizon audit / single-horizon checks'
+            echo '## Strategy 1 — W=${{ matrix.w }} horizon sweep / Layer3 audit'
             echo
             echo '```text'
-            grep -E '^S1 L3 (CONFIG|SUMMARY|BUCKET)' strategy1-layer3-multihorizon-audit.log || true
+            grep -E '^S1 (L2H|L3) (CONFIG|SUMMARY|BUCKET)' strategy1-layer3-multihorizon-audit-W${{ matrix.w }}.log || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: strategy1-layer3-multihorizon-audit
+          name: strategy1-layer3-multihorizon-audit-W${{ matrix.w }}
           path: |
-            strategy1-layer3-multihorizon-audit.csv
-            strategy1-layer3-multihorizon-audit.log
+            strategy1-layer3-multihorizon-audit-W${{ matrix.w }}.csv
+            strategy1-layer3-multihorizon-audit-W${{ matrix.w }}.log
           if-no-files-found: warn
