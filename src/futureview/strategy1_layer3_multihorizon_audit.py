@@ -9,7 +9,7 @@ from torch import nn
 from .data import download_ticker_daily, validate_daily_ohlcv
 from .strategy1 import add_strategy1_events
 from .strategy1_deterministic_paths import build_deterministic_path_table
-from .strategy1_entry_exit_cq_compare import build_cq
+from .strategy1_entry_exit_cq_compare import build_cq, W as LAYER1_W
 from .strategy1_exit_window_cq_audit import classify_causal
 from .strategy1_layer2_forward_smoke import make_input_features
 from .strategy1_layer2_consensus_group_audit import consensus_label
@@ -93,11 +93,11 @@ def _evaluate_single_horizon(frame: pd.DataFrame, h: int) -> None:
     bot = frame[frame[score_col] <= lo]
     top = frame[frame[score_col] >= hi]
     print(
-        f"S1 L2H SUMMARY horizon={h} n={len(frame)} folds={frame.l2_fold.nunique()} "
+        f"S1 L2H SUMMARY W={LAYER1_W} horizon={h} n={len(frame)} folds={frame.l2_fold.nunique()} "
         f"observed_up={(y>0).mean():.6f} spearman={rho:.6f}"
     )
     print(
-        f"S1 L2H BUCKET horizon={h} bottom_n={len(bot)} bottom_up={(bot[ret_col]>0).mean():.6f} "
+        f"S1 L2H BUCKET W={LAYER1_W} horizon={h} bottom_n={len(bot)} bottom_up={(bot[ret_col]>0).mean():.6f} "
         f"bottom_ret={bot[ret_col].mean():.6f} top_n={len(top)} top_up={(top[ret_col]>0).mean():.6f} "
         f"top_ret={top[ret_col].mean():.6f}"
     )
@@ -176,8 +176,8 @@ def main() -> None:
         raise RuntimeError("no H-only OOS Layer2 rows for Layer3")
     meta = pd.concat(l2_out, ignore_index=True).sort_values("cutoff_index").reset_index(drop=True)
 
-    _evaluate_single_horizon(meta, 20)
-    _evaluate_single_horizon(meta, 30)
+    for h in HORIZONS:
+        _evaluate_single_horizon(meta, h)
 
     feature_cols = [f"{k}_{h}" for h in HORIZONS for k in ("q10", "q50", "q90", "pup")]
     xmeta = meta[feature_cols].to_numpy(np.float32).reshape(len(meta), len(HORIZONS), 4)
@@ -218,7 +218,7 @@ def main() -> None:
     _evaluate(out, "score_cnn", "multihorizon_cnn")
     out.to_csv(OUTPUT, index=False)
     print(
-        f"S1 L3 CONFIG period={DATA_PERIOD} horizons={','.join(map(str,HORIZONS))} "
+        f"S1 L3 CONFIG W={LAYER1_W} period={DATA_PERIOD} horizons={','.join(map(str,HORIZONS))} "
         f"l2_memory={L2_MEMORY} roll_days={ROLL_DAYS} l3_min_train={L3_MIN_TRAIN} l2_oos_high={len(meta)} l3_oos={len(out)}"
     )
     print(f"S1 L3 OUTPUT file={OUTPUT}")
