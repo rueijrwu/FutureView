@@ -39,10 +39,7 @@ def build_exit_window_cq(df: pd.DataFrame, paths: pd.DataFrame, *, window: int) 
         r = g["campaign_return"].to_numpy(dtype=float)
         u = float(np.max(r))
         b = float(_periodic_baseline(close, start, end))
-        qv = u - r
-        qv[np.abs(qv) <= 1e-12] = 0.0
-        if np.any(qv < -1e-12):
-            raise RuntimeError("Q invariant violated")
+        q = float(np.std(r, ddof=0))
         rows.append({
             "start_index": start,
             "end_index": end,
@@ -51,8 +48,11 @@ def build_exit_window_cq(df: pd.DataFrame, paths: pd.DataFrame, *, window: int) 
             "U": u,
             "B_periodic": b,
             "C": u - b,
-            "Q": float(qv.mean()),
-            "Q_median": float(np.median(qv)),
+            "Q": q,
+            "path_return_mean": float(np.mean(r)),
+            "path_return_median": float(np.median(r)),
+            "path_return_min": float(np.min(r)),
+            "path_return_max": float(np.max(r)),
             "path_count": int(len(g)),
         })
     out = pd.DataFrame(rows)
@@ -91,7 +91,7 @@ def main() -> None:
     classified = classify_causal(wq)
 
     print(f"S1 EXITCQ START ticker={TICKER} rows={audit.rows} paths={len(paths)} usable_windows={len(wq)} classified={len(classified)}")
-    print("S1 EXITCQ DEFINITION membership=final_exit_in_W unfinished_paths=excluded U=max_completed_path_return C=U-B_periodic Q=mean(U-path_return)")
+    print("S1 EXITCQ DEFINITION membership=final_exit_in_W unfinished_paths=excluded U=max_completed_path_return C=U-B_periodic Q=population_std(completed_path_returns)")
     print(f"S1 EXITCQ COVERAGE total_possible={len(df)-W+1} usable={len(wq)} zero_path={(len(df)-W+1)-len(wq)} path_count_mean={wq.path_count.mean():.3f} path_count_median={wq.path_count.median():.3f}")
     for col in ("U", "C", "Q"):
         v = wq[col]
@@ -102,12 +102,11 @@ def main() -> None:
         for state in ("high", "neutral", "low"):
             g = classified[classified.state == state]
             if len(g):
-                print(f"S1 EXITCQ STATE state={state} n={len(g)} C_mean={g.C.mean():.6f} Q_mean={g.Q.mean():.6f} U_mean={g.U.mean():.6f}")
+                print(f"S1 EXITCQ STATE state={state} n={len(g)} C_mean={g.C.mean():.6f} Q_mean={g.Q.mean():.6f} U_mean={g.U.mean():.6f} paths_mean={g.path_count.mean():.3f}")
 
-        # Next non-overlapping W observation: next row whose start is after current end.
         ordered = classified.sort_values("start_index").reset_index(drop=True)
         pairs = []
-        for i, r in ordered.iterrows():
+        for _, r in ordered.iterrows():
             nxt = ordered.loc[ordered.start_index.astype(int) > int(r.end_index)]
             if nxt.empty:
                 continue
