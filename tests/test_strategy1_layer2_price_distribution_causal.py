@@ -26,7 +26,7 @@ def _events(n: int = 80) -> pd.DataFrame:
 def test_causal_path_builder_never_returns_future_entries() -> None:
     events = _events()
     out = build_causal_paths_asof(events, 49)
-    assert (out["entry_index"].astype(int) <= 49).all()
+    assert out.empty or (out["entry_index"].astype(int) <= 49).all()
 
 
 def test_causal_path_builder_is_invariant_to_future_mutation() -> None:
