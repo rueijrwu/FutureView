@@ -1,0 +1,47 @@
+name: Strategy 1 Entry Exit C Q Compare
+
+on:
+  push:
+    branches: [layer2-price-distribution-v1]
+    paths:
+      - 'src/futureview/strategy1_entry_exit_cq_compare.py'
+      - '.github/workflows/strategy1-entry-exit-cq-compare.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5'
+          python -m pip install -e . --no-deps
+      - name: Run audit
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 8y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_OUTPUT: strategy1-entry-exit-cq-compare.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_entry_exit_cq_compare 2>&1 | tee strategy1-entry-exit-cq-compare.log
+      - name: Summary
+        run: |
+          {
+            echo '## Strategy 1 — Entry vs Exit C/Q comparison'
+            echo
+            echo '```text'
+            grep -E '^S1 CQ2' strategy1-entry-exit-cq-compare.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-entry-exit-cq-compare
+          path: |
+            strategy1-entry-exit-cq-compare.csv
+            strategy1-entry-exit-cq-compare.log
