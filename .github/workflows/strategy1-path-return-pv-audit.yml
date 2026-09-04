@@ -1,0 +1,53 @@
+name: Strategy 1 Path Return PV Audit
+
+on:
+  push:
+    branches: [layer2-price-distribution-v1]
+    paths:
+      - 'src/futureview/strategy1_path_return_pv_audit.py'
+      - '.github/workflows/strategy1-path-return-pv-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5'
+          python -m pip install -e . --no-deps
+      - name: Run audit
+        shell: bash
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 8y
+          FUTUREVIEW_LOOKBACKS: '30,60,90'
+          FUTUREVIEW_K: '5'
+          FUTUREVIEW_MIN_PRIOR: '40'
+          FUTUREVIEW_SEED: '20260904'
+          FUTUREVIEW_OUTPUT: 'strategy1-path-return-pv-audit.csv'
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_path_return_pv_audit 2>&1 | tee strategy1-path-return-pv-audit.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## Strategy 1 — path return vs normalized price-volume structure audit'
+            echo
+            echo '```text'
+            grep -E '^S1 PRPVA' strategy1-path-return-pv-audit.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-path-return-pv-audit
+          path: |
+            strategy1-path-return-pv-audit.csv
+            strategy1-path-return-pv-audit.log
