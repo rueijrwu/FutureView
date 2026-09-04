@@ -1,0 +1,41 @@
+name: Strategy 1 Layer2 Protocol Train
+on:
+  workflow_dispatch:
+  push:
+    branches: [layer2-price-distribution-v1]
+    paths:
+      - 'src/futureview/strategy1_layer2_protocol_train.py'
+      - '.github/workflows/strategy1-layer2-protocol-train.yml'
+jobs:
+  train:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      FUTUREVIEW_TICKER: TSLA
+      FUTUREVIEW_DATA_PERIOD: 8y
+      FUTUREVIEW_MODEL_HISTORY: '90'
+      FUTUREVIEW_OUTPUT: strategy1-layer2-protocol-train.csv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5' 'torch>=2.4'
+          python -m pip install -e . --no-deps
+      - name: Train
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer2_protocol_train 2>&1 | tee strategy1-layer2-protocol-train.log
+      - name: Summary
+        if: always()
+        run: |
+          { echo '## Strategy 1 — protocol train'; echo; echo '```text'; grep -E '^S1 PROTOCOL' strategy1-layer2-protocol-train.log || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-layer2-protocol-train
+          path: |
+            strategy1-layer2-protocol-train.csv
+            strategy1-layer2-protocol-train.log
