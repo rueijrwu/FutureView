@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        w: [30, 45]
+        w: [20, 30, 45, 60]
     env:
       FUTUREVIEW_TICKER: TSLA
       FUTUREVIEW_DATA_PERIOD: 8y
