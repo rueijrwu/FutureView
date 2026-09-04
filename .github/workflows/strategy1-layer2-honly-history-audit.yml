@@ -1,0 +1,54 @@
+name: Strategy 1 Layer2 H-only History Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [layer2-price-distribution-v1]
+    paths:
+      - '.github/workflows/strategy1-layer2-honly-history-audit.yml'
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        period: ['8y','12y','max']
+    env:
+      FUTUREVIEW_TICKER: TSLA
+      FUTUREVIEW_DATA_PERIOD: ${{ matrix.period }}
+      FUTUREVIEW_MODEL_HISTORY: '90'
+      FUTUREVIEW_EPOCHS: '300'
+      FUTUREVIEW_OUTPUT: strategy1-layer2-consensus-condition-${{ matrix.period }}.csv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5' 'torch>=2.4'
+          python -m pip install -e . --no-deps
+      - name: Run H-only conditioned audit
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer2_consensus_condition_audit 2>&1 | tee strategy1-layer2-consensus-condition-${{ matrix.period }}.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## H-only history audit — ${{ matrix.period }}"
+            echo
+            echo '```text'
+            grep -E '^S1 COND (SUMMARY model=conditioned_on_high|BUCKET model=conditioned_on_high|LABEL)' strategy1-layer2-consensus-condition-${{ matrix.period }}.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-layer2-honly-history-${{ matrix.period }}
+          path: |
+            strategy1-layer2-consensus-condition-${{ matrix.period }}.csv
+            strategy1-layer2-consensus-condition-${{ matrix.period }}.log
