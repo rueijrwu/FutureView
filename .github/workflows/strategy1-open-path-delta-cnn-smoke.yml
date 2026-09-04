@@ -1,0 +1,57 @@
+name: Strategy 1 Open Path Delta CNN Smoke
+
+on:
+  push:
+    branches: [layer2-price-distribution-v1]
+    paths:
+      - 'src/futureview/strategy1_open_path_delta_cnn_smoke.py'
+      - '.github/workflows/strategy1-open-path-delta-cnn-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5' torch
+          python -m pip install -e . --no-deps
+      - name: Run smoke
+        shell: bash
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 8y
+          FUTUREVIEW_LOOKBACK: '30'
+          FUTUREVIEW_SNAPSHOT_STRIDE: '5'
+          FUTUREVIEW_EPOCHS: '160'
+          FUTUREVIEW_MIN_TRAIN: '120'
+          FUTUREVIEW_MIN_VALID: '30'
+          FUTUREVIEW_SEED: '20260904'
+          FUTUREVIEW_OUTPUT: strategy1-open-path-delta-cnn-smoke.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_open_path_delta_cnn_smoke 2>&1 | tee strategy1-open-path-delta-cnn-smoke.log
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Strategy 1 — open-path 30d CNN delta-return smoke'
+            echo
+            echo '```text'
+            grep -E '^S1 OPDCNN' strategy1-open-path-delta-cnn-smoke.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-open-path-delta-cnn-smoke
+          path: |
+            strategy1-open-path-delta-cnn-smoke.csv
+            strategy1-open-path-delta-cnn-smoke.log
+          if-no-files-found: warn
