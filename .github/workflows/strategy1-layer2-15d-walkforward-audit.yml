@@ -1,0 +1,47 @@
+name: Strategy 1 Layer2 15D Walk-Forward Audit
+on:
+  workflow_dispatch:
+  push:
+    branches: [layer2-price-distribution-v1]
+    paths:
+      - 'src/futureview/strategy1_layer2_15d_walkforward_audit.py'
+      - '.github/workflows/strategy1-layer2-15d-walkforward-audit.yml'
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      FUTUREVIEW_TICKER: TSLA
+      FUTUREVIEW_DATA_PERIOD: 8y
+      FUTUREVIEW_W: '30'
+      FUTUREVIEW_MODEL_HISTORY: '90'
+      FUTUREVIEW_PRICE_HORIZON: '3'
+      FUTUREVIEW_EPOCHS: '300'
+      FUTUREVIEW_ROLL_DAYS: '15'
+      FUTUREVIEW_PURGE_DAYS: '3'
+      FUTUREVIEW_TRAIN_MEMORIES: '100,150,200'
+      FUTUREVIEW_OUTPUT: strategy1-layer2-15d-walkforward-audit.csv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5' 'torch>=2.4'
+          python -m pip install -e . --no-deps
+      - name: Run audit
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer2_15d_walkforward_audit 2>&1 | tee strategy1-layer2-15d-walkforward-audit.log
+      - name: Summary
+        if: always()
+        run: |
+          { echo '## Strategy 1 — 15D walk-forward audit'; echo; echo '```text'; grep -E '^S1 WF' strategy1-layer2-15d-walkforward-audit.log || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: strategy1-layer2-15d-walkforward-audit
+          path: |
+            strategy1-layer2-15d-walkforward-audit.csv
+            strategy1-layer2-15d-walkforward-audit.log
