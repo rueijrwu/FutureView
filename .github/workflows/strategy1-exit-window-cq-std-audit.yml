@@ -1,0 +1,48 @@
+name: Strategy 1 Exit Window CQ Std Audit
+
+on:
+  push:
+    branches:
+      - layer2-price-distribution-v1
+    paths:
+      - 'src/futureview/strategy1_exit_window_cq_audit.py'
+      - '.github/workflows/strategy1-exit-window-cq-std-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5'
+          python -m pip install -e . --no-deps
+      - name: Run audit
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 8y
+          FUTUREVIEW_W: '30'
+          FUTUREVIEW_OUTPUT: strategy1-exit-window-cq-std-audit.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_exit_window_cq_audit 2>&1 | tee strategy1-exit-window-cq-std-audit.log
+      - name: Summary
+        run: |
+          {
+            echo '## Strategy 1 — exit-window C/Q with Q=std(path returns)'
+            echo
+            echo '```text'
+            grep -E '^S1 EXITCQ' strategy1-exit-window-cq-std-audit.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-exit-window-cq-std-audit
+          path: |
+            strategy1-exit-window-cq-std-audit.csv
+            strategy1-exit-window-cq-std-audit.log
