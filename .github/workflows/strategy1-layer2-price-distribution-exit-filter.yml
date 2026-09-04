@@ -1,0 +1,55 @@
+name: Strategy 1 Layer2 Price Distribution Exit Filter
+
+on:
+  push:
+    branches: [layer2-price-distribution-v1]
+    paths:
+      - 'src/futureview/strategy1_layer2_price_distribution_exit_filter.py'
+      - 'src/futureview/strategy1_exit_window_cq_audit.py'
+      - '.github/workflows/strategy1-layer2-price-distribution-exit-filter.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5' 'torch>=2.4'
+          python -m pip install -e . --no-deps
+      - name: Run audit
+        env:
+          FUTUREVIEW_TICKER: TSLA
+          FUTUREVIEW_DATA_PERIOD: 8y
+          FUTUREVIEW_W: 30
+          FUTUREVIEW_MODEL_HISTORY: 90
+          FUTUREVIEW_PRICE_HORIZON: 3
+          FUTUREVIEW_EPOCHS: 300
+          FUTUREVIEW_MIN_TRAIN: 100
+          FUTUREVIEW_MIN_VALID: 20
+          FUTUREVIEW_OUTPUT: strategy1-layer2-price-distribution-exit-filter.csv
+          FUTUREVIEW_LAYER1_OUTPUT: strategy1-layer1-exit-filter-state.csv
+        run: |
+          set -o pipefail
+          python -m futureview.strategy1_layer2_price_distribution_exit_filter 2>&1 | tee strategy1-layer2-price-distribution-exit-filter.log
+      - name: Summary
+        run: |
+          {
+            echo '## Strategy 1 — Layer2 exit-filter validation'
+            echo
+            echo '```text'
+            grep -E '^S1 L2PDEXIT' strategy1-layer2-price-distribution-exit-filter.log || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: strategy1-layer2-price-distribution-exit-filter
+          path: |
+            strategy1-layer2-price-distribution-exit-filter.csv
+            strategy1-layer1-exit-filter-state.csv
+            strategy1-layer2-price-distribution-exit-filter.log
