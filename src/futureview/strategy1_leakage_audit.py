@@ -25,6 +25,22 @@ def main() -> None:
         raise ValueError("leakage audit expects established 90D Layer2 input")
 
     df = download_ticker_daily(TICKER, period=DATA_PERIOD).reset_index(drop=True)
+
+    # Keep the audit deterministic in the presence of a transient bad market-data row.
+    # Remove only rows with missing required OHLCV values, and print exactly what was removed.
+    required = ["open", "high", "low", "close", "volume"]
+    missing_mask = df[required].isna().any(axis=1)
+    if missing_mask.any():
+        bad = df.loc[missing_mask, [c for c in ["date", *required] if c in df.columns]].copy()
+        for i, row in bad.iterrows():
+            cols = [c for c in required if pd.isna(row.get(c, np.nan))]
+            date = str(row.get("date", "unknown"))
+            print(f"S1 LEAK DATA_DROP row={int(i)} date={date} missing={','.join(cols)}")
+        df = df.loc[~missing_mask].reset_index(drop=True)
+        print(f"S1 LEAK DATA_CLEAN dropped_rows={int(missing_mask.sum())} remaining_rows={len(df)}")
+    else:
+        print(f"S1 LEAK DATA_CLEAN dropped_rows=0 remaining_rows={len(df)}")
+
     validate_daily_ohlcv(df, minimum_rows=1800)
     events = add_strategy1_events(df).reset_index(drop=True)
     paths = build_deterministic_path_table(events)
