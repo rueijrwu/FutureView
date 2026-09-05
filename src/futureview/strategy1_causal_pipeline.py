@@ -4,8 +4,22 @@ import numpy as np
 import pandas as pd
 
 from .strategy1_exit_window_cq_audit import classify_causal, final_exit_index
-from .strategy1_layer2_consensus_group_audit import consensus_label
 from .strategy1_representation_a import _periodic_baseline
+
+
+def consensus_label(a: str, b: str) -> str:
+    """Pure Layer1 state combiner; intentionally has no torch/Layer2 dependency."""
+    a = str(a)
+    b = str(b)
+    if a == "neutral" and b == "neutral":
+        return "neutral"
+    if {a, b} == {"high", "low"}:
+        return "neutral"
+    if a == "high" or b == "high":
+        return "high"
+    if a == "low" or b == "low":
+        return "low"
+    return "neutral"
 
 
 def build_complete_window_cq(
