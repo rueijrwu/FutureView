@@ -1,0 +1,27 @@
+name: Strategy 1 Causal Smoke
+
+on:
+  push:
+    branches: [layer2-price-distribution-v1]
+    paths:
+      - 'src/futureview/strategy1_causal_pipeline.py'
+      - 'src/futureview/strategy1_causal_smoke.py'
+      - '.github/workflows/strategy1-causal-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'numba>=0.61' 'scikit-learn>=1.5' 'torch>=2.4'
+          python -m pip install -e . --no-deps
+      - name: Run causal smoke
+        run: python -m futureview.strategy1_causal_smoke
