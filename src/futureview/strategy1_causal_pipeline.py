@@ -15,14 +15,14 @@ def build_complete_window_cq(
     membership: str,
     window: int,
 ) -> pd.DataFrame:
-    """Build C/Q only from Strategy paths fully contained in the current window.
+    """Build C/Q/U only from Strategy paths fully contained in the window.
 
-    Approved rule for a window [start, end]:
+    Approved rule for [start, end]:
         start <= path.entry_index <= path.final_exit_index <= end
 
-    Therefore unfinished paths are excluded, and an exit-side path whose entry
-    lies before the window is also excluded. No extra +10D availability rule is
-    imposed here.
+    Q follows the approved definition:
+        Q(e) = U_W - R(e)
+        Q_W  = mean_e Q(e)
     """
     if membership not in {"entry", "exit"}:
         raise ValueError("membership must be entry or exit")
@@ -54,11 +54,12 @@ def build_complete_window_cq(
         r = returns[legal]
         u = float(np.max(r))
         b = float(_periodic_baseline(close, start, end))
+        q = float(np.mean(u - r))
         starts.append(start)
         ends.append(end)
         us.append(u)
         bs.append(b)
-        qs.append(float(np.std(r, ddof=0)))
+        qs.append(q)
         counts.append(int(r.size))
         min_entries.append(int(np.min(entry_idx[legal])))
         max_exits.append(int(np.max(exit_idx[legal])))
@@ -117,8 +118,7 @@ def assert_complete_window_states(states: pd.DataFrame) -> None:
             raise AssertionError(f"{side} C/Q includes an unfinished path")
 
 
-# Keep old names temporarily so downstream code imports do not break while the
-# research scripts are migrated to the approved terminology.
+# Temporary compatibility aliases while downstream scripts are migrated.
 build_causal_cq = build_complete_window_cq
 build_causal_consensus_states = build_complete_window_consensus_states
 assert_causal_states = assert_complete_window_states
