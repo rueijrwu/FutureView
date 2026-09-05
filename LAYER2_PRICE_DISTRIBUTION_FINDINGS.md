@@ -3,232 +3,181 @@
 Date: 2026-09-04
 Branch: `layer2-price-distribution-v1`
 
-This note records the current interpretation of the Layer2 price-distribution experiments. It is intentionally neutral: the purpose is to distinguish what the experiments actually show from stronger conclusions that are not yet supported.
+This note records the current interpretation of the Layer2 price-distribution experiments. It is intentionally neutral and must be read together with `LAYER2_EXPERIMENT_VARIABLES.md`.
+
+## 0. Canonical experiment conditions
+
+`LAYER2_EXPERIMENT_VARIABLES.md` is now the single source of truth for experiment variables and information-boundary requirements.
+
+The following names must not be used interchangeably:
+
+- `W`: Layer1 C/Q window length.
+- `h`: Layer2 future-return target horizon.
+- `MODEL_HISTORY`: normalized P/V input length.
+- `RETRAIN_DAYS` / `ROLL_DAYS`: chronological retraining cadence.
+- `retain` / `memory`: number of most recent eligible training samples retained at each retrain.
+
+Any reported experiment must state all five where applicable.
+
+The previous working setup often used:
+
+```text
+MODEL_HISTORY = 90 sessions
+retain/memory = 150 eligible samples
+RETRAIN_DAYS   = 10 or 15 sessions
+Layer1 scope   = H only
+```
+
+However, `retain=150` was never established by a dedicated retain-length sweep and must not be described as optimal.
 
 ## 1. Current research scope
 
 Layer1 and Layer2 have different roles.
 
-Layer1 uses the fixed Strategy and historical Strategy-path statistics to identify regions where Strategy-relative historical structure is sufficiently non-neutral to justify further analysis. U/C/Q are Strategy-relative quantities.
+Layer1 uses the fixed Strategy and Strategy-path statistics to identify regions where Strategy-relative structure is sufficiently non-neutral to justify further analysis. U/C/Q are Strategy-relative quantities.
 
-The current research scope is now intentionally narrower:
+The current research scope is intentionally narrow:
 
-> Study only the H-selected region and ask whether the preceding normalized price/volume window contains a learnable nonlinear signal associated with the distribution of the stock's price change over the next 3 sessions.
+> Study only the H-selected region and ask whether normalized recent price/volume structure contains a learnable nonlinear signal associated with the distribution of future price changes.
 
-Other Layer1 regions are currently out of scope. They are excluded from Layer2 research rather than treated as separate modeling targets.
+Other Layer1 regions are out of scope. Layer2 is not asked to predict the Layer1 label itself.
 
-Current Layer2 input is the already-defined normalized historical price/volume window. The current output is price only; future volume is deliberately excluded for now. The realized target is the 3-session close-to-close log return `r3`. The small CNN produces price-distribution/ranking outputs including q10, q50, q90 and P(up).
+Current Layer2 inputs remain normalized historical price/volume only. Handcrafted indicators are not part of the approved baseline.
 
-The main quantity of interest at this stage is not trading profit and not a claim of exact price prediction. It is whether model score creates stable conditional separation in the realized future-price distribution inside H.
+## 2. Entry-relative and exit-relative C/Q
 
-## 2. Earlier experiments and what changed
+A single C/Q characterization was found to be insufficient. Two views are retained:
 
-### Experiment A — final-year OOS CNN with retrospective Layer1 selection
+- entry-relative C/Q: characterizes opportunity relative to entry/path construction;
+- exit-relative C/Q: characterizes opportunity relative to exit/path construction.
 
-Layer1 classifications were prepared retrospectively from the historical Strategy-path construction. Layer2 training and validation were chronological, but the Layer1 selection itself was not reconstructed as an as-of-t state.
-
-This experiment produced strong separation in the final-year sample. For q50 buckets, realized P(up) was approximately 25% / 40.6% / 83.3% from bottom / middle / top, with top mean r3 around +2.49% and bottom around -2.99%.
-
-This was evidence that, given the retrospectively selected historical population, the CNN could find strong price/volume structure associated with future 3-session price behavior. It was not yet evidence that the complete Layer1→Layer2 pipeline could have produced the same selection in real time.
-
-### Experiment B — yearly chronological OOS CNN with retrospective Layer1 selection
-
-The CNN was then evaluated with expanding chronological folds. Each OOS year was predicted only by a model trained on earlier selected samples. This made Layer2 generalization substantially stricter while retaining retrospective Layer1 selection.
-
-Pooled q50 buckets across 329 OOS samples were:
-
-```text
-bottom20: n=66, mean r3=-2.55%, P(up)=31.8%
-middle60: n=197, mean r3=+0.14%, P(up)=51.3%
-top20:    n=66, mean r3=+3.60%, P(up)=65.2%
-```
-
-The yearly top-vs-bottom separation remained in the same direction in 2023, 2024 and 2025. This strengthened the evidence that the Layer2 hidden signal was not solely a single final-year accident.
-
-### Experiment C — as-of-t Layer1 classification + chronological Layer2
-
-The third experiment changed the information boundary of Layer1. For each current date `t`, Layer1 was reconstructed using only information available through `t`.
-
-The Action run was `33897988068`, source commit `f981f1224cfa1aa84f679e1595c4ec660f0889b9`, and tests passed 7/7.
-
-Causal Layer1 summary:
-
-```text
-raw rows        = 2012
-classified W    = 952
-High            = 274
-Neutral         = 427
-Low             = 251
-Layer2 selected = 524
-```
-
-Pooled chronological q50 buckets over 389 OOS predictions became:
-
-```text
-bottom20: n=80,  mean r3=-0.95%, P(up)=46.25%
-middle60: n=229, mean r3=+0.15%, P(up)=49.78%
-top20:    n=80,  mean r3=+1.10%, P(up)=56.25%
-```
-
-The pooled ordering remained but weakened substantially.
-
-## 3. Refined Layer1 interpretation: entry-C/Q and exit-C/Q
-
-Subsequent analysis exposed that a single C/Q characterization is insufficient. There are two useful C/Q views tied to the two sides of the Strategy path:
-
-- entry-relative C/Q: characterizes the opportunity relative to entry/path construction;
-- exit-relative C/Q: characterizes the opportunity relative to exit/path construction.
-
-Q preserves its historical meaning as path inefficiency relative to the best path:
+Q keeps its historical Strategy-relative meaning where applicable:
 
 ```text
 Q = (U - P) / |C|
 ```
 
-where applicable to the historical definition. During the later distribution audit, normalization by an externally imposed scale was removed; dispersion is instead inspected using the empirical standard deviation because that scale belongs to the data/Strategy structure itself.
+The entry and exit views are combined only to determine whether a window belongs to the H-focused study population. Conflicting or neutral combinations are excluded.
 
-For the current Layer2 study, the entry and exit views are combined only to determine whether a window qualifies for the H-focused population. Conflicting or neutral combinations are excluded. The important point is that Layer1 acts as a filter; Layer2 is not asked to predict the Layer1 label itself.
+## 3. Historical Layer2 observations before the leakage audit
 
-## 4. H as the current Layer2 study population
+Several chronological Layer2 experiments produced positive ranking separation inside H. In the previous 8-year, 90D-input, 150-memory setup, changing retraining cadence from 15D to 10D improved the observed H-only Spearman from about 0.262 to about 0.292 while OOS n remained 131.
 
-The current research does not interpret H as a generic bull label or as a claim that price will rise.
-
-H is a Strategy-relative historical region in which path structure appears sufficiently informative to justify a second-stage price-distribution model. Absolute realized return can still be negative. The reason to focus on H is empirical: among the tested populations, H-only evaluation produced the clearest and most stable Layer2 ranking signal.
-
-The current research question is therefore:
+Later horizon sweeps also produced strong apparent relationships. For example, before the leakage audit:
 
 ```text
-Given that a window is in H,
-can normalized recent price/volume structure rank future 3-session outcomes?
+W=30, h=30D   Spearman ≈ 0.635
+W=45, h=45D   Spearman ≈ 0.570
+W=60, h=45D   Spearman ≈ 0.631
 ```
 
-No parallel Layer2 research program is currently planned for other regions.
-
-## 5. Layer2 training definition retained after simplification
-
-Several candidate additions were introduced during exploration but had not been independently validated. They were removed from the approved core experiment rather than being silently retained.
-
-The retained training definition is deliberately small:
+For the 45D target specifically, the strongest observed pre-leakage configuration was:
 
 ```text
-input:          90-session normalized price/volume window
-memory:         most recent 150 eligible training samples
-Layer1 scope:   H-focused selection from dual entry/exit C/Q filtering
-retraining:     rolling chronological retraining
-model focus:    conditioned/shared model architecture, evaluated on H only
+W=60, h=45D, Spearman ≈ 0.631
 ```
 
-Unvalidated additions are not considered part of the current baseline merely because they appeared in an intermediate experiment.
+These are now historical observations only. They are not validated OOS performance claims.
 
-## 6. H-only result and retraining cadence
+## 4. Leakage audit and current validity status
 
-The clearest current Layer2 signal occurs in H-only OOS evaluation.
+The strict audit found that the previous pipeline violated causal information boundaries in multiple places.
 
-With the original 8-year data horizon, 90D normalized P/V input, 150-sample memory and 15D retraining, the H-only conditioned model produced approximately:
+### 4.1 Exact duplicates
+
+No exact duplicate cutoff rows or duplicate windows were observed in the audited W=30 eligible set.
+
+### 4.2 Sliding-window overlap
+
+Adjacent W=30 windows often differed by only one session, giving 29/30 = 96.67% overlap for step-1 neighbors. This is not itself direct lookahead leakage, but it means nominal sample count is much larger than effective independent sample count. De-overlapped OOS checks are required.
+
+### 4.3 Layer2 target maturity
+
+The previous rolling trainer selected rows using `cutoff < OOS block start`. For horizon `h`, the stricter causal condition is:
 
 ```text
-OOS n            = 131
-folds            = 22
-Spearman         = 0.262
-bottom20 P(up)   = 25.9%
-top20 P(up)      = 55.6%
-bottom20 mean r3 = -1.60%
-top20 mean r3    = +1.40%
+cutoff + h < OOS block start
 ```
 
-Changing only retraining cadence from 15D to 10D produced:
+Under W=30 and the previous 150-memory setup, contaminated training-row fractions increased with horizon and reached about 8.11% for h=30D and 11.85% for h=45D.
+
+Therefore all previous horizon-performance values must be rerun after target purge.
+
+### 4.4 Layer1 entry-side path lookahead
+
+The audit showed that entry-relative C/Q could use campaign outcomes whose final exits occurred after the current window end. In the audited W=30 construction, about 42.43% of entry-C/Q windows contained at least one such future-completing path; about 33.12% of entry-side path members were future-completing, with maximum exit lookahead of 48 sessions.
+
+Exit-relative C/Q showed zero future-path lookahead under the same audit.
+
+### 4.5 Retrospective extrema
+
+The current local-extrema construction is retrospective and can require up to 10 future sessions to confirm an extremum. It must therefore either be made causal or assigned to its confirmation time before the full pipeline can be considered real-time valid.
+
+## 5. Current interpretation
+
+Because the leakage exists upstream as well as inside Layer2 training, previous high Spearman and top/bottom separation cannot be used as evidence of genuine deployable OOS predictive strength.
+
+The correct status is:
 
 ```text
-OOS n            = 131
-folds            = 26
-Spearman         = 0.292062
-bottom20 P(up)   = 7.41%
-top20 P(up)      = 62.96%
-bottom20 mean r3 = -3.101%
-top20 mean r3    = +2.601%
+Historical evidence suggests potentially learnable H-conditioned structure,
+but the magnitude of that structure is unknown until the causal pipeline is rerun.
 ```
 
-The 10D run used `period=8y`, `roll_days=10`, `memory=150`; the Action run was `33922738929`.
+It is not correct to conclude either that the model works or that it fails from the current contaminated results.
 
-The important point is that OOS n stayed at 131. The improvement therefore did not come from adding more H samples. The model was simply refreshed more frequently on the same regime-local training definition.
+## 6. Retain / memory status
 
-The current strongest observed configuration is consequently:
+The previous working baseline used:
 
 ```text
-8y history
-90D normalized P/V input
-150 eligible-sample rolling memory
-10D retrain cadence
-H-only Layer2 evaluation
+retain = 150 eligible samples
 ```
 
-This is the strongest observed configuration, not a claim that 10D is globally optimal.
+but this was inherited as a working setting rather than proven optimal. The earlier observation that longer overall history weakened performance and more frequent retraining helped motivated a regime-local hypothesis, but that hypothesis itself must also be rechecked after causal fixes.
 
-## 7. Longer history audit: more OOS samples did not improve the H signal
-
-The H-only history-length audit deliberately increased available history while retaining the local training concept.
-
-Observed results were approximately:
-
-| data horizon | H-only OOS n | folds | Spearman | bottom20 P(up) | top20 P(up) | bottom20 mean r3 | top20 mean r3 |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| 8y | 131 | 22 | 0.262 | 25.9% | 55.6% | -1.60% | +1.40% |
-| 12y | 287 | 46 | 0.054 | 24.1% | 36.2% | -1.72% | -1.60% |
-| max | 534 | 80 | 0.029 | 35.5% | 40.2% | -0.67% | -1.01% |
-
-Thus increasing nominal OOS coverage from 131 to 287 and 534 did not strengthen the relationship. Ranking correlation collapsed and the top bucket ceased to have positive mean r3 in the longer-history runs.
-
-The correct conclusion is not that older data are intrinsically useless. The result shows that the learned H-conditioned mapping is not stationary across the full available history under the current representation/training procedure.
-
-Together with the 10D-vs-15D result, this supports a **regime-local hypothesis**:
-
-> For the current H-focused Layer2 representation, adapting more frequently to relatively recent eligible structure appears more useful than indiscriminately increasing historical coverage.
-
-This remains a hypothesis to be stress-tested, not a proof of a specific market-regime model.
-
-## 8. What the model prediction currently means
-
-The Layer2 score should currently be interpreted primarily as a **ranking variable**, not as a calibrated probability forecast.
-
-For H-only 10D OOS, higher scores correspond to a substantially more favorable realized 3-session return distribution at the extremes. The top/bottom P(up) separation is economically large, but `P(up)` output values themselves should not automatically be interpreted as literal probabilities until calibration is separately established.
-
-The useful claim is therefore:
+After the causal boundary is repaired, the planned dedicated retain sweep is:
 
 ```text
-Within H-selected windows, the model can rank some recent P/V structures
-into groups with materially different realized near-future price distributions.
+retain ∈ {30, 50, 75, 100, 150}
 ```
 
-The evidence does not yet justify:
+During that sweep, other conditions should remain fixed so retain length is the only changed variable.
+
+## 7. Evaluation definitions
+
+The Layer2 score is primarily a ranking variable unless probability calibration is separately established.
+
+- `Spearman`: rank correlation between model score and realized future return.
+- `realized up-rate`: fraction of actual future returns greater than zero inside a score bucket. This is not prediction accuracy.
+- `top-bottom return gap`: difference in realized mean return between high-score and low-score buckets.
+- `fold consistency`: whether the ordering persists across chronological OOS segments.
+- `de-overlapped result`: robustness check after reducing highly overlapping neighboring samples.
+
+A good result should therefore satisfy all of the following rather than merely produce one high Spearman value:
 
 ```text
-model output 0.70 == a calibrated 70% probability of an up move
+causal / no leakage
++ positive OOS rank separation
++ top/bottom realized-distribution separation
++ chronological fold consistency
++ robustness to de-overlapping
++ robustness to nearby parameter values
 ```
 
-Nor does it prove trading profitability after transaction costs, position sizing or policy integration.
+## 8. Required sequence before new performance claims
 
-## 9. Current consolidated conclusion
-
-The current experiments support the following bounded interpretation:
-
-1. Layer1's role is filtering/conditioning, not direct next-price prediction. Entry-relative and exit-relative Strategy statistics provide complementary views used to identify the H-focused study population.
-2. The current Layer2 research scope is H only. Other Layer1 regions are excluded from the active research question and are not being modeled or compared at this stage.
-3. Layer2's strongest current evidence is H-conditioned ranking.
-4. Under the original 8-year horizon, 90D normalized P/V input and 150-sample rolling memory, reducing retraining cadence from 15D to 10D improved H-only Spearman from about 0.262 to 0.292 and materially widened the extreme-bucket separation without increasing OOS n.
-5. Extending history to 12 years or maximum available history increased OOS n but sharply weakened H-only ranking. The current mapping is therefore not demonstrably stationary over long history.
-6. Taken together, the results favor a regime-local training interpretation: recent relevant samples plus more frequent updating currently work better than maximizing historical sample count.
-
-The present result is evidence of conditional statistical structure. It is not yet evidence of a deployable trading strategy, an optimized retraining interval, or a calibrated probability model.
-
-## 10. Next bounded questions
-
-The next experiments should remain narrow and attribution-preserving. Useful unresolved questions are:
+The next sequence is fixed:
 
 ```text
-A. Is 10D genuinely better than nearby retraining cadences, or is the observed improvement sampling variance?
-B. Does the H-only ranking survive other chronological segments/tickers without redefining H?
-C. How stable are top/bottom bucket results under bootstrap or fold-level uncertainty?
-D. Only after ranking stability is established: should P(up) calibration be studied separately?
+1. Make extrema causal or shift them to confirmation time.
+2. Rebuild deterministic paths under that information boundary.
+3. Rebuild entry-relative and exit-relative C/Q without future campaign outcomes.
+4. Reconstruct H from the causal dual-C/Q definitions.
+5. Enforce Layer2 target maturity: cutoff + h < OOS block start.
+6. Rerun the W × h sweep.
+7. Rerun de-overlapped OOS robustness checks.
+8. Only then sweep retain ∈ {30,50,75,100,150} and nearby retraining cadences.
 ```
 
-No additional target, purge rule, loss mixture, handcrafted indicator, non-H policy comparison or strategy optimization should be treated as approved merely because it is a plausible next step.
+Until these steps are complete, the pre-leakage W×h results remain experiment history, not validated conclusions.
