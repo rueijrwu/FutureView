@@ -1,0 +1,27 @@
+name: Strategy 1 W30 Structure Audit
+
+on:
+  push:
+    branches:
+      - layer2-price-distribution-v1
+    paths:
+      - 'src/futureview/strategy1_w30_structure_audit.py'
+      - 'src/futureview/strategy1_causal_pipeline.py'
+      - '.github/workflows/strategy1-w30-structure-audit.yml'
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'numpy>=1.26' 'pandas>=2.2' 'yfinance>=0.2.54' 'scipy>=1.10'
+          python -m pip install -e . --no-deps
+      - name: Run W30 structure audit
+        run: python -m futureview.strategy1_w30_structure_audit
