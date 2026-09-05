@@ -1,61 +1,46 @@
 # FutureView Strategy 1 — Current Research Handoff
 
 Last rewritten: 2026-09-04
+Branch: `layer2-price-distribution-v1`
 
-Branch: `strategy-profitability-restart`
+This document is the current authoritative research handoff. It replaces older Strategy 1 / Layer1 / Layer2 assumptions that conflict with the definitions below.
 
-This document is the current authoritative research handoff. It intentionally replaces the previous chronological accumulation of experiments with a compact statement of the **current definitions, current implementation, verified results, supported inferences, unsupported inferences, and open decisions**. Older experiments remain useful only as historical context when they do not conflict with this document.
+The detailed rule registry is `LAYER2_EXPERIMENT_VARIABLES.md`. No Strategy rule, Layer1 membership rule, Layer2 training boundary, target definition, purge/embargo rule, model input, loss, or evaluation rule may be silently added or changed.
 
 ---
 
 # 0. Current research direction
 
-The Strategy is fixed. The present objective is not to optimize Entry, Addon, Exit, capital allocation, or invent a new Strategy.
+The Strategy itself is fixed. The current task is to rebuild Layer1 under the revised complete-path window rule, re-check the statistical structure of U/C/Q, and only then resume Layer2 model training.
 
-The current question is:
-
-> Given only historical price and volume available before a future trader-defined interval W, can a causal model estimate the Strategy-opportunity quantities C and Q of that next W, and can the historical H/N/L structure be used as training importance rather than as a trading decision by itself?
-
-The working configuration is:
+Current working choices / scope:
 
 ```text
 Ticker: TSLA
-Raw history downloaded: 8 years
-Trading interval W: 30 trading sessions
-Layer2 model history: 90 trading sessions
-Training history at retrain: prior 5 years
-Final validation period: final 1 year
-Fresh retrain frequency: every 15 trading sessions
-Epochs per retrain: 300
-Layer1 weights: High=1.0, Neutral=0.2, Low=1.0
-No-formal-label W: weight=0.0
-Model: current small 1D CNN
+History: 8Y
+Layer1 W: 30 trading sessions
+Layer2 raw input history: 90 trading sessions normalized P/V
+Layer2 rolling training lookback: immediately preceding 30 trading sessions
+Fresh retrain candidate cadence: 15 trading sessions
+Layer2 scope: H-only
 ```
 
-The current research pipeline is:
+Important separation of time variables:
 
 ```text
-raw daily market data
-→ raw legal Strategy events
-→ 3-session forward-anchor event cleaning
-→ cleaned legal Entries / Exits
-→ deterministic Strategy path for every cleaned Entry
-→ realized path return R(e)
-→ rolling W30 opportunity regions
-→ U / B / C / Q
-→ H / N / L / unlabeled + importance weight
-→ causal 90-session price/volume input
-→ Layer2 CNN
-→ predicted C / predicted Q / P(H,N,L)
-→ 5Y rolling training, fresh retrain every 15 sessions
-→ final-year out-of-sample evaluation
+W             = Layer1 C/Q window length
+MODEL_HISTORY = Layer2 P/V feature-history length (90D)
+L2_TRAIN_W    = Layer2 rolling training lookback (30D)
+RETRAIN_DAYS  = model refresh cadence (currently 15D candidate)
+h             = Layer2 future-return target horizon (experimental)
+path horizon  = deterministic Strategy maximum path horizon (60D)
 ```
 
-All changes to data definitions, label construction, weighting, model architecture, loss, retraining, or evaluation must be discussed and explicitly approved before implementation.
+Legacy `memory=150` meant “retain the most recent 150 eligible samples.” It was a fixed sample-count memory, not 150 days, and is not the current approved Layer2 training-memory baseline.
 
 ---
 
-# 1. Fixed Strategy and formal data definitions
+# 1. Fixed Strategy
 
 ## 1.1 Raw legal Entry
 
@@ -65,54 +50,34 @@ A raw legal Entry exists when:
 close > MA5 > MA10 > MA20
 ```
 
-All satisfying sessions are collected first. No merging occurs during the raw scan.
+All satisfying sessions are collected first.
 
-## 1.2 Legal-point cleaning
+## 1.2 3-session forward-anchor cleaning
 
-After the complete raw scan, same-type legal points are cleaned using the 3-session forward-anchor rule.
-
-For sorted raw points:
-
-```text
-p0 < p1 < p2 < ...
-```
-
-Use the earliest unconsumed point as anchor and absorb only same-type points satisfying:
+For sorted same-type raw legal points, use the earliest unconsumed point as anchor and absorb only same-type points satisfying:
 
 ```text
 pi - p0 <= 3 trading sessions
 ```
 
-Absorbed points cannot extend the group transitively.
+Absorbed points do not extend the group transitively. The same cleaning concept is applied independently to Entry, 5D Exit, and 10D Exit events.
 
-Example:
-
-```text
-raw:     100, 103, 106, 107
-cleaned: 100, 106
-```
-
-5-day and 10-day Exit events are cleaned independently.
-
-## 1.3 Deterministic Strategy path
+## 1.3 Deterministic path
 
 Each cleaned legal Entry has exactly one deterministic path:
 
 1. Initial Entry deploys 1/3 of original campaign capital.
-2. Find the most recent retrospective 5- or 10-session local minimum before Entry.
+2. Find the most recent retrospective 5D or 10D local minimum before Entry.
 3. Define `D_b = Entry price - base-minimum price`, requiring `D_b > 0`.
-4. Later retrospective 5/10 local maxima are Addon candidates.
-5. A candidate is accepted when `candidate price - last buy price > original D_b`.
-6. Reuse the same original `D_b` for every Addon.
-7. Maximum deployment is Entry + Addon1 + Addon2.
-8. Every deployment uses exactly 1/3 of the original campaign denominator.
-9. First cleaned 5-day Exit after Entry sells 40% of then-current shares.
-10. The 5-day partial Exit happens at most once and does not disable later Addons.
-11. Cleaned 10-day Exit liquidates all remaining shares and terminates the campaign.
-12. Same-day priority: `10-day Exit > 5-day partial Exit > Addon`.
-13. Maximum path horizon is 60 sessions.
-14. Remaining shares at horizon are liquidated at horizon close.
-15. There is no 3-day re-entry cooldown in this formal deterministic path.
+4. Addon candidates are later retrospective 5D/10D local maxima.
+5. The first chronological candidate satisfying `candidate price - last actual buy price > D_b` becomes the next Addon.
+6. Reuse the same Entry-time `D_b` for every Addon.
+7. Maximum deployment is Entry + Addon1 + Addon2; each uses 1/3 of original campaign capital.
+8. First cleaned 5D Exit sells 40% of then-current shares; this partial exit happens at most once.
+9. A 5D partial Exit does not disable later Addons.
+10. Cleaned 10D Exit liquidates all remaining shares and terminates the campaign.
+11. Same-session priority: `10D Exit > 5D partial Exit > Addon`.
+12. Maximum path horizon is 60 trading sessions; remaining shares are liquidated at horizon close.
 
 For Entry `e`:
 
@@ -122,598 +87,340 @@ R(e) = realized return of its unique deterministic Strategy path
 
 ---
 
-# 2. W, U, B, C, and Q
+# 2. Retrospective extrema semantics
 
-## 2.1 W is an Entry-cohort opportunity interval
+The 5D/10D local minima/maxima are retrospective historical outcome definitions used to construct deterministic Strategy paths.
 
-For a trader-defined W:
+They are not Layer2 input indicators.
+
+Do not add:
 
 ```text
-I_W = {cleaned legal Entries whose initial Entry lies inside W}
+final_exit + 10D availability shift
+cutoff-specific extrema reconstruction
+extrema confirmation embargo
 ```
 
-W membership is determined only by the initial Entry. Addons and Exit may occur after W. The full deterministic path still defines `R(e)`.
+The earlier assistant-added `+10D` confirmation rule is explicitly rejected.
+
+---
+
+# 3. Revised Layer1 W membership — CURRENT APPROVED RULE
+
+This is the major definition change that invalidates older Entry-cohort Layer1 results.
+
+For a Layer1 window:
+
+```text
+W = [start, end]
+```
+
+a Strategy path is legal for that W only when the entire path is contained inside W:
+
+```text
+start <= entry_index <= final_exit_index <= end
+```
 
 Therefore:
 
 ```text
-W is NOT a holding-period cutoff.
-W is the trading opportunity interval chosen by the trader.
+Entry inside W but final Exit after W  -> exclude
+Exit inside W but Entry before W       -> exclude
+unfinished path                        -> exclude
 ```
 
-Current W:
+Under the current rule, entry-side and exit-side calculations use the same complete-path population unless a future approved definition changes this.
+
+The old rule “Entry inside W is sufficient even if Exit occurs later” is obsolete for the current research branch.
+
+---
+
+# 4. U / B / C / Q definitions
+
+For the legal complete-path set in W:
 
 ```text
-W = 30 trading sessions
-stride = 1 session
+I_W = { e : start <= entry(e) <= final_exit(e) <= end }
 ```
 
-## 2.2 U
+Define:
 
 ```text
 U_W = max_{e in I_W} R(e)
-```
-
-U is the best realized return among legal fixed-Strategy Entries in that W. It is not an optimized Strategy.
-
-## 2.3 B and C
-
-Let `B_W` be the periodic baseline return over the same W.
-
-```text
+B_W = formal periodic baseline return over the same W
 C_W = U_W - B_W
 ```
 
-Interpretation:
-
-```text
-C > 0 → W contains a legal Strategy opportunity that outperformed periodic B
-C < 0 → even the best legal Entry in W underperformed periodic B
-```
-
-C is a region opportunity-quality measure, not a trend-direction score and not the return of the current Entry.
-
-## 2.4 Q
-
-For Entry `e` in W:
+Per Entry/path:
 
 ```text
 Q(e) = U_W - R(e)
 ```
 
-Therefore:
+Current W-level Q:
+
+```text
+Q_W = mean_e Q(e)
+```
+
+Thus:
 
 ```text
 Q >= 0
-Q = 0 means the Entry attains U
-smaller Q means closer to the best Entry in the region
-larger Q means farther below the best Entry
+Q = 0 means the path attains U
+smaller Q means closer to the best legal path in W
 ```
 
-Current W-level Q used downstream is the mean per-Entry Q within W.
-
-Desired semantic combination:
-
-```text
-large C + small Q
-```
-
-means favorable regional Strategy opportunity plus good Entry timing relative to the best legal Entry in that W.
+A W with no legal complete path has no formal U/C/Q label. Do not invent `C=0`, `Q=0`, or Neutral solely because the window is unlabeled.
 
 ---
 
-# 3. Layer1 state and training importance
+# 5. Layer1 H/N/L scope
 
-Layer1 is a retrospective importance/filtering layer. It is not the final trading decision and should not itself be interpreted as future direction.
+The active Layer2 research scope is H-only. L-region research is currently abandoned.
 
-## 3.1 H/N/L definition
+High remains a retrospective Layer1 opportunity/timing state; it must not be interpreted directly as future bullish direction.
 
-Short trailing reference uses 90 sessions:
-
-```text
-C90_40, C90_60
-Q90_40, Q90_60
-```
-
-Short High:
-
-```text
-C >= C90_60 and Q <= Q90_60
-```
-
-Short Low:
-
-```text
-C <= C90_40 and Q >= Q90_40
-```
-
-Long trailing reference uses 756 sessions:
-
-```text
-C3Y_50, Q3Y_50
-```
-
-Long High:
-
-```text
-C > C3Y_50 and Q < Q3Y_50
-```
-
-Long Low:
-
-```text
-C < C3Y_50 and Q > Q3Y_50
-```
-
-Final labeled state:
-
-```text
-High    = ShortHigh AND LongHigh
-Low     = ShortLow  AND LongLow
-Neutral = otherwise among formally labeled W
-```
-
-High does not mean future bullish. Low does not mean future bearish.
-
-## 3.2 Current weights
-
-```text
-High      = 1.0
-Neutral   = 0.2
-Low       = 1.0
-Unlabeled = 0.0
-```
-
-Neutral is intentionally down-weighted rather than removed because Neutral periods may contain transition information useful to the longer Layer2 history.
-
-## 3.3 W with no legal Entry
-
-If a W contains no cleaned legal Entry, then U, C, and Q are not formally defined.
-
-Current locked semantic rule:
-
-```text
-Do not invent C=0.
-Do not invent Q=0.
-Do not relabel it Neutral.
-Keep the W on the chronological timeline.
-Assign supervised weight = 0.
-```
-
-This `unlabeled → weight 0` rule is conceptually locked but **has not yet been fully implemented in the current Layer2 training/evaluation dataset code**. The latest formal rolling result therefore still evaluates only W with formal realized labels.
+Any change to exact H/N/L thresholds or reference windows requires explicit approval.
 
 ---
 
-# 4. Rolling historical preparation
+# 6. Layer2 input and training-memory definition
 
-Historical path information should be prepared once and reused as much as possible.
+Layer2 receives only normalized price and volume.
 
-At a rolling cutoff date D, there is one special rule:
-
-```text
-if path final Exit <= D:
-    reuse the already prepared completed path and return
-
-if path final Exit > D:
-    preserve all Entry / Addon / partial-Exit actions that occurred through D
-    force-close all remaining shares at D close
-    recompute only the affected path return as of D
-```
-
-There are no approved extra rolling rules such as embargoes, overlap exclusion, cutoff-specific extrema reconstruction, additional Entry filtering, or assistant-added confirmation delays.
-
-The prior 5 years are the model's rolling training-history range. They are not a new definition of C/Q.
-
-Verified simplification commits:
+Per sample:
 
 ```text
-48f3214930955059bef9e978c14f3f5825f916dd
-  Simplify rolling paths to exit-cutoff rule
-
-e3238c82eb7ac3a1674439a1d1d90bc974115747
-  Test rolling exit-cutoff reuse rule
+MODEL_HISTORY = 90 trading sessions
+price channel  = log(close) - log(last close in the 90D input)
+volume channel = within-input z-score of log(volume)
+input shape     = 2 x 90
 ```
+
+Layer2 must not receive retrospective extrema, future Exit, future path return, future C/Q, or any other future-derived Strategy outcome as input features.
+
+At an OOS/retraining date `t`, current approved Layer2 training candidates come from the immediately preceding 30 trading sessions:
+
+```text
+t - 30 <= sample_cutoff < t
+```
+
+This is a 30-session time lookback, not a fixed count of 30 or 150 samples.
+
+The exact target-maturity / purge / embargo rule is still a separate research boundary and is not approved merely because a conventional causal implementation would use one. Do not silently add `sample_cutoff + h < OOS_start` or related rules without explicit discussion.
+
+Before model training, Layer1 / U/C/Q structural analysis should remain torch-free. PyTorch is introduced only when actual model training starts.
 
 ---
 
-# 5. Layer2 input and model
+# 7. Rebuilt W30 structure audit — VERIFIED
 
-For target W beginning at session `t`, Layer2 sees only the preceding 90 sessions:
-
-```text
-X_t = sessions [t-90, ..., t-1]
-Y_t = C/Q/state of W30 beginning at t
-```
-
-Thus input and target do not overlap.
-
-Current input representation:
+Workflow:
 
 ```text
-channel 1 = log(close) - log(last close in the 90-session input)
-channel 2 = within-input z-score of log(volume)
-input shape = 2 × 90
-```
-
-Current network:
-
-```text
-Conv1d 2→16, kernel 7, same + GELU
-Conv1d 16→24, kernel 5, same + GELU
-AdaptiveAvgPool1d(1)
-Linear 24→24 + GELU
-C/Q regression head: 2 outputs
-H/N/L classification head: 3 logits
-```
-
-Current loss:
-
-```text
-SmoothL1 for C
-SmoothL1 for Q
-cross entropy for H/N/L
-sample-weighted by Layer1 weight
-```
-
-Q prediction is constrained nonnegative by the current decoding transform.
-
-Optimizer:
-
-```text
-AdamW
-learning rate = 0.003
-weight decay = 1e-4
-```
-
----
-
-# 6. Epoch convergence diagnostic
-
-Verified workflow:
-
-```text
-Strategy 1 Layer 2 Epoch Convergence
-run: 33209467520
-```
-
-Five approximately evenly spaced final-year dates were tested. Each used the prior 5 years of training history, a fresh model, and up to 300 epochs. No internal validation split or early stopping was added.
-
-Total training loss at epochs 50 / 100 / 200 / 300:
-
-```text
-2025-08-27: 1.250 / 0.959 / 0.540 / 0.429
-2025-11-14: 1.313 / 0.911 / 0.549 / 0.458
-2026-02-05: 1.328 / 0.994 / 0.553 / 0.451
-2026-04-27: 1.337 / 0.968 / 0.586 / 0.489
-2026-07-17: 1.357 / 1.160 / 0.699 / 0.552
-```
-
-Supported conclusion:
-
-```text
-50 epochs is clearly too early.
-100 epochs is clearly too early.
-200 epochs is still improving.
-300 epochs is still not a strict training-loss plateau.
-```
-
-300 epochs was therefore retained for the first formal rolling experiment. This does not establish 300 as globally optimal and does not justify increasing epochs purely because training loss continues to fall.
-
----
-
-# 7. Current formal rolling validation
-
-Verified workflow:
-
-```text
-Strategy 1 Layer 2 Rolling 8Y
-run: 33210088592
-job: 98980914136
-source commit: ab54f63bfb96bdb435c6cf0ea9ecda9a4670cbc5
+Strategy 1 W30 Structure Audit
+run: 33936283146
+commit: dc69088f0c3c15c977a7fa5ba2345b2834d6db8c
+conclusion: success
 ```
 
 Configuration:
 
 ```text
 TSLA
-8Y raw data
-W30
-L90
-prior 5Y training history
-final 1Y validation
-fresh retrain every 15 trading sessions
-300 epochs per retrain
-High=1.0, Neutral=0.2, Low=1.0
-base seed=20260827
-```
-
-Tests:
-
-```text
-8 passed
+8Y
+W = 30
+candidate retrain cadence = 15D
+candidate Layer2 training lookback = 30D
 ```
 
 Support:
 
 ```text
-raw daily rows = 2010
-validation prediction days = 223
-fresh retrains = 15
-predictions emitted = 223
-predictions with formal realized C/Q/state = 127
-currently unlabeled evaluation days = 96
+rows = 2010
+Strategy paths = 171
+valid complete-path W30 windows = 1273
+mean paths/window = 2.695
+median paths/window = 3
+min = 1
+max = 7
 ```
 
-The 96 unlabeled W are approximately 43% of the 223-day validation timeline and therefore are not a negligible part of the chronology. They are currently absent from formal C/Q accuracy statistics because no formal realized C/Q target exists under the current definition.
-
----
-
-# 8. Current Layer2 results
-
-## 8.1 Overall C
-
-Across the 127 formally labeled validation W:
+Distributions:
 
 ```text
-actual mean = -0.019885
-pred mean   = -0.015988
-bias        = +0.003897
-MAE         = 0.056574
-median AE   = 0.052826
-Pearson     = 0.488500
-Spearman    = 0.498201
+U mean = 0.005086, std = 0.030654, p10 = -0.023230, p50 = -0.002453, p90 = 0.045119
+C mean = -0.047584, std = 0.142922, p10 = -0.236750, p50 = -0.036460, p90 = 0.110297
+Q mean = 0.013105, std = 0.018370, p10 = 0.000000, p50 = 0.008263, p90 = 0.041105
 ```
+
+## 7.1 Same-window U/C/Q correlation
+
+All valid W30 windows:
+
+| Pair | Pearson | Spearman |
+|---|---:|---:|
+| U vs C | -0.146 | -0.196 |
+| U vs Q | 0.932 | 0.846 |
+| C vs Q | -0.153 | -0.178 |
 
 Interpretation:
 
-The model shows a meaningful association between historical 90-session price/volume structure and the realized C of the immediately following W30. The current evidence is stronger for **relative ordering** than for absolute calibration.
+- Across all W30 windows, U and Q are highly coupled.
+- This is structurally plausible because `Q_W = mean(U_W - R_i)`.
+- C is comparatively weakly related to U and Q.
+- Do not treat U and Q as independent information dimensions globally without checking redundancy.
 
-## 8.2 Overall Q
+## 7.2 H-only same-window relation
 
-```text
-actual mean = 0.010158
-pred mean   = 0.013902
-bias        = +0.003745
-MAE         = 0.011292
-median AE   = 0.008083
-Pearson     = 0.238838
-Spearman    = 0.238052
-```
-
-Interpretation:
-
-Q is substantially less predictable than C under the current model. There is some coarse level information, but relative ordering is weak and unstable.
-
-## 8.3 By actual H/N/L state
+Current classifier produced:
 
 ```text
-High n=35
-C actual mean = +4.7847%
-C pred mean   = +0.6914%
-C Pearson     = 0.413350
-C Spearman    = 0.450980
-Q actual mean = 0.2423%
-Q pred mean   = 1.7208%
-Q Pearson     = -0.333084
-
-Neutral n=83
-C actual mean = -3.8722%
-C pred mean   = -2.2007%
-C Pearson     = 0.481201
-C Spearman    = 0.509257
-Q actual mean = 1.2505%
-Q pred mean   = 1.0968%
-Q Pearson     = 0.470893
-Q Spearman    = 0.555385
-
-Low n=9
-C actual mean = -10.9579%
-C pred mean   = -4.9543%
-C Pearson     = -0.540906
-C Spearman    = -0.683333
-Q actual mean = 1.8593%
-Q pred mean   = 2.8106%
-Q Pearson     = -0.657849
-Q Spearman    = -0.753660
+High = 166
+Neutral = 429
+Low = 150
 ```
 
-Low support is too small for a stable conclusion.
+Within High only:
+
+| Pair | Pearson | Spearman |
+|---|---:|---:|
+| U vs C | 0.342 | 0.291 |
+| U vs Q | 0.139 | 0.167 |
+| C vs Q | -0.283 | -0.144 |
+
+Important observation:
+
+The global U-Q coupling collapses substantially inside H. Because Layer2 is currently H-only, H-specific structure must be audited separately from all-window structure.
 
 ---
 
-# 9. Time-split observations
+# 8. Temporal structure: 15D vs 30D
 
-## 9.1 2025 labeled validation subset
+## 8.1 15D lag
 
-```text
-n = 81
-C Pearson  = 0.350587
-C Spearman = 0.352258
-Q Pearson  = 0.032620
-Q Spearman = -0.101246
-```
+W30 windows separated by 15 sessions still overlap by 15 sessions.
 
-2025 High remained poorly calibrated in magnitude:
+Self-correlation, Spearman:
 
 ```text
-High n=28
-actual C mean = +4.1269%
-pred C mean   = -0.9959%
+U_t vs U_t+15 = 0.144
+C_t vs C_t+15 = 0.317
+Q_t vs Q_t+15 = 0.137
 ```
 
-## 9.2 2026 labeled validation subset
+C shows the clearest persistence at 15D. U and Q self-persistence are weak.
+
+Strong 15D cross-lag relations:
 
 ```text
-n = 46
-C Pearson  = 0.763290
-C Spearman = 0.748504
-Q Pearson  = 0.208561
-Q Spearman = 0.187052
+C_t -> U_t+15 : Pearson -0.641, Spearman -0.548
+C_t -> Q_t+15 : Pearson -0.676, Spearman -0.633
 ```
 
-2026 Neutral also had strong C ordering:
+This suggests a possible local reversion / phase-transition structure rather than simple persistence and deserves a dedicated H-only audit.
+
+## 8.2 30D lag
+
+W30 windows separated by 30 sessions have zero overlap.
+
+Self-correlation, Spearman:
 
 ```text
-Neutral n=39
-C Pearson  = 0.715464
-C Spearman = 0.704251
+U_t vs U_t+30 = -0.151
+C_t vs C_t+30 = 0.004
+Q_t vs Q_t+30 = -0.137
 ```
 
-2026 High:
+The W30 U/C/Q structure largely disappears at 30D once the windows no longer overlap.
+
+Supported inference:
 
 ```text
-n = 7
-actual C mean = +7.4163%
-pred C mean   = +7.4406%
-C MAE         = 0.8955%
-C Pearson     = 0.887314
-C Spearman    = 0.857143
+W30 U/C/Q structure is predominantly local rather than persistent over a full non-overlapping 30D interval.
 ```
 
-However these seven High W are heavily overlapping stride-1 W30 observations and should not be treated as seven independent market episodes.
+This gives descriptive support for testing a 15D retrain cadence.
+
+It does **not** yet prove that a 30D Layer2 training lookback is optimal. The 30D lookback remains a working definition that should be validated separately.
 
 ---
 
-# 10. Main supported inferences
+# 9. Status of older Layer2 model results
 
-## 10.1 C contains learnable forward information
+Older Layer2 results generated under the previous Entry-cohort Layer1 membership, legacy fixed sample-count memory, unreviewed target boundaries, or other superseded assumptions are historical observations only.
 
-The strongest current result is:
-
-```text
-historical 90-session price/volume structure contains information associated with the C of the immediately following W30
-```
-
-Overall C Pearson/Spearman near 0.49/0.50 and stronger 2026 ordering support this interpretation.
-
-This does **not** yet establish a deployable trading model, but it is evidence that the target is not purely unpredictable noise under the current data construction.
-
-## 10.2 C ranking is better than C magnitude calibration
-
-The model systematically compresses extremes toward zero.
-
-Examples:
+Examples previously observed before the definition rebuild include strong horizon/W Spearman values such as:
 
 ```text
-High actual mean C = +4.78%, predicted +0.69%
-Low  actual mean C = -10.96%, predicted -4.95%
+W30 / h30  ~ 0.635
+W45 / h45  ~ 0.570
+W60 / h45  ~ 0.631
 ```
 
-Therefore the current CNN is better at relative opportunity ordering than at reproducing the full amplitude of realized C.
+These values must not be treated as current validated predictive evidence until rerun with the current complete-path Layer1 rule and approved Layer2 definitions.
 
-## 10.3 Q is not yet learned reliably
-
-The Q signal is much weaker than C. In High regions, average Q level may sometimes be in the correct rough range while within-state ranking can be reversed.
-
-Current interpretation:
-
-```text
-C: meaningful learnable signal is present
-Q: coarse information may be present, but reliable ordering has not been established
-```
-
-## 10.4 H/N/L classification and C/Q regression are not fully aligned
-
-There are periods where C regression is sensible while the H/N/L classification head assigns a different state than the realized Layer1 state.
-
-This suggests the multi-task heads have not yet formed a fully consistent internal representation. It is an observation, not yet a reason to modify the architecture.
-
-## 10.5 2026 improvement cannot be attributed to one cause
-
-The strong 2026 C results cannot currently be interpreted simply as "the model learned more over time."
-
-Potential contributors include:
-
-```text
-changing rolling training composition
-market-regime differences
-fresh-model initialization variance
-```
-
-Training sample counts did not monotonically increase, so sample count alone does not explain the improvement.
-
-## 10.6 Fresh retraining can create large prediction discontinuities
-
-A notable example occurred around the 2025-10-10 retrain. Immediately before retrain, several High-region C predictions were positive and directionally sensible; after the fresh retrain, the same continuing High regime received strongly negative predictions.
-
-The current implementation uses a different effective seed at each retrain:
-
-```text
-seed = base seed + target_start
-```
-
-Therefore some retrain-to-retrain discontinuity may be initialization variance rather than new market information. This is an unresolved interpretation issue, not yet an approved model change.
-
-## 10.7 Unlabeled W are a substantial part of the chronology
-
-96 of 223 final-year prediction days had no formal C/Q label under the current definition.
-
-These W should not be silently treated as if they did not exist, and they should not be assigned artificial C/Q values. The current direction is to preserve them chronologically with supervised weight zero.
+Likewise, older `memory=150`, 5Y rolling-history, or prior weighted H/N/L CNN results are not the present baseline unless explicitly reintroduced as controlled experiments.
 
 ---
 
-# 11. What the current results do NOT prove
+# 10. Current supported conclusions
 
-The present evidence does not prove any of the following:
+1. The complete-path Layer1 membership rule is now the approved definition.
+2. The assistant-added `final_exit + 10D` causal availability rule is rejected.
+3. The Strategy retains retrospective 5D/10D extrema semantics for historical outcome construction.
+4. Current Layer2 feature input remains 90D normalized price/volume only.
+5. Current Layer2 training-memory definition is a 30-session time lookback, not `memory=150 samples`.
+6. Before training, structural analysis should be performed without PyTorch.
+7. Under rebuilt W30 labels, global U and Q are highly redundant, but that redundancy is much weaker inside H.
+8. C has the strongest 15D persistence among U/C/Q.
+9. At 30D non-overlapping lag, U/C/Q persistence is approximately absent.
+10. A 15D retrain cadence is therefore reasonable to continue testing, but is not yet declared globally optimal.
+11. A 30D Layer2 training lookback has not yet been validated as optimal.
+12. Old Layer2 predictive scores must be rerun before being used as evidence.
+
+---
+
+# 11. Immediate next step
+
+Before broad Layer2 training or parameter sweep:
+
+1. Run a dedicated H-only W30 temporal structure audit.
+2. Re-check 15D and 30D U/C/Q self- and cross-lag relations specifically inside H.
+3. Confirm the exact Layer2 target definition / target boundary before training.
+4. Then run one minimal Layer2 model configuration first using:
 
 ```text
-300 epochs is optimal.
-15-session retraining is optimal.
-90 sessions is the optimal model history.
-W30 is the optimal trading interval.
-The model is profitable in live trading.
-2026 High performance generalizes to independent future High episodes.
-Q is adequately learned.
-The H/N/L classification head is necessary or optimally specified.
-Fresh retraining is better than warm-start training.
-The 2026 improvement is caused by more training data.
+W = 30
+MODEL_HISTORY = 90D normalized P/V
+L2_TRAIN_W = preceding 30 trading sessions
+RETRAIN_DAYS = 15D
+Layer2 scope = H-only
 ```
 
-These must remain open questions unless separately tested.
+Only after that minimal run is validated should broader W / horizon / training-lookback / retrain-cadence sweeps resume.
 
 ---
 
-# 12. Current implementation mismatch / pending bookkeeping change
-
-The latest completed rolling run predates full implementation of the newly locked unlabeled rule.
-
-Current desired semantics:
+# 12. Key current commits
 
 ```text
-formal High      → weight 1.0
-formal Neutral   → weight 0.2
-formal Low       → weight 1.0
-no formal C/Q    → keep chronology, weight 0.0, no invented target
+f0ea837b75dfae9f89afb96f9f823dfe457e640a
+  Lock Strategy/Layer1/Layer2 research registry
+
+793d264e8fd6c78b38581d5ae16ae9a68f6a1267
+  Fix W-level Q to mean(U - R)
+
+0c596e1f0e4e4b8ae6d211eafaf6a3d9ef74a9e4
+  Add W30 C/Q/U structure audit
+
+2c552d604fbef30ac4b7d5955e2675f012df53b3
+  Add W30 structure audit workflow
+
+0abf88bfbbd4027a851f17abf26f46d0682520e6
+  Add numba dependency for structural audit
+
+dc69088f0c3c15c977a7fa5ba2345b2834d6db8c
+  Keep pretraining Layer1 pipeline torch-free
 ```
-
-The exact dataset representation of a zero-weight unlabeled W has not yet been finalized. In particular, the project has not yet decided whether such W should exist as complete input samples with a target mask or only as preserved chronological bookkeeping entries.
-
-No implementation change should be made until that representation is explicitly agreed.
-
----
-
-# 13. Current open questions, in priority order
-
-The project direction is being reconsidered. The next step should be chosen deliberately rather than automatically extending the current CNN experiment.
-
-Open questions include:
-
-1. How exactly should unlabeled, weight-zero W be represented in the Layer2 dataset while preserving chronology and avoiding fake targets?
-2. How much of retrain-to-retrain prediction variation comes from fresh random initialization rather than changed training information?
-3. Should C and Q remain joint targets, given that C is currently much more learnable than Q?
-4. Is the H/N/L classification head helping representation learning, or merely adding an unstable auxiliary objective?
-5. Should the model be evaluated primarily as a C-ranking model before attempting more precise C magnitude or Q estimation?
-6. Should retraining remain fresh-from-scratch, or should warm-start/continual approaches eventually be tested?
-7. How should heavily overlapping stride-1 W30 observations be summarized into more nearly independent market episodes for statistical interpretation?
-
-These are open research questions only. None is an approved implementation step yet.
-
----
-
-# 14. Current authoritative takeaway
-
-The current research state can be summarized as follows:
-
-> The fixed Strategy and C/Q definitions are now sufficiently stable to support causal Layer2 investigation. In the first formal 5Y-train / final-1Y / 15-session-retrain rolling experiment, a small CNN using only the previous 90 sessions of TSLA price and volume achieved meaningful out-of-sample association with future W30 C, especially in relative ordering. Q was substantially weaker, C magnitude was compressed toward zero, and retrain-to-retrain stability remains unresolved. Approximately 43% of the validation timeline had no formal C/Q label; these intervals are now conceptually retained with zero supervised weight rather than deleted or mislabeled. The next research direction should be selected from these findings rather than assumed from the existing pipeline.
-
-This document should be updated whenever a definition or conclusion is explicitly changed.
