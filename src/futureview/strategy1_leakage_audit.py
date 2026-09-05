@@ -31,7 +31,6 @@ def main() -> None:
     p = paths.copy()
     p["final_exit_index"] = final_exit_index(p)
 
-    # Build the exact Layer1 state table used by the current Layer2 audit.
     ce = classify_causal(build_cq(df, paths, membership="entry").rename(columns={"B": "B_periodic"}))
     cx = classify_causal(build_cq(df, paths, membership="exit").rename(columns={"B": "B_periodic"}))
     states = ce[["start_index", "end_index", "state"]].merge(
@@ -45,76 +44,84 @@ def main() -> None:
     eligible = eligible.loc[
         (eligible.end_index.astype(int) - MODEL_HISTORY + 1 >= 0)
         & (eligible.end_index.astype(int) + max(HORIZONS) < len(df))
-    ].copy()
+    ].sort_values("end_index").reset_index(drop=True)
 
-    # Exact duplicate audit.
+    # 1) Exact duplication and overlap audit.
     dup_cut = eligible.end_index.astype(int).duplicated(keep=False)
     dup_windows = eligible.duplicated(["start_index", "end_index"], keep=False)
     print(
         f"S1 LEAK DUPLICATES W={W} eligible={len(eligible)} unique_cutoff={eligible.end_index.nunique()} "
         f"duplicate_cutoff_rows={int(dup_cut.sum())} duplicate_window_rows={int(dup_windows.sum())}"
     )
-
-    # Sliding-window dependence is not exact duplication, but adjacent W windows overlap W-1 days.
     starts = np.sort(eligible.start_index.astype(int).unique())
     adjacent = np.diff(starts) if len(starts) > 1 else np.asarray([], dtype=int)
-    adjacent_one = int((adjacent == 1).sum())
     print(
-        f"S1 LEAK OVERLAP W={W} adjacent_pairs={len(adjacent)} adjacent_by_1={adjacent_one} "
-        f"adjacent_window_overlap_if_step1={max(W-1,0)} overlap_fraction_if_step1={(W-1)/W if W else float('nan'):.6f}"
+        f"S1 LEAK OVERLAP W={W} adjacent_pairs={len(adjacent)} adjacent_by_1={int((adjacent == 1).sum())} "
+        f"median_start_gap={(float(np.median(adjacent)) if len(adjacent) else float('nan')):.3f} "
+        f"step1_overlap_sessions={max(W-1,0)} step1_overlap_fraction={(W-1)/W if W else float('nan'):.6f}"
     )
 
-    # Layer2 label-boundary audit: current code uses cutoff < block_start. Count rows whose label matures after OOS starts.
+    # 2) Layer2 target-boundary audit. Current implementation trains on cutoff < OOS start.
+    # A row is actually mature only when cutoff+h < OOS start.
     first_cut = int(eligible.end_index.min())
     last_cut = int(eligible.end_index.max())
     for h in HORIZONS:
         contaminated = 0
         selected = 0
-        clean_selected = 0
-        folds = 0
+        clean_folds = 0
+        current_folds = 0
         for block_start in range(first_cut, last_cut + 1, ROLL_DAYS):
             block_end = min(block_start + ROLL_DAYS - 1, last_cut)
             va = (eligible.end_index.astype(int) >= block_start) & (eligible.end_index.astype(int) <= block_end)
             if not va.any():
                 continue
-            tr = eligible.loc[eligible.end_index.astype(int) < block_start].sort_values("end_index")
-            if len(tr) < L2_MEMORY:
+            tr_current = eligible.loc[eligible.end_index.astype(int) < block_start].sort_values("end_index")
+            if len(tr_current) < L2_MEMORY:
                 continue
-            tr = tr.iloc[-L2_MEMORY:]
-            folds += 1
-            selected += len(tr)
-            bad = tr.end_index.astype(int) + h >= block_start
-            contaminated += int(bad.sum())
-            clean = eligible.loc[eligible.end_index.astype(int) + h < block_start].sort_values("end_index")
-            if len(clean) >= L2_MEMORY:
-                clean_selected += L2_MEMORY
+            tr_current = tr_current.iloc[-L2_MEMORY:]
+            current_folds += 1
+            selected += len(tr_current)
+            contaminated += int((tr_current.end_index.astype(int) + h >= block_start).sum())
+
+            tr_clean = eligible.loc[eligible.end_index.astype(int) + h < block_start].sort_values("end_index")
+            if len(tr_clean) >= L2_MEMORY:
+                clean_folds += 1
+
         frac = contaminated / selected if selected else float("nan")
         print(
-            f"S1 LEAK L2_LABEL h={h} folds={folds} train_rows={selected} contaminated={contaminated} "
-            f"contaminated_fraction={frac:.6f} clean_memory_rows_available={clean_selected}"
+            f"S1 LEAK L2_LABEL h={h} current_folds={current_folds} train_rows={selected} contaminated={contaminated} "
+            f"contaminated_fraction={frac:.6f} folds_with_full_clean_memory={clean_folds}"
         )
 
-    # Strict common purge for multi-horizon stacking.
+    # Multi-horizon Layer3 requires all underlying Layer2 targets to be mature.
     maxh = max(HORIZONS)
     contaminated = 0
     selected = 0
     folds = 0
+    clean_folds = 0
     for block_start in range(first_cut, last_cut + 1, ROLL_DAYS):
+        block_end = min(block_start + ROLL_DAYS - 1, last_cut)
         va = (eligible.end_index.astype(int) >= block_start) & (eligible.end_index.astype(int) <= block_end)
-        tr = eligible.loc[eligible.end_index.astype(int) < block_start].sort_values("end_index")
-        if not va.any() or len(tr) < L2_MEMORY:
+        if not va.any():
             continue
-        tr = tr.iloc[-L2_MEMORY:]
+        tr_current = eligible.loc[eligible.end_index.astype(int) < block_start].sort_values("end_index")
+        if len(tr_current) < L2_MEMORY:
+            continue
+        tr_current = tr_current.iloc[-L2_MEMORY:]
         folds += 1
-        selected += len(tr)
-        contaminated += int((tr.end_index.astype(int) + maxh >= block_start).sum())
+        selected += len(tr_current)
+        contaminated += int((tr_current.end_index.astype(int) + maxh >= block_start).sum())
+        tr_clean = eligible.loc[eligible.end_index.astype(int) + maxh < block_start].sort_values("end_index")
+        if len(tr_clean) >= L2_MEMORY:
+            clean_folds += 1
     print(
         f"S1 LEAK L2_COMMON_PURGE max_h={maxh} folds={folds} train_rows={selected} contaminated={contaminated} "
-        f"contaminated_fraction={(contaminated/selected if selected else float('nan')):.6f}"
+        f"contaminated_fraction={(contaminated/selected if selected else float('nan')):.6f} "
+        f"folds_with_full_clean_memory={clean_folds}"
     )
 
-    # Layer1 as-of-t audit. Entry-window C/Q uses completed campaign_return from paths selected by entry inside W.
-    # If any selected path exits after window end, that row's C/Q is not knowable at end_index.
+    # 3) Layer1 as-of-t audit. For entry membership, C/Q use campaign returns of paths whose entry is in W;
+    # if those paths exit after W end, their return was not available at end_index.
     entry_cq = build_cq(df, paths, membership="entry")
     exit_cq = build_cq(df, paths, membership="exit")
     for membership, cq in (("entry", entry_cq), ("exit", exit_cq)):
@@ -144,10 +151,13 @@ def main() -> None:
             f"max_exit_lookahead={max_lookahead}"
         )
 
-    # Deterministic path construction itself uses retrospective extrema with radius 5/10,
-    # so an extremum at i cannot be confirmed until up to i+10 sessions.
+    # 4) Path-construction lookahead audit. Local extrema are defined retrospectively using points on both sides.
+    # radius 10 means an extremum cannot be confirmed until 10 sessions after its nominal index.
     print("S1 LEAK EXTREMA retrospective_radius_max=10 confirmation_lookahead_sessions=10")
-    print(f"S1 LEAK CONFIG ticker={TICKER} period={DATA_PERIOD} W={W} roll_days={ROLL_DAYS} l2_memory={L2_MEMORY}")
+    print(
+        f"S1 LEAK CONFIG ticker={TICKER} period={DATA_PERIOD} W={W} roll_days={ROLL_DAYS} "
+        f"l2_memory={L2_MEMORY} horizons={','.join(map(str,HORIZONS))}"
+    )
     print("S1 LEAK COMPLETE")
 
 
