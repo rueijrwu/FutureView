@@ -3,14 +3,6 @@
   "name": "futureview",
   "main": "./worker/main.js",
   "compatibility_date": "2026-09-11",
-  "workers_dev": false,
-  "routes": [
-    {
-      "pattern": "futureview.rueijrwu.dev",
-      "custom_domain": true,
-      "zone_name": "rueijrwu.dev"
-    }
-  ],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
