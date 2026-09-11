@@ -1,0 +1,19 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+from fastapi.testclient import TestClient
+
+from mes_replay.app import create_app
+
+
+def test_health_and_index(tmp_path: Path) -> None:
+    p=tmp_path/"parquet"/"5m"; p.mkdir(parents=True); f=p/"x.parquet"
+    ts=pd.date_range("2024-06-10T13:30:00Z",periods=4,freq="5min")
+    pd.DataFrame({"timestamp":ts,"symbol":"MESM24","instrument_id":1,"open":[1,2,3,4],"high":[2,3,4,5],"low":[0,1,2,3],"close":[1.5,2.5,3.5,4.5],"volume":[10,11,12,13]}).to_parquet(f,index=False)
+    m=tmp_path/"manifest.json"; m.write_text(json.dumps({"files":[{"five_minute":"parquet/5m/x.parquet","symbols":["MESM24"]}]}))
+    with TestClient(create_app(m)) as c:
+        assert c.get("/api/health").json()=={"ok":True,"contracts":1}
+        assert c.get("/").status_code==200

@@ -1,0 +1,56 @@
+name: MES Replay Container
+
+on:
+  push:
+    branches: [intraday-futures-reset]
+    paths:
+      - 'mes-replay/**'
+      - '.github/workflows/mes-replay-container.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Pull one real MES month
+        run: |
+          git lfs install
+          git lfs pull --include='data/databento/mes/raw/glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst'
+          test $(stat -c%s data/databento/mes/raw/glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst) -gt 1000
+      - name: Build standalone image
+        run: docker build -t mes-replay:test mes-replay
+      - name: Unit tests inside container
+        run: docker run --rm --entrypoint pytest mes-replay:test -q /app/tests
+      - name: Prepare real Databento month
+        run: |
+          mkdir -p mes-replay/runtime
+          docker run --rm \
+            -v "$PWD/data/databento/mes/raw:/data/raw:ro" \
+            -v "$PWD/mes-replay/runtime:/data/runtime" \
+            mes-replay:test prepare --raw /data/raw --runtime /data/runtime --limit 1
+          test -f mes-replay/runtime/manifest.json
+      - name: Server smoke
+        run: |
+          docker run --rm -d --name mes-replay-smoke -p 8787:8787 \
+            -v "$PWD/mes-replay/runtime:/data/runtime:ro" \
+            mes-replay:test serve --manifest /data/runtime/manifest.json --host 0.0.0.0 --port 8787
+          for i in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:8787/api/health > health.json; then break; fi
+            sleep .2
+          done
+          cat health.json
+          curl -fsS http://127.0.0.1:8787/ >/dev/null
+          docker logs mes-replay-smoke
+          docker stop mes-replay-smoke
+      - name: Summary
+        if: always()
+        run: |
+          echo '## Standalone MES Replay Container' >> "$GITHUB_STEP_SUMMARY"
+          if test -f health.json; then echo '```json' >> "$GITHUB_STEP_SUMMARY"; cat health.json >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"; fi
