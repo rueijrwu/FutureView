@@ -5,7 +5,10 @@ on:
   push:
     branches: [master]
     paths:
-      - 'cloudflare/**'
+      - 'cloudflare/public/**'
+      - 'cloudflare/worker/**'
+      - 'cloudflare/migrations/**'
+      - 'cloudflare/wrangler.jsonc'
       - '.github/workflows/replay-cloudflare-deploy.yml'
 
 permissions:
