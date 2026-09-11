@@ -1,316 +1,237 @@
 # FutureView — Current Research Handoff
 
 Last rewritten: 2026-09-11
-Branch: `layer2-price-distribution-v1`
+Branch: `intraday-futures-reset`
 
-This handoff marks a major research pivot. The previous TSLA daily Strategy-1 / Layer1 C-Q-U / Layer2 line is **frozen as historical work**. It is not the active research direction unless explicitly revived.
+This branch is a research reset focused on MES intraday price-volume research and the infrastructure needed to support reliable backtests and later live trading.
 
-Do not silently carry old TSLA assumptions, Layer1 labels, W30 definitions, memory rules, target definitions, or model architecture into the new intraday-futures project.
-
----
-
-# 0. New research direction
-
-The new target is **intraday futures trading**, with the primary candidates:
-
-```text
-1. MES — Micro E-mini S&P 500 futures
-2. Taiwan Index Futures / Mini Taiwan Index Futures
-```
-
-The intended trading style is:
-
-```text
-intraday swing / day trading
-technical-analysis driven
-flat by session end unless explicitly redefined
-```
-
-The first implementation target should preferably be **MES**, because it provides a clean first market for building and testing the framework. Taiwan index futures can be studied as a separate market later. Do not mix the two datasets or assume identical session/microstructure behavior.
-
-This is a **new strategy family**, not a parameter change to the TSLA Strategy-1 system.
+The previous TSLA daily Strategy-1 / Layer1 / Layer2 research line is frozen as historical work. Do not silently carry its labels, targets, windows, memory rules, or model architecture into this branch.
 
 ---
 
-# 1. Research philosophy to preserve
+# 0. Current objective
 
-The useful principle from the earlier FutureView work remains:
+The immediate goal is not to define a trading setup or train a model.
+
+The immediate goal is to build a reliable foundation for:
 
 ```text
-first define the opportunity/outcome space
-then verify statistical structure
-then train a model only if the structure exists
+MES historical data acquisition
+-> canonical 5-minute price/volume bars
+-> reproducible backtest feed
+-> later live feed / execution integration
 ```
 
-Do not begin with a CNN, Transformer, classification target, or large indicator set.
-
-The new minimal research question is:
-
-> Given only information available up to intraday time t, does a clearly defined technical setup correspond to a meaningfully different distribution of future intraday opportunity?
-
-The model comes later.
+Research decisions should be deferred until the data and replay path are trustworthy.
 
 ---
 
-# 2. Initial market/data scope
-
-Working starting point:
+# 1. Locked current scope
 
 ```text
 Instrument: MES
-Bar frequency: 1 minute
-Primary session: RTH first
-Position policy: intraday flat
-Input family: price + volume first
+Primary research bar: 5-minute
+Information family: price + volume only
 ```
 
-Potential later aggregation:
+Price means OHLC where available. Volume is bar volume.
 
-```text
-3-minute
-5-minute
-```
+No order book, options flow, macro data, news, sentiment, fundamentals, or alternative data should be introduced unless explicitly approved later.
 
-Do not add order book, options flow, macro data, sentiment, or external alternative data in the first phase.
+Do not assume RTH-only, ETH-only, long-only, short-only, fixed holding horizons, VWAP setups, opening-range rules, MFE/MAE targets, or any model architecture at this stage.
 
-RTH vs overnight must be treated as separate regimes unless an explicit experiment proves they should be combined.
-
-For Taiwan index futures, the session structure must be defined separately before reuse of the MES framework.
+Those are experiment variables, not current baseline assumptions.
 
 ---
 
-# 3. Technical-analysis role
+# 2. Data-first policy
 
-The project remains primarily technical-analysis based.
+Before strategy research, establish a provider-neutral historical bar layer.
 
-However, technical indicators should initially be used mainly to define **candidate setups / events**, not indiscriminately injected as model features.
-
-Candidate setup families may include, but are not yet approved as formal strategy rules:
+Canonical bar schema:
 
 ```text
-VWAP relation / reclaim / rejection
-opening-range breakout or failure
-short/medium momentum alignment
-volume expansion
-pullback and continuation
-breakout / failed breakout
-local intraday trend reversal
+timestamp
+symbol
+open
+high
+low
+close
+volume
 ```
 
-The first task is to choose a small, interpretable setup definition and test it statistically.
+Requirements:
 
-Do not introduce a large indicator library before the base event definition is validated.
+```text
+UTC timestamps
+chronological order
+no duplicate timestamps per symbol
+no null OHLCV rows
+non-negative volume
+provider-specific details hidden behind a common interface
+```
+
+The strategy/backtest layer should consume this canonical schema rather than provider-specific responses.
 
 ---
 
-# 4. New outcome-space concept
+# 3. Current implementation status
 
-A plain future close-to-close return is likely insufficient for intraday trading.
-
-For an observation / candidate entry at time `t` and horizon `h`, define at minimum:
+A provider-neutral market-data layer has been added under:
 
 ```text
-R_h   = return from t to t+h
-MFE_h = maximum favorable excursion within (t, t+h]
-MAE_h = maximum adverse excursion within (t, t+h]
+src/futureview/market_data/
 ```
 
-For a long-side normalized formulation:
+Current components:
 
 ```text
-R_h   = P[t+h] / P[t] - 1
-MFE_h = max(P[t+1:t+h] / P[t] - 1)
-MAE_h = min(P[t+1:t+h] / P[t] - 1)
+provider.py  -> HistoricalBarProvider protocol + canonical schema
+yahoo.py     -> Yahoo/yfinance historical provider
+cli.py       -> command-line downloader
 ```
 
-Equivalent tick/point or volatility-normalized forms may later be compared.
-
-Why this matters:
-
-A setup can create a highly tradable move during the horizon even if the final `R_h` is small. MFE/MAE preserve information about the actual intraday trading opportunity and path risk.
-
-Initial candidate horizons:
+Current free bootstrap symbol:
 
 ```text
-5 min
-15 min
-30 min
-60 min
-120 min
+MES=F
 ```
 
-These are experiment candidates, not yet locked values.
+Current downloader command:
+
+```text
+futureview-download-bars \
+  --symbol 'MES=F' \
+  --interval 5m \
+  --start YYYY-MM-DD \
+  --end YYYY-MM-DD
+```
+
+Yahoo is a bootstrap/prototyping source only. Its available intraday history depth is controlled by Yahoo and may be shorter than requested.
+
+The architecture must remain open to later Databento / IBKR / other providers without changing downstream bar consumers.
 
 ---
 
-# 5. Proposed first statistical question
+# 4. Workflow / validation policy
 
-Before training any model, answer a very small question such as:
-
-> After technical setup X occurs in MES RTH, is the future 30/60/120-minute MFE/MAE distribution materially different from an appropriate baseline?
-
-For each setup, inspect at least:
+A GitHub Actions smoke workflow exists at:
 
 ```text
-sample count
-MFE distribution
-MAE distribution
-R_h distribution
-MFE/MAE ratio or tradeoff
-conditional hit rates for practical move thresholds
-session-time dependence
-stability across chronological periods
+.github/workflows/mes-5m-data-smoke.yml
 ```
 
-The goal is not initially to maximize strategy PnL. The goal is to establish whether a repeatable conditional opportunity distribution exists.
+It should run automatically on pushes to `intraday-futures-reset` that change the MES market-data implementation, tests, project config, workflow, or this handoff.
+
+The smoke workflow must:
+
+```text
+install dependencies
+run market-data unit tests
+download recent MES=F 5-minute bars
+validate canonical schema
+validate timestamp ordering / uniqueness
+validate OHLCV completeness
+validate non-negative volume
+print MES_5M_OK summary
+upload log + sample dataset artifact
+```
+
+The first immediate verification task is to confirm that this workflow successfully downloads real recent MES 5-minute data from Yahoo.
 
 ---
 
-# 6. Causality / leakage rule
+# 5. Backtest architecture direction
 
-All candidate-entry/setup definitions must use only information available at or before time `t`.
+After data download is verified, the next infrastructure milestone is a minimal replay/backtest core.
 
-Future bars may be used only to construct outcomes/labels such as MFE, MAE, and future return.
-
-Explicitly separate:
+The important design rule is:
 
 ```text
-causal setup/input definition
-vs
-retrospective outcome measurement
+historical feed and later live feed should expose the same bar semantics
 ```
 
-Do not repeat the earlier mistake of silently modifying research semantics under the label of "causal correction". Any purge, embargo, overlap handling, session boundary, target maturity rule, or event de-duplication rule must be explicitly discussed and recorded before becoming baseline behavior.
+The first backtest core should stay small and provider-independent. Candidate primitives include:
+
+```text
+BarFeed
+Bar
+Strategy
+Order
+Fill
+Position
+Portfolio
+BrokerSimulator
+```
+
+Do not add strategy-specific logic into the data provider.
+
+Do not optimize PnL or train models before replay correctness and execution timing semantics are defined.
 
 ---
 
-# 7. Pre-training implementation policy
+# 6. Timing / leakage rule
 
-Before actual model training:
+For completed 5-minute bars, close and volume become available only when the bar completes.
 
-```text
-use NumPy / Pandas / SciPy / Numba as appropriate
-avoid PyTorch dependency
-keep event construction and statistical audits lightweight
-```
+Therefore any later backtest must explicitly define when a signal generated from bar `t` may place or fill an order.
 
-PyTorch or another ML framework should be introduced only after a statistically meaningful setup/outcome relation is demonstrated.
+Do not silently allow same-bar lookahead fills.
 
-Where performance matters, prefer vectorized NumPy or Numba over Python loops.
+Execution semantics, session boundaries, roll handling, continuous-contract construction, slippage, commissions, and order types remain separate design decisions that must be explicitly recorded before becoming baseline behavior.
 
 ---
 
-# 8. Model direction — intentionally undecided
+# 7. Futures-specific items not yet locked
 
-No model architecture is currently approved.
-
-Potential later model input may be raw or normalized intraday price/volume history rather than hand-engineered technical indicators, but this is not yet locked.
-
-Possible future prediction target:
+The following remain open and should not be assumed yet:
 
 ```text
-P(MFE_h, MAE_h, R_h | past intraday price/volume, setup context)
+continuous MES vs individual contracts
+roll rule
+back-adjustment rule
+RTH vs full Globex session
+historical source beyond Yahoo bootstrap
+raw storage resolution below 5-minute
+commission/slippage model
+live broker / execution provider
 ```
 
-Possible outputs could include:
-
-```text
-quantiles of MFE / MAE
-probability of reaching a move threshold before a stop threshold
-expected excursion
-rank score for opportunity quality
-```
-
-Do not assume the prior daily Layer2 quantile + BCE architecture should be reused.
+These should be resolved as infrastructure needs require them.
 
 ---
 
-# 9. What is frozen from the previous project
+# 8. Frozen old research line
 
-The following belong to the previous TSLA daily research line and are **not active definitions for the new project**:
+The following belong to the old TSLA daily project and are not active definitions here:
 
 ```text
-TSLA as target instrument
+TSLA target instrument
 daily bars
-Strategy-1 MA5/MA10/MA20 Entry
-5D/10D retrospective extrema path construction
+Strategy-1 MA5/MA10/MA20 entry
+5D/10D retrospective extrema
 60D campaign horizon
-W30 complete-path Layer1 windows
+W30 complete-path windows
 U / B / C / Q labels
-H / N / L Layer1 states
+H / N / L states
 90D daily normalized P/V input
 30D Layer2 training lookback
 15D retrain cadence
 legacy memory=150
-old Layer2 CNN / quantile / BCE experiments
+old CNN / quantile / BCE architecture
 ```
 
-These results should be preserved for historical reference, not deleted.
-
-Most recent verified old-line observation before pivot:
-
-```text
-W30 complete-path TSLA audit
-run 33936283146
-commit dc69088f0c3c15c977a7fa5ba2345b2834d6db8c
-```
-
-Its C/Q/U findings remain valid only for that old definition.
+Preserve old results for historical reference only.
 
 ---
 
-# 10. Immediate next discussion
-
-Do **not** start model training yet.
-
-The next research discussion should define one minimal legal intraday setup for MES.
-
-Decisions needed, in order:
-
-1. Exact market/session: MES RTH first?
-2. Exact bar representation: 1-minute baseline?
-3. Long only first, or symmetric long/short?
-4. What constitutes one legal candidate entry event?
-5. How to prevent near-duplicate events during the same local move?
-6. Which first horizons to evaluate: e.g. 30/60/120 min?
-7. Outcome units: raw return, points/ticks, or volatility-normalized excursion?
-8. What baseline distribution should the setup be compared against?
-
-Only after these are locked should data acquisition and the first statistical audit be implemented.
-
----
-
-# 11. Recommended first experiment
-
-A reasonable first candidate, pending explicit approval, is:
+# 9. Immediate next action
 
 ```text
-Market: MES
-Session: RTH only
-Bars: 1 minute
-Direction: long-only first for simplicity
-Setup family: one simple VWAP / opening-range / momentum event
-Outcomes: MFE, MAE, R_h
-Horizons: 30, 60, 120 minutes
-Model: none
-Evaluation: conditional-distribution separation + chronological stability
+1. Trigger MES 5m Data Smoke on GitHub Actions.
+2. Confirm real MES=F 5-minute bars download successfully.
+3. Inspect row count, first/last timestamp, and artifact.
+4. Only after that, begin the minimal historical replay/backtest core.
 ```
 
-This is only a proposed starting experiment. The exact setup definition must be discussed before implementation.
-
----
-
-# 12. Handoff rule
-
-The next agent/session should treat this document as a **research reset**.
-
-Do not continue the old TSLA Layer2 implementation by default.
-
-The first objective is now:
-
-```text
-define a causal intraday technical setup
--> measure its future MFE/MAE/return distribution
--> verify whether useful structure exists
--> only then design the predictive model
-```
+Do not start model training or technical-setup research before these infrastructure steps are complete.

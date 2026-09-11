@@ -4,6 +4,7 @@ on:
   push:
     branches: [intraday-futures-reset]
     paths:
+      - 'HANDOFF.md'
       - 'src/futureview/market_data/**'
       - 'tests/test_yahoo_market_data.py'
       - 'pyproject.toml'
