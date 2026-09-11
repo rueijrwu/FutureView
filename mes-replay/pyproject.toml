@@ -24,3 +24,6 @@ mes-replay = "mes_replay.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+mes_replay = ["static/*.html", "static/*.css", "static/*.js"]
