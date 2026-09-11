@@ -1,12 +1,14 @@
-name: MES Replay Python
+name: Replay Python
 
 on:
   push:
     branches: [master]
     paths:
-      - 'mes-replay/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
       - 'data/databento/mes/raw/**'
-      - '.github/workflows/mes-replay-python.yml'
+      - '.github/workflows/replay-python.yml'
   workflow_dispatch:
 
 permissions:
@@ -29,26 +31,21 @@ jobs:
           git lfs pull --include='data/databento/mes/raw/glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst'
           test $(stat -c%s data/databento/mes/raw/glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst) -gt 1000
       - name: Install replay package
-        working-directory: mes-replay
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e '.[test]'
       - name: Unit tests
-        working-directory: mes-replay
         run: pytest -q tests
       - name: Prepare real Databento month
-        working-directory: mes-replay
-        run: mes-replay prepare --raw ../data/databento/mes/raw --runtime ./runtime --limit 1
+        run: mes-replay prepare --raw data/databento/mes/raw --runtime runtime --limit 1
       - name: Export replay shards
-        working-directory: mes-replay
         run: |
-          mes-replay cloud-export --runtime ./runtime --output ./runtime/cloud-export
+          mes-replay cloud-export --runtime runtime --output runtime/cloud-export
           test -f runtime/cloud-export/manifest.json
           find runtime/cloud-export -name '*.json.gz' -print -quit | grep .
       - name: Server smoke
-        working-directory: mes-replay
         run: |
-          mes-replay serve --manifest ./runtime/manifest.json --host 127.0.0.1 --port 8787 > replay-server.log 2>&1 &
+          mes-replay serve --manifest runtime/manifest.json --host 127.0.0.1 --port 8787 > replay-server.log 2>&1 &
           SERVER_PID=$!
           for i in $(seq 1 50); do
             if curl -fsS http://127.0.0.1:8787/api/health > health.json; then break; fi

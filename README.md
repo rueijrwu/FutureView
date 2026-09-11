@@ -1,34 +1,55 @@
 # FutureView
 
-FutureView studies whether causal price/volume structure can identify when a fixed trading strategy has favorable future economic outcomes.
+FutureView is a browser-based historical MES replay and backtest platform.
 
-## Canonical documentation
+## Current scope
 
-The project documentation is intentionally consolidated into two files:
+- Instrument: CME Micro E-mini S&P 500 futures (MES)
+- Historical source: Databento GLBX.MDP3 OHLCV-1m
+- Replay clock: 5-minute bars
+- Browser controls: Next, Play, Pause, Restart, 1x–100x and Max
+- User-facing timezone: America/New_York (ET)
+- Internal/storage timestamps: UTC
+- Cloud runtime: Cloudflare Worker + Durable Object + R2 + D1
 
-- `RESEARCH.md` — research question, Strategy 1 research definition, L / μ / U / Q semantics, SPY/QQQ/SMH evidence, strategy-headroom finding, validation principles, and current research direction.
-- `IMPLEMENT.md` — executable Strategy 1 semantics, label construction, data/holdout rules, model baselines, workflows, commands, reproducibility requirements, and historical implementation notes.
+The browser never receives bars beyond the replay cursor.
 
-Use `RESEARCH.md` as the source of truth for **what FutureView means and what has been learned**.
+## Local setup
 
-Use `IMPLEMENT.md` as the source of truth for **how the repository implements and reproduces the research**.
-
-## Current reduced question
-
-```text
-Given only causal OHLCV information observable at a formal Strategy 1 Entry,
-can a model identify Entries whose future legal Strategy 1 paths have better
-L (lower outcome), μ (mean return), and U (upper opportunity)?
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -e '.[test]'
 ```
 
-A key current principle is to distinguish:
+Prepare historical data:
 
-```text
-strategy headroom != model skill
+```bash
+mes-replay prepare \
+  --raw data/databento/mes/raw \
+  --runtime runtime
 ```
 
-Before judging a model on SPY, QQQ, SMH, or another symbol, first establish how much entry-selection/timing value Strategy 1 itself creates relative to simple baselines.
+Run the local replay app:
 
-## Documentation policy
+```bash
+mes-replay serve \
+  --manifest runtime/manifest.json \
+  --host 127.0.0.1 \
+  --port 8787
+```
 
-Do not create new root-level Markdown files for each experiment. Research conclusions should be added to `RESEARCH.md`; implementation/workflow details should be added to `IMPLEMENT.md`.
+Open `http://127.0.0.1:8787`.
+
+## Repository layout
+
+```text
+src/mes_replay/       Python replay/data package
+tests/                Python tests
+data/databento/       Databento source archive via Git LFS
+cloudflare/           Worker, Durable Object, browser UI, D1 migrations
+.github/workflows/    Python CI, Cloudflare check, production deploy
+HANDOFF.md            current design/status handoff
+```
+
+There is no Docker requirement.

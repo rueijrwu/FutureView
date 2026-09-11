@@ -1,2 +1,7 @@
-node_modules/
-.cache/futureview/
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+runtime/
+cloudflare/.dry-run/
+cloudflare/.wrangler/
