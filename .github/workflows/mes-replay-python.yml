@@ -1,0 +1,86 @@
+name: MES Replay Python
+
+on:
+  push:
+    branches: [intraday-futures-reset]
+    paths:
+      - 'mes-replay/**'
+      - '.github/workflows/mes-replay-python.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+
+      - name: Pull one real MES month
+        run: |
+          git lfs install
+          git lfs pull --include='data/databento/mes/raw/glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst'
+          test $(stat -c%s data/databento/mes/raw/glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst) -gt 1000
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install standalone replay package
+        working-directory: mes-replay
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[test]'
+
+      - name: Unit tests
+        working-directory: mes-replay
+        run: pytest -q
+
+      - name: Prepare real Databento month
+        working-directory: mes-replay
+        run: |
+          mkdir -p runtime
+          mes-replay prepare --raw ../data/databento/mes/raw --runtime ./runtime --limit 1
+          test -f runtime/manifest.json
+
+      - name: Export R2 replay shards
+        working-directory: mes-replay
+        run: |
+          mes-replay cloud-export --runtime ./runtime --output ./runtime/cloud-export
+          test -f runtime/cloud-export/manifest.json
+          python - <<'PY'
+          import gzip, json
+          from pathlib import Path
+          root = Path('runtime/cloud-export')
+          manifest = json.loads((root / 'manifest.json').read_text())
+          assert manifest['contracts']
+          first = next(iter(manifest['contracts'].values()))['shards'][0]['key']
+          with gzip.open(root / first, 'rt', encoding='utf-8') as fh:
+              bars = json.load(fh)
+          assert bars and {'t','o','h','l','c','v'} <= bars[0].keys()
+          print('MES_CLOUD_EXPORT_OK', first, len(bars))
+          PY
+
+      - name: Server smoke
+        working-directory: mes-replay
+        run: |
+          mes-replay serve --manifest ./runtime/manifest.json --host 127.0.0.1 --port 8787 > replay-server.log 2>&1 &
+          SERVER_PID=$!
+          for i in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:8787/api/health > health.json; then break; fi
+            sleep .2
+          done
+          cat health.json
+          curl -fsS http://127.0.0.1:8787/ >/dev/null
+          kill $SERVER_PID
+
+      - name: Summary
+        if: always()
+        working-directory: mes-replay
+        run: |
+          echo '## MES Replay Python' >> "$GITHUB_STEP_SUMMARY"
+          if test -f health.json; then echo '```json' >> "$GITHUB_STEP_SUMMARY"; cat health.json >> "$GITHUB_STEP_SUMMARY"; echo '```' >> "$GITHUB_STEP_SUMMARY"; fi
