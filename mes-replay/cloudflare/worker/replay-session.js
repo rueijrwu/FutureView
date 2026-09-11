@@ -37,6 +37,7 @@ export class ReplaySession extends DurableObject {
     }
     if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
       if (!this.session) return new Response("Session not initialized", { status: 409 });
+      await this._loadShard(this.session.shardIndex);
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
       this.ctx.acceptWebSocket(server);
@@ -121,11 +122,10 @@ export class ReplaySession extends DurableObject {
     const contract = (await this._manifest()).contracts[this.session.contract];
     let remaining = count;
     let index = shardIndex;
-    let end = barIndex;
     const chunks = [];
     while (index >= 0 && remaining > 0) {
       const bars = await this._loadShardForContract(contract, index);
-      const takeEnd = index === shardIndex ? end + 1 : bars.length;
+      const takeEnd = index === shardIndex ? barIndex + 1 : bars.length;
       const takeStart = Math.max(0, takeEnd - remaining);
       chunks.unshift(bars.slice(takeStart, takeEnd));
       remaining -= takeEnd - takeStart;

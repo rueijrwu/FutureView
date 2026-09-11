@@ -36,6 +36,25 @@ jobs:
             -v "$PWD/mes-replay/runtime:/data/runtime" \
             mes-replay:test prepare --raw /data/raw --runtime /data/runtime --limit 1
           test -f mes-replay/runtime/manifest.json
+      - name: Export R2 replay shards
+        run: |
+          docker run --rm \
+            -v "$PWD/mes-replay/runtime:/data/runtime" \
+            mes-replay:test cloud-export --runtime /data/runtime --output /data/runtime/cloud-export
+          test -f mes-replay/runtime/cloud-export/manifest.json
+          python - <<'PY'
+          import gzip, json
+          from pathlib import Path
+          root=Path('mes-replay/runtime/cloud-export')
+          manifest=json.loads((root/'manifest.json').read_text())
+          assert manifest['contracts']
+          contract=next(iter(manifest['contracts'].values()))
+          shard=contract['shards'][0]
+          path=root/shard['key']
+          with gzip.open(path,'rt',encoding='utf-8') as f: bars=json.load(f)
+          assert bars and all({'t','o','h','l','c','v'} <= set(x) for x in bars[:10])
+          print('MES_CLOUD_EXPORT_OK', len(manifest['contracts']), path, len(bars))
+          PY
       - name: Server smoke
         run: |
           docker run --rm -d --name mes-replay-smoke -p 8787:8787 \
