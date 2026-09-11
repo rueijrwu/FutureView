@@ -1,0 +1,84 @@
+name: MES Replay MVP
+
+on:
+  push:
+    branches: [intraday-futures-reset]
+    paths:
+      - 'src/futureview/replay/**'
+      - 'scripts/run_replay.py'
+      - 'requirements-replay.txt'
+      - 'tests/test_replay_engine.py'
+      - '.github/workflows/mes-replay-mvp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay-mvp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Pull one real Databento month from LFS
+        run: |
+          git lfs install
+          git lfs pull --include='data/databento/mes/raw/glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst'
+          test $(stat -c%s data/databento/mes/raw/glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst) -gt 1000
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-replay.txt
+      - name: Install replay dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-replay.txt
+          python -m pip install -e . --no-deps
+      - name: Replay unit tests
+        run: python -m pytest -q tests/test_replay_engine.py
+      - name: Prepare one real MES month
+        run: python scripts/prepare_mes_databento.py --limit 1
+      - name: Real-data replay smoke
+        run: python -m futureview.replay.smoke | tee mes-replay-smoke.log
+      - name: Local web server smoke
+        run: |
+          python scripts/run_replay.py --no-open-browser --port 8787 > replay-server.log 2>&1 &
+          SERVER_PID=$!
+          python - <<'PY'
+          import json, time, urllib.request
+          for _ in range(50):
+              try:
+                  with urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=1) as r:
+                      body=json.load(r)
+                  assert body['ok'] is True
+                  with urllib.request.urlopen('http://127.0.0.1:8787/', timeout=1) as r:
+                      assert r.status == 200
+                  print('MES_REPLAY_WEB_OK', body)
+                  break
+              except Exception:
+                  time.sleep(0.1)
+          else:
+              raise SystemExit('Replay server did not become ready')
+          PY
+          kill $SERVER_PID
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## MES Replay MVP'
+            echo
+            echo '```text'
+            grep -E 'MES_REPLAY_OK|MES_REPLAY_WEB_OK' mes-replay-smoke.log replay-server.log 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mes-replay-mvp-${{ github.run_number }}
+          path: |
+            mes-replay-smoke.log
+            replay-server.log
+          retention-days: 30
