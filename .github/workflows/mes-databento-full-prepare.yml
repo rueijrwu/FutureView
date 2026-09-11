@@ -1,0 +1,132 @@
+name: MES Databento Full Prepare
+
+on:
+  push:
+    branches: [intraday-futures-reset]
+    paths:
+      - 'scripts/prepare_mes_databento.py'
+      - '.github/workflows/mes-databento-full-prepare.yml'
+      - 'data/databento/mes/raw/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-mes-databento:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout with Git LFS
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'databento>=0.60' 'pandas>=2.2' 'pyarrow>=17'
+
+      - name: Verify LFS payloads
+        run: |
+          set -euo pipefail
+          count=$(find data/databento/mes/raw -maxdepth 1 -name '*.dbn.zst' | wc -l)
+          echo "MES_LFS_FILES count=$count"
+          test "$count" -gt 0
+          python - <<'PY'
+          from pathlib import Path
+          files = sorted(Path('data/databento/mes/raw').glob('*.dbn.zst'))
+          bad = [(p.name, p.stat().st_size) for p in files if p.stat().st_size < 1024]
+          if bad:
+              raise SystemExit(f'LFS payloads not materialized: {bad[:5]}')
+          print('MES_LFS_OK', f'files={len(files)}', f'bytes={sum(p.stat().st_size for p in files)}')
+          PY
+
+      - name: Prepare all monthly MES files
+        run: |
+          set -o pipefail
+          python scripts/prepare_mes_databento.py 2>&1 | tee mes-databento-full-prepare.log
+
+      - name: Validate prepared dataset
+        run: |
+          python - <<'PY' | tee -a mes-databento-full-prepare.log
+          import json
+          import re
+          from pathlib import Path
+          import pandas as pd
+
+          manifest_path = Path('data/databento/mes/processed_manifest.json')
+          manifest = json.loads(manifest_path.read_text())
+          totals = manifest['totals']
+          files = manifest['files']
+
+          if totals['source_files'] != len(files):
+              raise SystemExit('manifest source file count mismatch')
+          if totals['source_files'] < 80:
+              raise SystemExit(f'unexpectedly few monthly source files: {totals["source_files"]}')
+          if totals['rows_1m'] <= 0 or totals['rows_5m'] <= 0:
+              raise SystemExit('prepared dataset has zero rows')
+          if totals['rows_5m'] >= totals['rows_1m']:
+              raise SystemExit('5m rows should be fewer than 1m rows')
+
+          outright = re.compile(r'^MES[HMUZ]\d{1,2}$')
+          all_symbols = sorted({s for f in files for s in f['symbols']})
+          bad_symbols = [s for s in all_symbols if not outright.fullmatch(s)]
+          if bad_symbols:
+              raise SystemExit(f'non-outright symbols present: {bad_symbols[:20]}')
+
+          five_files = sorted(Path('data/databento/mes/parquet/5m').glob('*.parquet'))
+          if len(five_files) != totals['source_files']:
+              raise SystemExit('5m parquet file count mismatch')
+
+          sample = pd.read_parquet(five_files[-1])
+          required = ['timestamp','symbol','instrument_id','open','high','low','close','volume']
+          missing = [c for c in required if c not in sample.columns]
+          if missing:
+              raise SystemExit(f'sample parquet missing columns: {missing}')
+          if sample.empty:
+              raise SystemExit('latest 5m parquet is empty')
+          if sample['timestamp'].duplicated().any() and sample.duplicated(['symbol','timestamp']).any():
+              raise SystemExit('duplicate symbol/timestamp rows in sample')
+          if sample[['open','high','low','close','volume']].isna().any().any():
+              raise SystemExit('sample contains null OHLCV')
+
+          print(
+              'MES_FULL_PREPARE_OK',
+              f'files={totals["source_files"]}',
+              f'rows_1m={totals["rows_1m"]}',
+              f'rows_5m={totals["rows_5m"]}',
+              f'contracts={len(all_symbols)}',
+              f'first={min(f["first_timestamp"] for f in files if f["first_timestamp"])}',
+              f'last={max(f["last_timestamp"] for f in files if f["last_timestamp"])}',
+          )
+          PY
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## MES Databento Full Prepare'
+            echo
+            echo '```text'
+            grep -E '^MES_(LFS|DBN|FULL_PREPARE)' mes-databento-full-prepare.log 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload manifest and 5m dataset
+        uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: mes-databento-5m-${{ github.run_number }}
+          path: |
+            data/databento/mes/processed_manifest.json
+            data/databento/mes/parquet/5m/*.parquet
+            mes-databento-full-prepare.log
+          retention-days: 30
