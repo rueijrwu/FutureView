@@ -1,0 +1,39 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "futureview-mes-replay",
+  "main": "./worker/main.js",
+  "compatibility_date": "2026-09-11",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*"]
+  },
+  "r2_buckets": [
+    {
+      "binding": "MES_DATA",
+      "bucket_name": "futureview-data"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "futureview-mes-replay",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REPLAY_SESSION",
+        "class_name": "ReplaySession"
+      }
+    ]
+  },
+  "exports": {
+    "ReplaySession": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}

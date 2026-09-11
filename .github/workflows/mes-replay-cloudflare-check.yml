@@ -1,0 +1,30 @@
+name: MES Replay Cloudflare Check
+
+on:
+  push:
+    branches: [intraday-futures-reset]
+    paths:
+      - 'mes-replay/cloudflare/**'
+      - 'mes-replay/src/mes_replay/cloud_export.py'
+      - 'mes-replay/src/mes_replay/cli.py'
+      - '.github/workflows/mes-replay-cloudflare-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Worker syntax
+        working-directory: mes-replay/cloudflare
+        run: node --check worker/main.js && node --check worker/replay-session.js
+      - name: Wrangler dry run
+        working-directory: mes-replay/cloudflare
+        run: npx --yes wrangler@4.125.0 deploy --dry-run --outdir .dry-run
