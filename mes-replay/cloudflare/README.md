@@ -1,42 +1,26 @@
-# Cloudflare MES Replay
+# FutureView MES Replay Cloudflare Runtime
 
-Standalone cloud visualization/runtime for `mes-replay`.
+This directory contains the production Cloudflare runtime for the new FutureView MES replay application.
 
-Architecture:
+Production identity:
+- Worker name: `futureview`
+- R2 bucket: `futureview-data`
+- Replay objects prefix: `mes-replay/v1/`
+- D1 database: `futureview-mes-replay`
+- Durable Object class: `ReplaySession`
 
-- Cloudflare Assets serves the chart UI.
-- R2 bucket `futureview-data` stores replay data only under `mes-replay/v1/`.
-- Durable Object `ReplaySession` owns the active cursor and WebSocket. The browser never receives unreleased future bars.
-- D1 database `futureview-mes-replay` records replay session snapshots and later trade history.
-- The legacy FutureView Worker/D1 schema is not imported.
+The browser UI and API are served by the same Worker deployment. The legacy FutureView dashboard is no longer the production target.
 
-## Build R2 replay data
+## Data publish
 
-After local DBN preparation:
+Prepare locally or in CI:
 
 ```bash
 cd mes-replay
-docker compose run --rm replay cloud-export --runtime /data/runtime --output /data/runtime/cloud-export
+mes-replay prepare --raw ../data/databento/mes/raw --runtime ./runtime
+mes-replay cloud-export --runtime ./runtime --output ./runtime/cloud-export
 ```
 
-The export produces `manifest.json` plus compressed monthly contract shards. Upload them under the R2 prefix `mes-replay/v1/`.
+Publish the generated cloud export under the `mes-replay/v1/` prefix in `futureview-data`, then deploy the Worker.
 
-## R2 upload
-
-With Wrangler authenticated, from `mes-replay/cloudflare`:
-
-```bash
-./publish-r2.sh ../runtime/cloud-export
-```
-
-## Local Cloudflare check
-
-```bash
-npm install
-npm run check
-npm run dry-run
-```
-
-## Production deploy
-
-The repository workflow `MES Replay Cloudflare Deploy` is manual (`workflow_dispatch`) and resolves/creates the dedicated D1 database before applying migrations and deploying the standalone Worker.
+All backend timestamps remain UTC. Browser input and chart display use America/New_York (ET).
