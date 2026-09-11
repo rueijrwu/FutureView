@@ -104,13 +104,13 @@ def prepare(
         print(f"PREPARE_OK product={product} symbols={','.join(symbols)} rows_1m={len(one)} rows_5m={len(five)}", flush=True)
 
     manifest = {
-        "version": 2,
+        "version": 3,
         "dataset": dataset,
         "product": product,
         "source_schema": source_schema,
         "symbol_regex": pattern_text,
         "continuous_series": False,
-        "roll_rule": None,
+        "roll_rule": "prior_session_volume",
         "files": entries,
     }
     manifest_path = runtime_dir / "manifest.json"

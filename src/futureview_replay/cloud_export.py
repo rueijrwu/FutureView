@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import gzip
 import json
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
+
+from futureview_replay.resolver import (
+    DISPLAY_TIME_ZONE,
+    SESSION_ROLL_HOUR_ET,
+    build_selection_calendar,
+    session_date,
+)
 
 
 def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
@@ -12,6 +20,7 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     output_dir.mkdir(parents=True, exist_ok=True)
     contracts: dict[str, dict[str, object]] = {}
+    session_volumes: dict[date, dict[str, float]] = {}
 
     for entry in manifest["files"]:
         path = runtime_dir / str(entry["five_minute"])
@@ -22,6 +31,9 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
             group = group.sort_values("timestamp")
             if group.empty:
                 continue
+            for row in group.itertuples(index=False):
+                volumes = session_volumes.setdefault(session_date(pd.Timestamp(row.timestamp).to_pydatetime()), {})
+                volumes[contract] = volumes.get(contract, 0.0) + float(row.volume)
             bars = [
                 {
                     "t": int(row.timestamp.timestamp()),
@@ -60,13 +72,20 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
         info["shards"] = sorted(info["shards"], key=lambda x: (x["first_time"], x["key"]))
         ordered[contract] = info
 
+    selection_calendar = build_selection_calendar(session_volumes)
     cloud_manifest = {
-        "version": 2,
+        "version": 3,
         "dataset": manifest.get("dataset"),
         "product": manifest.get("product"),
         "resolution": "5m",
         "continuous_series": False,
-        "roll_rule": None,
+        "roll_rule": "prior_session_volume",
+        "contract_selection": {
+            "rule": "prior_session_volume",
+            "time_zone": str(DISPLAY_TIME_ZONE),
+            "session_roll_hour_et": SESSION_ROLL_HOUR_ET,
+            "sessions": selection_calendar,
+        },
         "contracts": ordered,
     }
     out = output_dir / "manifest.json"

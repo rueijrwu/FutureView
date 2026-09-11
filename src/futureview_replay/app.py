@@ -14,7 +14,7 @@ from futureview_replay.store import BarStore
 
 
 class StartRequest(BaseModel):
-    contract: str
+    product: str
     start: datetime
     warmup: int = Field(default=300, ge=0, le=5000)
 
@@ -27,7 +27,7 @@ def create_app(manifest: str | Path) -> FastAPI:
     store = BarStore(manifest)
     engine = ReplayEngine(store)
     static = Path(__file__).with_name("static")
-    app = FastAPI(title="FutureView Replay", version="0.2.0")
+    app = FastAPI(title="FutureView Replay", version="0.3.0")
     app.state.engine = engine
     app.mount("/static", StaticFiles(directory=static), name="static")
 
@@ -43,6 +43,10 @@ def create_app(manifest: str | Path) -> FastAPI:
     async def contracts() -> dict[str, Any]:
         return {"product": store.manifest.get("product"), "contracts": store.contracts()}
 
+    @app.get("/api/replay/range")
+    async def replay_range() -> dict[str, object]:
+        return store.replay_range()
+
     @app.get("/api/contracts/{contract}")
     async def info(contract: str) -> dict[str, object]:
         try:
@@ -57,7 +61,7 @@ def create_app(manifest: str | Path) -> FastAPI:
     @app.post("/api/replay/start")
     async def start(req: StartRequest) -> dict[str, Any]:
         try:
-            return await engine.start(req.contract, req.start, req.warmup)
+            return await engine.start(req.product, req.start, req.warmup)
         except (KeyError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from exc
 

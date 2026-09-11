@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 
 from futureview_replay.models import Bar
+from futureview_replay.resolver import build_selection_calendar, resolve_from_calendar, session_date
 
 
 class BarStore:
@@ -16,6 +18,7 @@ class BarStore:
         self._paths: dict[str, list[Path]] = {}
         self._order: list[str] = []
         self._cache: dict[str, list[Bar]] = {}
+        self._selection_calendar: list[dict[str, object]] | None = None
         for entry in self.manifest["files"]:
             path = self.root / str(entry["five_minute"])
             for symbol in entry["symbols"]:
@@ -26,6 +29,10 @@ class BarStore:
 
     def contracts(self) -> list[str]:
         return list(self._order)
+
+    @property
+    def product(self) -> str:
+        return str(self.manifest["product"])
 
     def bars(self, contract: str) -> list[Bar]:
         if contract in self._cache:
@@ -58,6 +65,29 @@ class BarStore:
         ]
         self._cache[contract] = result
         return result
+
+    def replay_range(self) -> dict[str, object]:
+        infos = [self.info(contract) for contract in self.contracts()]
+        return {
+            "product": self.product,
+            "first": min(str(info["first"]) for info in infos),
+            "last": max(str(info["last"]) for info in infos),
+        }
+
+    def resolve_contract(self, product: str, start: datetime) -> dict[str, object]:
+        if product.upper() != self.product.upper():
+            raise ValueError(f"Unknown product {product}")
+        if self._selection_calendar is None:
+            volumes: dict[date, dict[str, float]] = {}
+            for path in dict.fromkeys(path for paths in self._paths.values() for path in paths):
+                frame = pd.read_parquet(path, columns=["timestamp", "symbol", "volume"])
+                frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+                for row in frame.itertuples(index=False):
+                    current = volumes.setdefault(session_date(row.timestamp.to_pydatetime()), {})
+                    symbol = str(row.symbol)
+                    current[symbol] = current.get(symbol, 0.0) + float(row.volume)
+            self._selection_calendar = build_selection_calendar(volumes)
+        return resolve_from_calendar(self._selection_calendar, start)
 
     def info(self, contract: str) -> dict[str, object]:
         bars = self.bars(contract)

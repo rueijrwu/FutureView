@@ -6,11 +6,47 @@ export { ReplaySession };
 // raw-data migration. It is data layout, not the platform/package identity.
 const PREFIX = "mes-replay/v1";
 const PAGES_ORIGIN = "https://futureview.pages.dev";
+const DISPLAY_TIME_ZONE = "America/New_York";
+const SESSION_END_HOUR_ET = 17;
+const sessionFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: DISPLAY_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  hourCycle: "h23",
+});
 
 async function readManifest(env) {
   const object = await env.MES_DATA.get(`${PREFIX}/manifest.json`);
   if (!object) return null;
   return JSON.parse(await object.text());
+}
+
+function tradingSessionDate(value) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new Error("Invalid start timestamp");
+  const parts = Object.fromEntries(
+    sessionFormatter.formatToParts(date).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
+  );
+  const localDate = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
+  if (Number(parts.hour) >= SESSION_END_HOUR_ET) localDate.setUTCDate(localDate.getUTCDate() + 1);
+  return localDate.toISOString().slice(0, 10);
+}
+
+function resolveContract(manifest, product, start) {
+  if (String(product ?? "").toUpperCase() !== String(manifest.product ?? "").toUpperCase()) {
+    throw new Error(`Unknown product ${product}`);
+  }
+  const sessions = manifest.contract_selection?.sessions;
+  if (!Array.isArray(sessions) || !sessions.length) {
+    throw new Error("Replay contract-selection metadata is unavailable; publish replay data version 3");
+  }
+  const target = tradingSessionDate(start);
+  const selection = sessions.find((item) => String(item.session) >= target);
+  if (!selection) throw new Error("No replay session exists at or after requested start");
+  if (!manifest.contracts?.[selection.contract]) throw new Error(`Resolved contract ${selection.contract} is unavailable`);
+  return selection;
 }
 
 function corsHeaders(request) {
@@ -59,6 +95,19 @@ export default {
       return json(request, { product: manifest.product ?? null, contracts: Object.values(manifest.contracts ?? {}) });
     }
 
+    if (url.pathname === "/api/replay/range" && request.method === "GET") {
+      const manifest = await readManifest(env);
+      if (!manifest) return json(request, { error: "Replay manifest not published" }, 503);
+      const contracts = Object.values(manifest.contracts ?? {});
+      if (!contracts.length) return json(request, { error: "No replay contracts published" }, 503);
+      return json(request, {
+        product: manifest.product ?? null,
+        first_time: Math.min(...contracts.map((item) => Number(item.first_time))),
+        last_time: Math.max(...contracts.map((item) => Number(item.last_time))),
+        selection_rule: manifest.contract_selection?.rule ?? null,
+      });
+    }
+
     const contractMatch = url.pathname.match(/^\/api\/contracts\/([^/]+)$/);
     if (contractMatch && request.method === "GET") {
       const manifest = await readManifest(env);
@@ -68,20 +117,30 @@ export default {
     }
 
     if (url.pathname === "/api/replay/sessions" && request.method === "POST") {
-      const body = await request.json();
-      const manifest = await readManifest(env);
-      const contract = String(body.contract ?? "");
-      if (!manifest?.contracts?.[contract]) return json(request, { error: `Unknown contract ${contract}` }, 400);
-      const id = crypto.randomUUID();
-      const stub = env.REPLAY_SESSION.get(env.REPLAY_SESSION.idFromName(id));
-      const response = await stub.fetch("https://session/init", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ session_id: id, contract, start: body.start, warmup: body.warmup ?? 300 }),
-      });
-      const payload = await response.json();
-      if (!response.ok) return json(request, payload, response.status);
-      return json(request, { ...payload, session_id: id, websocket: `/api/replay/sessions/${id}/ws` }, 201);
+      try {
+        const body = await request.json();
+        const manifest = await readManifest(env);
+        if (!manifest) return json(request, { error: "Replay manifest not published" }, 503);
+        const selection = resolveContract(manifest, body.product, body.start);
+        const id = crypto.randomUUID();
+        const stub = env.REPLAY_SESSION.get(env.REPLAY_SESSION.idFromName(id));
+        const response = await stub.fetch("https://session/init", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            session_id: id,
+            contract: selection.contract,
+            contract_selection: selection,
+            start: body.start,
+            warmup: body.warmup ?? 300,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) return json(request, payload, response.status);
+        return json(request, { ...payload, session_id: id, websocket: `/api/replay/sessions/${id}/ws` }, 201);
+      } catch (error) {
+        return json(request, { error: String(error?.message ?? error) }, 400);
+      }
     }
 
     const sessionMatch = url.pathname.match(/^\/api\/replay\/sessions\/([0-9a-f-]+)\/ws$/i);

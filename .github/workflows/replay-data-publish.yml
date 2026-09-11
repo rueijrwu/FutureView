@@ -9,6 +9,7 @@ on:
       - 'src/futureview_replay/fetch_raw.py'
       - 'src/futureview_replay/prepare.py'
       - 'src/futureview_replay/cloud_export.py'
+      - 'src/futureview_replay/resolver.py'
       - 'cloudflare/publish-r2.sh'
       - 'pyproject.toml'
 

@@ -88,6 +88,7 @@ export class ReplaySession extends DurableObject {
     this.session = {
       id: body.session_id,
       contract: contract.contract,
+      contractSelection: body.contract_selection ?? null,
       shardIndex: resolvedShard,
       barIndex,
       originShardIndex: resolvedShard,
@@ -145,6 +146,7 @@ export class ReplaySession extends DurableObject {
       type: "session_snapshot",
       session_id: this.session.id,
       contract: this.session.contract,
+      contract_selection: this.session.contractSelection,
       state: this.session.state,
       speed: this.session.speed,
       cursor: bar?.t ?? null,

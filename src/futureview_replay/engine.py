@@ -18,6 +18,7 @@ class ReplayEngine:
         self.state = ReplayState.STOPPED
         self.speed: int | str = 1
         self.contract: str | None = None
+        self.selection: dict[str, object] | None = None
         self._bars: list[Bar] = []
         self._cursor = -1
         self._origin = -1
@@ -49,22 +50,26 @@ class ReplayEngine:
             "state": self.state.value,
             "speed": self.speed,
             "contract": self.contract,
+            "contract_selection": self.selection,
             "cursor": current.timestamp.isoformat() if current else None,
             "cursor_index": self._cursor,
             "bars_total": len(self._bars),
             "bars_released": max(0, self._cursor + 1),
         }
 
-    async def start(self, contract: str, start: datetime, warmup: int = 300) -> dict[str, Any]:
+    async def start(self, product: str, start: datetime, warmup: int = 300) -> dict[str, Any]:
         start = start.replace(tzinfo=timezone.utc) if start.tzinfo is None else start.astimezone(timezone.utc)
         async with self._lock:
             self._stop_task()
             self._generation += 1
+            selection = self.store.resolve_contract(product, start)
+            contract = str(selection["contract"])
             self._bars = self.store.bars(contract)
             idx = bisect.bisect_left([b.timestamp for b in self._bars], start)
             if idx >= len(self._bars):
                 raise ValueError(f"No {contract} bar at or after {start.isoformat()}")
             self.contract = contract
+            self.selection = selection
             self._cursor = self._origin = idx
             self._warmup = max(0, int(warmup))
             self.state = ReplayState.PAUSED

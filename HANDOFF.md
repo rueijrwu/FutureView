@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-11
 Primary branch: `master`
-Current head before this handoff update: `8c3b29b8b45c79d2fa52e5b486a1131502957123`
+Current head before this handoff update: `e0ac9300e4ad7c853876afa206eb0408e70283a4`
 
 FutureView is now a generic historical market replay/backtest platform. `MES` is the first configured product, not the engine identity.
 
@@ -183,6 +183,9 @@ Keep these unless explicitly changed:
 9. User-facing times are `America/New_York` (ET).
 10. Storage/protocol timestamps are UTC.
 11. A signal using a completed 5m bar must not be filled using unavailable information from that same bar.
+12. Replay start accepts product + time; users do not preselect an actual contract.
+13. Contract selection uses only the preceding completed CME session's volume.
+14. The resolver may hold the active contract or roll once to the next listed quarterly contract; it never rolls backward or skips a contract.
 
 Current speeds:
 
@@ -230,7 +233,9 @@ Pages/site/
 Worker
   /api/health
   /api/contracts
+  /api/replay/range
   replay-session creation
+  causal actual-contract resolution
   WebSocket routing
   CORS for https://futureview.pages.dev
 
@@ -300,7 +305,7 @@ status: SUCCESS
 
 `.github/workflows/replay-data-publish.yml`
 
-Full replay-data rebuild/publish is separate from application deployment.
+Full replay-data rebuild/publish is separate from application deployment. Cloud manifest version 3 includes a causal contract-selection calendar generated from the actual 5m bars.
 
 `cloudflare/publish-r2.sh` now uses bounded parallel uploads (default 12 concurrent) and uploads `manifest.json` last so readers do not observe a manifest before all shards are present.
 
@@ -350,9 +355,10 @@ It is the new Replay UI, not the old dashboard.
 Current browser feature set:
 
 ```text
-actual contract selector
+product (currently MES)
 ET replay start time
 warmup bar count
+automatic actual-contract selection
 candlestick chart
 volume histogram
 Restart
@@ -364,6 +370,8 @@ current contract
 current cursor
 current replay state
 ```
+
+The browser sends `product`, `start`, and `warmup`; it does not send a contract. The Worker resolves the contract from the version-3 selection calendar and returns the contract plus the causal selection reason.
 
 `site/app.js` currently calls the backend Worker origin directly:
 
@@ -406,7 +414,6 @@ Do not assume any of the following exist:
 ```text
 multi-product catalog UI
 continuous futures visualization
-causal front-contract resolver
 roll execution
 manual Buy/Sell/Flatten
 Market/Limit/Stop execution engine
@@ -422,20 +429,20 @@ batch backtest metrics
 
 ## 11. Recommended next actions
 
-First verify the just-completed public cutover:
+First verify the automatic-contract deployment:
 
 ```text
 1. Open https://futureview.pages.dev/ and confirm the new Replay UI is served.
-2. From the Pages UI, verify contract list loads from the Worker API.
-3. Start a real replay and test WebSocket Next/Play/Pause.
-4. Re-check ET start time vs chart time.
-5. Verify direct Worker /api/health still returns healthy state.
+2. Verify the UI asks for product + ET start time, with no contract selector.
+3. Start replays before and after a historical rollover and verify the returned actual contract and `contract_selection` reason.
+4. Test WebSocket Next/Play/Pause.
+5. Re-check ET start time, 18:00 ET session boundary, and chart time.
+6. Verify direct Worker /api/health still returns healthy state.
 ```
 
 Then improve contract UX:
 
 ```text
-6. Do not default every contract to its absolute first trade if that period is extremely illiquid.
 7. Consider a clearly defined `liquid_start` / recommended replay start, while preserving full actual-contract history.
 ```
 
@@ -454,7 +461,7 @@ Then add trading/execution:
 12. Manual Market Buy / Sell / Flatten.
 13. 1m fill model + tick rounding + configurable commission/slippage.
 14. Limit / Stop orders and conservative intrabar ambiguity handling.
-15. Causal ContractResolver and real rollover fills.
+15. Apply the resolved calendar during long-running replay and implement real rollover fills.
 16. Session/trade/equity persistence.
 17. Automated Strategy adapter using the exact same execution engine.
 ```
@@ -509,6 +516,10 @@ Replay:
 5m authoritative cursor, 1m retained for future fills,
 no-lookahead, actual-contract prices, ET display / UTC storage.
 
+Contract selection:
+product + ET time input; prior completed CME-session volume;
+hold or roll once to the next quarterly contract; no manual preselection.
+
 Deploy:
 Worker deploy, replay-data publish, and Pages deploy are separate workflows.
 
@@ -516,5 +527,5 @@ Latest Pages deployment:
 run 34651057136 = SUCCESS.
 
 Next immediate task:
-verify https://futureview.pages.dev/ end-to-end, including API + WebSocket replay.
+verify https://futureview.pages.dev/ end-to-end, including automatic contract resolution, API, and WebSocket replay.
 ```

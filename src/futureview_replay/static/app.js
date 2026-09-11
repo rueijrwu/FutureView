@@ -168,10 +168,11 @@
   }
   function error(message = "") { $("error").textContent = message; }
 
-  async function contractInfo() {
+  async function replayRange() {
     try {
-      const info = await api(`/api/contracts/${encodeURIComponent($("contract").value)}`);
-      $("range").textContent = `${displayTime(info.first)} → ${displayTime(info.last)} · ${info.bars.toLocaleString()} bars`;
+      const info = await api("/api/replay/range");
+      $("product").value = info.product;
+      $("range").textContent = `${displayTime(info.first)} → ${displayTime(info.last)} · contract selected automatically`;
       $("start").value = inputValue(info.first);
     } catch (e) {
       error(e.message);
@@ -180,9 +181,7 @@
 
   async function init() {
     try {
-      const data = await api("/api/contracts");
-      $("contract").innerHTML = data.contracts.map((symbol) => `<option value="${symbol}">${symbol}</option>`).join("");
-      if (data.contracts.length) await contractInfo();
+      await replayRange();
       state(await api("/api/replay/state"));
     } catch (e) {
       error(e.message);
@@ -200,7 +199,6 @@
     }
   }
 
-  $("contract").onchange = contractInfo;
   $("start-btn").onclick = async () => {
     try {
       error();
@@ -209,7 +207,7 @@
       const result = await api("/api/replay/start", {
         method: "POST",
         body: JSON.stringify({
-          contract: $("contract").value,
+          product: $("product").value,
           start: wallTimeToUtcIso(raw),
           warmup: Number($("warmup").value || 300),
         }),
@@ -217,6 +215,10 @@
       started = true;
       setWarmup(result.warmup || []);
       state(result);
+      if (result.contract_selection) {
+        const selected = result.contract_selection;
+        $("range").textContent = `Selected ${selected.contract} from ${selected.source_session || "the first available session"} (${selected.reason})`;
+      }
     } catch (e) {
       error(e.message);
     }

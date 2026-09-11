@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "futureview-replay"
-version = "0.2.0"
+version = "0.3.0"
 description = "FutureView historical market replay and backtest platform"
 requires-python = ">=3.12"
 dependencies = [
