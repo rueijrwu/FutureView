@@ -1,1 +1,247 @@
-(()=>{const $=id=>document.getElementById(id);let speed=1,started=false;const chart=LightweightCharts.createChart($("chart"),{autoSize:true,attributionLogo:true,layout:{background:{type:"solid",color:"#0b1017"},textColor:"#a9b4c4"},grid:{vertLines:{color:"#18222f"},horzLines:{color:"#18222f"}},timeScale:{timeVisible:true,secondsVisible:false}});const candles=chart.addSeries(LightweightCharts.CandlestickSeries,{upColor:"#26a69a",downColor:"#ef5350",borderVisible:false,wickUpColor:"#26a69a",wickDownColor:"#ef5350"});const volume=chart.addSeries(LightweightCharts.HistogramSeries,{priceFormat:{type:"volume"},priceScaleId:"vol"});volume.priceScale().applyOptions({scaleMargins:{top:.78,bottom:0}});const c=b=>({time:b.time,open:b.open,high:b.high,low:b.low,close:b.close}),v=b=>({time:b.time,value:b.volume,color:b.close>=b.open?"rgba(38,166,154,.45)":"rgba(239,83,80,.45)"});function bar(b){candles.update(c(b));volume.update(v(b))}function warmup(bs){candles.setData(bs.map(c));volume.setData(bs.map(v));chart.timeScale().fitContent()}async function api(path,opts={}){const r=await fetch(path,{headers:{"Content-Type":"application/json"},...opts});if(!r.ok){let m=`${r.status}`;try{m=(await r.json()).detail||m}catch{}throw new Error(m)}return r.json()}function state(s){if(!s||!s.state)return;$("status-state").textContent=s.state;$("status-contract").textContent=s.contract||"—";$("status-time").textContent=s.cursor?new Date(s.cursor).toLocaleString():"No session";$("play").disabled=!started||s.state==="PLAYING";$("pause").disabled=!started||s.state!=="PLAYING";$("next").disabled=!started||s.state==="PLAYING"||s.state==="FINISHED";$("restart").disabled=!started}function err(e=""){$("error").textContent=e}function localValue(iso){const d=new Date(iso),p=n=>String(n).padStart(2,"0");return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`}async function contractInfo(){try{const x=await api(`/api/contracts/${encodeURIComponent($("contract").value)}`);$("range").textContent=`${new Date(x.first).toLocaleString()} → ${new Date(x.last).toLocaleString()} · ${x.bars.toLocaleString()} bars`;$("start").value=localValue(x.first)}catch(e){err(e.message)}}async function init(){try{const x=await api("/api/contracts");$("contract").innerHTML=x.contracts.map(s=>`<option value="${s}">${s}</option>`).join("");if(x.contracts.length)await contractInfo();state(await api("/api/replay/state"))}catch(e){err(e.message)}}async function post(path,body){try{err();const r=await api(path,{method:"POST",body:body?JSON.stringify(body):undefined});if(r.warmup)warmup(r.warmup);state(r)}catch(e){err(e.message)}}$("contract").onchange=contractInfo;$("start-btn").onclick=async()=>{try{err();const raw=$("start").value;if(!raw)throw new Error("Choose a start time");const r=await api("/api/replay/start",{method:"POST",body:JSON.stringify({contract:$("contract").value,start:new Date(raw).toISOString(),warmup:Number($("warmup").value||300)})});started=true;warmup(r.warmup||[]);state(r)}catch(e){err(e.message)}};$("next").onclick=()=>post("/api/replay/step");$("restart").onclick=()=>post("/api/replay/restart");$("pause").onclick=()=>post("/api/replay/pause");$("play").onclick=()=>post("/api/replay/play",{speed});$("speeds").onclick=e=>{const b=e.target.closest("button[data-speed]");if(!b)return;document.querySelectorAll("#speeds button").forEach(x=>x.classList.remove("active"));b.classList.add("active");speed=b.dataset.speed==="max"?"max":Number(b.dataset.speed);if($("status-state").textContent==="PLAYING")post("/api/replay/play",{speed})};const proto=location.protocol==="https:"?"wss":"ws",ws=new WebSocket(`${proto}://${location.host}/ws/replay`);ws.onmessage=e=>{const x=JSON.parse(e.data);if(x.type==="bar")bar(x.bar);else if(x.type==="bars_batch")x.bars.forEach(bar);else state(x)};ws.onerror=()=>err("WebSocket disconnected");init()})();
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const DISPLAY_TIME_ZONE = "America/New_York";
+  let speed = 1;
+  let started = false;
+
+  const zonedPartsFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: DISPLAY_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  });
+  const statusFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: DISPLAY_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZoneName: "short",
+  });
+  const axisFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: DISPLAY_TIME_ZONE,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+
+  function partsAt(date) {
+    const parts = Object.fromEntries(
+      zonedPartsFormatter
+        .formatToParts(date)
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, part.value]),
+    );
+    return {
+      year: Number(parts.year),
+      month: Number(parts.month),
+      day: Number(parts.day),
+      hour: Number(parts.hour),
+      minute: Number(parts.minute),
+      second: Number(parts.second),
+    };
+  }
+
+  function wallTimeToUtcIso(raw) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(raw);
+    if (!match) throw new Error("Invalid replay start time");
+    const wanted = {
+      year: Number(match[1]),
+      month: Number(match[2]),
+      day: Number(match[3]),
+      hour: Number(match[4]),
+      minute: Number(match[5]),
+      second: 0,
+    };
+    const wantedWall = Date.UTC(
+      wanted.year,
+      wanted.month - 1,
+      wanted.day,
+      wanted.hour,
+      wanted.minute,
+      wanted.second,
+    );
+    let guess = wantedWall;
+    for (let i = 0; i < 4; i += 1) {
+      const shown = partsAt(new Date(guess));
+      const shownWall = Date.UTC(
+        shown.year,
+        shown.month - 1,
+        shown.day,
+        shown.hour,
+        shown.minute,
+        shown.second,
+      );
+      const delta = wantedWall - shownWall;
+      guess += delta;
+      if (delta === 0) break;
+    }
+    return new Date(guess).toISOString();
+  }
+
+  function inputValue(value) {
+    const p = partsAt(new Date(value));
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`;
+  }
+
+  function displayTime(value) {
+    return statusFormatter.format(new Date(value));
+  }
+
+  function epochMs(time) {
+    if (typeof time === "number") return time * 1000;
+    if (typeof time === "string") return Date.parse(time);
+    return Date.UTC(time.year, time.month - 1, time.day);
+  }
+
+  const chart = LightweightCharts.createChart($("chart"), {
+    autoSize: true,
+    attributionLogo: true,
+    layout: { background: { type: "solid", color: "#0b1017" }, textColor: "#a9b4c4" },
+    grid: { vertLines: { color: "#18222f" }, horzLines: { color: "#18222f" } },
+    localization: {
+      timeFormatter: (time) => statusFormatter.format(new Date(epochMs(time))),
+    },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: (time) => axisFormatter.format(new Date(epochMs(time))),
+    },
+  });
+  const candles = chart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor: "#26a69a",
+    downColor: "#ef5350",
+    borderVisible: false,
+    wickUpColor: "#26a69a",
+    wickDownColor: "#ef5350",
+  });
+  const volume = chart.addSeries(LightweightCharts.HistogramSeries, {
+    priceFormat: { type: "volume" },
+    priceScaleId: "vol",
+  });
+  volume.priceScale().applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+
+  const candle = (b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
+  const volumeBar = (b) => ({
+    time: b.time,
+    value: b.volume,
+    color: b.close >= b.open ? "rgba(38,166,154,.45)" : "rgba(239,83,80,.45)",
+  });
+  function renderBar(b) {
+    candles.update(candle(b));
+    volume.update(volumeBar(b));
+  }
+  function setWarmup(bars) {
+    candles.setData(bars.map(candle));
+    volume.setData(bars.map(volumeBar));
+    chart.timeScale().fitContent();
+  }
+
+  async function api(path, opts = {}) {
+    const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
+    if (!response.ok) {
+      let message = `${response.status}`;
+      try { message = (await response.json()).detail || message; } catch {}
+      throw new Error(message);
+    }
+    return response.json();
+  }
+
+  function state(snapshot) {
+    if (!snapshot || !snapshot.state) return;
+    $("status-state").textContent = snapshot.state;
+    $("status-contract").textContent = snapshot.contract || "—";
+    $("status-time").textContent = snapshot.cursor ? displayTime(snapshot.cursor) : "No session";
+    $("play").disabled = !started || snapshot.state === "PLAYING";
+    $("pause").disabled = !started || snapshot.state !== "PLAYING";
+    $("next").disabled = !started || snapshot.state === "PLAYING" || snapshot.state === "FINISHED";
+    $("restart").disabled = !started;
+  }
+  function error(message = "") { $("error").textContent = message; }
+
+  async function contractInfo() {
+    try {
+      const info = await api(`/api/contracts/${encodeURIComponent($("contract").value)}`);
+      $("range").textContent = `${displayTime(info.first)} → ${displayTime(info.last)} · ${info.bars.toLocaleString()} bars`;
+      $("start").value = inputValue(info.first);
+    } catch (e) {
+      error(e.message);
+    }
+  }
+
+  async function init() {
+    try {
+      const data = await api("/api/contracts");
+      $("contract").innerHTML = data.contracts.map((symbol) => `<option value="${symbol}">${symbol}</option>`).join("");
+      if (data.contracts.length) await contractInfo();
+      state(await api("/api/replay/state"));
+    } catch (e) {
+      error(e.message);
+    }
+  }
+
+  async function post(path, body) {
+    try {
+      error();
+      const result = await api(path, { method: "POST", body: body ? JSON.stringify(body) : undefined });
+      if (result.warmup) setWarmup(result.warmup);
+      state(result);
+    } catch (e) {
+      error(e.message);
+    }
+  }
+
+  $("contract").onchange = contractInfo;
+  $("start-btn").onclick = async () => {
+    try {
+      error();
+      const raw = $("start").value;
+      if (!raw) throw new Error("Choose a start time");
+      const result = await api("/api/replay/start", {
+        method: "POST",
+        body: JSON.stringify({
+          contract: $("contract").value,
+          start: wallTimeToUtcIso(raw),
+          warmup: Number($("warmup").value || 300),
+        }),
+      });
+      started = true;
+      setWarmup(result.warmup || []);
+      state(result);
+    } catch (e) {
+      error(e.message);
+    }
+  };
+  $("next").onclick = () => post("/api/replay/step");
+  $("restart").onclick = () => post("/api/replay/restart");
+  $("pause").onclick = () => post("/api/replay/pause");
+  $("play").onclick = () => post("/api/replay/play", { speed });
+  $("speeds").onclick = (event) => {
+    const button = event.target.closest("button[data-speed]");
+    if (!button) return;
+    document.querySelectorAll("#speeds button").forEach((x) => x.classList.remove("active"));
+    button.classList.add("active");
+    speed = button.dataset.speed === "max" ? "max" : Number(button.dataset.speed);
+    if ($("status-state").textContent === "PLAYING") post("/api/replay/play", { speed });
+  };
+
+  const protocol = location.protocol === "https:" ? "wss" : "ws";
+  const websocket = new WebSocket(`${protocol}://${location.host}/ws/replay`);
+  websocket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+    if (message.type === "bar") renderBar(message.bar);
+    else if (message.type === "bars_batch") message.bars.forEach(renderBar);
+    else state(message);
+  };
+  websocket.onerror = () => error("WebSocket disconnected");
+  init();
+})();
