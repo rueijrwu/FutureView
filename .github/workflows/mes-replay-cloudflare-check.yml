@@ -2,10 +2,9 @@ name: MES Replay Cloudflare Check
 
 on:
   push:
-    branches: [intraday-futures-reset]
+    branches: [master]
     paths:
       - 'mes-replay/cloudflare/**'
-      - 'mes-replay/src/mes_replay/static/app.js'
       - 'mes-replay/src/mes_replay/cloud_export.py'
       - 'mes-replay/src/mes_replay/cli.py'
       - '.github/workflows/mes-replay-cloudflare-check.yml'
