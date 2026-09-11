@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-11
 Primary branch: `master`
-Current head before this handoff update: `2ba73278f46d40f5f011a8369699fe6df8adf083`
+Current head before this handoff update: `8c3b29b8b45c79d2fa52e5b486a1131502957123`
 
 FutureView is now a generic historical market replay/backtest platform. `MES` is the first configured product, not the engine identity.
 
@@ -12,6 +12,7 @@ FutureView is now a generic historical market replay/backtest platform. `MES` is
 src/futureview_replay/
 tests/
 cloudflare/
+site/
 data/raw_sources.json
 .github/workflows/
 pyproject.toml
@@ -33,7 +34,7 @@ futureview-replay
 
 The old `mes_replay` package name, `mes-replay/` wrapper directory, old `futureview` research package, Strategy1 workflows/docs, Docker path, and Git-LFS raw-data layout are obsolete.
 
-## 2. Product model
+## 2. Product/data model
 
 Replay infrastructure is product-agnostic.
 
@@ -54,13 +55,7 @@ primary replay resolution: 5m
 fill-resolution data retained: 1m
 ```
 
-Future products such as `MNQ`, `NQ`, `ES`, etc. should reuse the same package/runtime rather than creating separate replay packages.
-
-## 3. Raw data source of truth
-
-Raw Databento `.dbn.zst` files are no longer stored in Git or Git LFS.
-
-The source of truth is Cloudflare R2 bucket:
+Raw source of truth is Cloudflare R2 bucket:
 
 ```text
 futureview-data
@@ -78,8 +73,6 @@ Current MES raw prefix:
 raw/databento/GLBX.MDP3/MES/ohlcv-1m/
 ```
 
-The R2 raw manifest contains per-file object key, byte size, and SHA-256.
-
 Verified migration snapshot:
 
 ```text
@@ -89,17 +82,9 @@ R2 manifest SHA-256:
 a90b528a1f4d9da4b886bb46581d8b570f65e279108a97cf668708b873e1f47b
 ```
 
-Git stores only the source catalog in:
-
-```text
-data/raw_sources.json
-```
-
 Do not re-add raw DBN files to Git/LFS.
 
-## 4. Local development / testing
-
-Local testing remains required and fully supported.
+## 3. Local fetch / prepare
 
 Install:
 
@@ -109,7 +94,18 @@ source .venv/bin/activate
 pip install -e '.[test]'
 ```
 
-Fetch a small subset from R2:
+`fetch-raw` no longer shells out to `npx wrangler`. It now downloads R2 objects directly from Python using the Cloudflare REST API.
+
+Required environment:
+
+```bash
+export CLOUDFLARE_API_TOKEN=...
+export CLOUDFLARE_ACCOUNT_ID=...
+```
+
+`R2_ACCOUNT_ID` is also accepted as the account-id fallback.
+
+Example:
 
 ```bash
 futureview-replay fetch-raw \
@@ -142,38 +138,9 @@ futureview-replay serve \
   --port 8787
 ```
 
-Browser:
-
-```text
-http://127.0.0.1:8787
-```
-
 Local cache/runtime directories must remain uncommitted.
 
-## 5. Local/CI verification status
-
-Current root-level CI has already verified the new R2-backed local path end-to-end:
-
-```text
-package install              PASS
-unit tests                   PASS
-fetch one real MES month R2  PASS
-Databento prepare            PASS
-cloud export                 PASS
-local FastAPI server smoke   PASS
-```
-
-Relevant successful run:
-
-```text
-Replay Python
-run: 34646767194
-commit: 2ba73278f46d40f5f011a8369699fe6df8adf083
-```
-
-This means local testing no longer depends on Git LFS raw data.
-
-## 6. Data pipeline
+## 4. Data pipeline
 
 Current pipeline:
 
@@ -189,15 +156,19 @@ R2 raw Databento DBN.zst
 
 Never aggregate bars across futures contracts.
 
-The Databento parser currently filters quarterly outright contracts for the selected product using futures month codes:
+The 5m aggregation is:
 
 ```text
-H M U Z
+open   = first
+high   = max
+low    = min
+close  = last
+volume = sum
 ```
 
-MES is current, but the product is now passed as configuration rather than hardcoded as platform identity.
+A small candle with nonzero volume is valid when all trades in that 5m interval occur at the same or nearby tick prices. This was specifically observed/questioned for early low-liquidity periods of contracts such as `MESH1`; do not assume it is an aggregation bug without checking actual OHLC.
 
-## 7. Replay semantics / invariants
+## 5. Replay semantics / invariants
 
 Keep these unless explicitly changed:
 
@@ -219,61 +190,50 @@ Current speeds:
 1x 5x 10x 25x 50x 100x Max
 ```
 
-Speed changes release rate only; 5m bar resolution does not change.
+## 6. Production architecture
 
-## 8. Timezone contract
-
-This was previously a real bug.
-
-All UI-visible times must use:
+The public frontend is Cloudflare Pages:
 
 ```text
-America/New_York
+https://futureview.pages.dev/
 ```
 
-This includes:
+The backend is the Cloudflare Worker:
 
 ```text
-start input
-contract range
-status time
-chart x-axis
-chart tooltip
+https://futureview.rueijrwu.workers.dev/
 ```
 
-Backend/R2 remain UTC.
+The Worker URL is backend infrastructure, not the intended user-facing site.
 
-Do not restore implicit browser-local conversion via:
-
-```js
-new Date(raw).toISOString()
-```
-
-for a `datetime-local` value.
-
-Expected example:
+Architecture:
 
 ```text
-selected: 2019-05-23 09:00 ET
-chart:    2019-05-23 09:00 ET
-```
-
-## 9. Cloudflare architecture
-
-Current production architecture:
-
-```text
-Cloudflare static assets
-Cloudflare Worker
-Durable Object ReplaySession
-R2
-D1
-WebSocket
+Cloudflare Pages (`site/`)
+        |
+        | HTTPS / WebSocket
+        v
+Cloudflare Worker `futureview`
+        |
+        +-- Durable Object ReplaySession
+        +-- R2
+        +-- D1
 ```
 
 Responsibilities:
 
 ```text
+Pages/site/
+  current Replay UI only
+  no requirement to preserve the old static dashboard
+
+Worker
+  /api/health
+  /api/contracts
+  replay-session creation
+  WebSocket routing
+  CORS for https://futureview.pages.dev
+
 R2
   raw source archive
   replay shards
@@ -287,99 +247,107 @@ Durable Object
 
 D1
   replay session/history persistence
-
-Browser
-  visualization and controls only
 ```
 
-The public application/Worker name is:
+Do not attempt to migrate to `futureview.rueijrwu.dev`; `rueijrwu.dev` is not currently a Cloudflare-managed/active zone. Custom-domain experiments were reverted.
 
-```text
-futureview
-```
+## 7. Deployment workflows
 
-User ultimately wants the new replay platform at:
+Production Worker deployment is intentionally separated from replay-data publishing.
 
-```text
-https://futureview.pages.dev/
-```
-
-Do not claim that URL is fully cut over until it is verified live.
-
-## 10. Replay cloud namespace
-
-The Python/platform identity is generic now, but some production replay storage still uses the legacy compatibility prefix:
-
-```text
-mes-replay/v1
-```
-
-This is intentionally temporary to avoid breaking the existing deployed Worker during the rename.
-
-Recommended later migration:
-
-```text
-replay/v1/<PRODUCT>/...
-```
-
-Do the namespace migration deliberately with compatibility handling; do not silently break production data lookup.
-
-## 11. Current production deploy status
-
-Production workflow:
-
-```text
-.github/workflows/replay-cloudflare-deploy.yml
-```
-
-Current run:
-
-```text
-run: 34646767115
-commit: 2ba73278f46d40f5f011a8369699fe6df8adf083
-status at handoff update: IN PROGRESS
-```
-
-Already completed successfully in that run:
-
-```text
-install generic replay package
-fetch full MES raw archive from R2
-build cloud replay data
-```
-
-Currently in progress at handoff update:
-
-```text
-publish replay shards to R2
-```
-
-Still pending:
-
-```text
-resolve/create D1
-production config generation
-D1 migrations
-Worker deployment
-```
-
-First action for the next agent: inspect run `34646767115` and do not assume production deployment succeeded until all steps are green.
-
-## 12. CI / workflow files
-
-Only the current replay workflows should matter:
+Current workflows:
 
 ```text
 .github/workflows/replay-python.yml
 .github/workflows/replay-cloudflare-check.yml
 .github/workflows/replay-cloudflare-deploy.yml
+.github/workflows/replay-data-publish.yml
+.github/workflows/replay-pages-deploy.yml
 ```
 
-Do not reintroduce Docker CI or Git-LFS data workflows.
+### Worker deploy
 
-## 13. Current browser feature set
+`.github/workflows/replay-cloudflare-deploy.yml`
 
-Current replay UI supports:
+Normal Worker deploy no longer does:
+
+```text
+fetch all MES raw
+prepare full dataset
+cloud-export full dataset
+upload all replay shards
+```
+
+It now only handles Worker/D1 deployment. This reduced a normal deploy from >10 minutes to about 35 seconds in the first verified run.
+
+Verified successful Worker deploy after decoupling:
+
+```text
+run: 34647997566
+commit: 581b936755c4b5dba23724b868e6d23c309b92ae
+status: SUCCESS
+```
+
+Latest Worker deploy adding Pages CORS:
+
+```text
+run: 34650853125
+commit: 746132ed9caf28c5abf13a764ee2c95943812406
+status: SUCCESS
+```
+
+### Replay data publish
+
+`.github/workflows/replay-data-publish.yml`
+
+Full replay-data rebuild/publish is separate from application deployment.
+
+`cloudflare/publish-r2.sh` now uses bounded parallel uploads (default 12 concurrent) and uploads `manifest.json` last so readers do not observe a manifest before all shards are present.
+
+A future improvement is deterministic gzip + shard SHA-256 manifest + true incremental publish. Do not implement hash-based skipping until export determinism/content identity is explicit.
+
+### Pages deploy
+
+`.github/workflows/replay-pages-deploy.yml`
+
+This explicitly deploys `site/` to Cloudflare Pages project:
+
+```text
+project: futureview
+production branch: master
+public URL: https://futureview.pages.dev/
+```
+
+First explicit Pages deploy:
+
+```text
+run: 34651057136
+commit: 8c3b29b8b45c79d2fa52e5b486a1131502957123
+status: SUCCESS
+```
+
+The workflow successfully completed both:
+
+```text
+Ensure FutureView Pages project exists   PASS
+Deploy replay frontend to Pages          PASS
+```
+
+The public URL still needs a browser-level smoke verification after this handoff update; do not infer UI/WebSocket correctness solely from workflow success.
+
+## 8. Frontend state
+
+The active Pages frontend is in:
+
+```text
+site/index.html
+site/style.css
+site/app.js
+```
+
+It is the new Replay UI, not the old dashboard.
+
+Current browser feature set:
 
 ```text
 actual contract selector
@@ -397,9 +365,41 @@ current cursor
 current replay state
 ```
 
+`site/app.js` currently calls the backend Worker origin directly:
+
+```text
+https://futureview.rueijrwu.workers.dev
+```
+
+Worker responses include CORS for:
+
+```text
+https://futureview.pages.dev
+```
+
+WebSocket sessions also connect to the Worker origin.
+
 TradingView Lightweight Charts is visualization only. It is not the simulation engine.
 
-## 14. Not implemented yet
+## 9. Replay cloud namespace
+
+The Python/platform identity is generic now, but production replay storage still uses the legacy compatibility prefix:
+
+```text
+mes-replay/v1
+```
+
+This is intentionally temporary.
+
+Recommended later migration:
+
+```text
+replay/v1/<PRODUCT>/...
+```
+
+Do the namespace migration deliberately with compatibility handling.
+
+## 10. Not implemented yet
 
 Do not assume any of the following exist:
 
@@ -420,18 +420,23 @@ automated Strategy adapter
 batch backtest metrics
 ```
 
-## 15. Recommended next implementation order
+## 11. Recommended next actions
 
-First finish production verification:
+First verify the just-completed public cutover:
 
 ```text
-1. Inspect deploy run 34646767115.
-2. Confirm replay shards published to R2.
-3. Confirm D1 migration and `futureview` Worker deploy succeed.
-4. Verify https://futureview.pages.dev/ serves the new replay UI.
-5. Verify /api/health and /api/contracts on public origin.
-6. Start a real replay and test WebSocket Next/Play/Pause.
-7. Re-check ET start time vs chart time.
+1. Open https://futureview.pages.dev/ and confirm the new Replay UI is served.
+2. From the Pages UI, verify contract list loads from the Worker API.
+3. Start a real replay and test WebSocket Next/Play/Pause.
+4. Re-check ET start time vs chart time.
+5. Verify direct Worker /api/health still returns healthy state.
+```
+
+Then improve contract UX:
+
+```text
+6. Do not default every contract to its absolute first trade if that period is extremely illiquid.
+7. Consider a clearly defined `liquid_start` / recommended replay start, while preserving full actual-contract history.
 ```
 
 Then generalize product handling:
@@ -456,10 +461,34 @@ Then add trading/execution:
 
 Do not start ML/CNN strategy research before replay and execution semantics are trustworthy.
 
-## 16. Short summary
+## 12. Recent commits of interest
+
+```text
+8cd8516  ci: decouple replay data publish from production deploy
+cb140e4  ci: parallelize replay shard publishing
+3f92d1a  ci: add dedicated replay data publish workflow
+581b936  ci: narrow production deploy triggers
+15fc13e  fix: fetch R2 raw data without npx wrangler
+d0edf47  test: cover direct R2 raw fetch helpers
+0ca1b7f  ci: remove Node dependency from replay Python checks
+8239bcf  revert: keep existing workers.dev deployment
+fa7bfee  deploy: restore FutureView Pages frontend
+26d5bbf  deploy: restore FutureView Pages styling
+81cad04  deploy: use Pages frontend for replay UI
+746132e  deploy: allow Pages frontend to call replay API
+8c3b29b  deploy: publish replay frontend to FutureView Pages
+```
+
+## 13. Short summary
 
 ```text
 MASTER = generic FutureView Replay platform.
+
+Frontend/public URL:
+https://futureview.pages.dev/
+
+Backend Worker:
+https://futureview.rueijrwu.workers.dev/
 
 Package:
 futureview_replay
@@ -473,20 +502,19 @@ first configured product only.
 Raw source of truth:
 Cloudflare R2, not Git/LFS.
 
-Raw R2 verification:
-89 files / 52,183,820 bytes.
-
-Local test:
-R2 fetch -> prepare -> export -> server smoke = PASS.
+fetch-raw:
+Python direct Cloudflare R2 REST; no npx/wrangler subprocess.
 
 Replay:
 5m authoritative cursor, 1m retained for future fills,
 no-lookahead, actual-contract prices, ET display / UTC storage.
 
-Production:
-run 34646767115 is still in progress at this handoff update.
-Verify it first.
+Deploy:
+Worker deploy, replay-data publish, and Pages deploy are separate workflows.
 
-Next major feature after production verification:
-multi-product catalog, then shared realistic trading/execution engine.
+Latest Pages deployment:
+run 34651057136 = SUCCESS.
+
+Next immediate task:
+verify https://futureview.pages.dev/ end-to-end, including API + WebSocket replay.
 ```
