@@ -1,0 +1,99 @@
+name: MES Databento Prepare Smoke
+
+on:
+  push:
+    branches: [intraday-futures-reset]
+    paths:
+      - 'scripts/prepare_mes_databento.py'
+      - 'data/databento/mes/raw/**'
+      - '.gitattributes'
+      - '.github/workflows/mes-databento-prepare-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Verify LFS payloads
+        run: |
+          git lfs ls-files | head
+          FILE=$(find data/databento/mes/raw -maxdepth 1 -name '*.dbn.zst' | sort | head -1)
+          test -n "$FILE"
+          SIZE=$(stat -c%s "$FILE")
+          echo "MES_LFS_FILE path=$FILE bytes=$SIZE"
+          if [ "$SIZE" -lt 1000 ]; then
+            echo "Expected downloaded LFS payload, got a pointer-sized file" >&2
+            exit 1
+          fi
+
+      - name: Install conversion dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'databento>=0.60' 'pandas>=2.2' 'pyarrow>=17'
+
+      - name: Convert first Databento month
+        run: |
+          set -o pipefail
+          python scripts/prepare_mes_databento.py \
+            --limit 1 \
+            --output artifacts/parquet \
+            --manifest artifacts/processed_manifest.json \
+            2>&1 | tee mes-databento-prepare-smoke.log
+
+      - name: Validate Parquet outputs
+        run: |
+          python - <<'PY' | tee -a mes-databento-prepare-smoke.log
+          import json
+          from pathlib import Path
+          import pandas as pd
+
+          manifest = json.loads(Path('artifacts/processed_manifest.json').read_text())
+          assert manifest['totals']['source_files'] == 1
+          assert manifest['totals']['rows_1m'] > 0
+          assert manifest['totals']['rows_5m'] > 0
+
+          one = next(Path('artifacts/parquet/1m').glob('*.parquet'))
+          five = next(Path('artifacts/parquet/5m').glob('*.parquet'))
+          df1 = pd.read_parquet(one)
+          df5 = pd.read_parquet(five)
+          required = {'timestamp','symbol','instrument_id','open','high','low','close','volume'}
+          assert required.issubset(df1.columns)
+          assert required.issubset(df5.columns)
+          assert not df1.empty and not df5.empty
+          assert df1['symbol'].str.match(r'^MES[HMUZ]\d{1,2}$').all()
+          assert df5['symbol'].str.match(r'^MES[HMUZ]\d{1,2}$').all()
+          print('MES_DATABENTO_PREPARE_OK', f'rows_1m={len(df1)}', f'rows_5m={len(df5)}', f'symbols={sorted(df1.symbol.unique().tolist())}')
+          PY
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo '## MES Databento Prepare Smoke'
+            echo
+            echo '```text'
+            grep -E 'MES_LFS_FILE|MES_DBN_OK|MES_DBN_SUMMARY|MES_DATABENTO_PREPARE_OK' mes-databento-prepare-smoke.log 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mes-databento-prepare-smoke-${{ github.run_number }}
+          path: |
+            mes-databento-prepare-smoke.log
+            artifacts/processed_manifest.json
+          retention-days: 30
