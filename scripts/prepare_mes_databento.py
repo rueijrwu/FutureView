@@ -61,9 +61,10 @@ class FileSummary:
 
 def _load_ohlcv(path: Path) -> pd.DataFrame:
     store = db.DBNStore.from_file(path)
-    # pretty_ts/pretty_px and map_symbols default to True; make them explicit
-    # because these semantics are part of the FutureView canonical conversion.
-    df = store.to_df(pretty_ts=True, pretty_px=True, map_symbols=True)
+    # Current Databento to_df() uses price_type rather than pretty_px.
+    # Request float display prices explicitly and preserve UTC timestamps plus
+    # mapped raw symbols as part of the canonical FutureView conversion.
+    df = store.to_df(price_type="float", pretty_ts=True, map_symbols=True)
     if df.empty:
         return pd.DataFrame(columns=CANONICAL_COLUMNS)
 
