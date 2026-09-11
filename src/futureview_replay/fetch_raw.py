@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
-import subprocess
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 
 DEFAULT_BUCKET = "futureview-data"
 DEFAULT_DATASET = "GLBX.MDP3"
 DEFAULT_SCHEMA = "ohlcv-1m"
+CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4"
 
 
 def _month_from_filename(name: str) -> str | None:
@@ -17,15 +21,52 @@ def _month_from_filename(name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _cloudflare_credentials() -> tuple[str, str]:
+    account_id = os.environ.get("CLOUDFLARE_ACCOUNT_ID") or os.environ.get("R2_ACCOUNT_ID")
+    api_token = os.environ.get("CLOUDFLARE_API_TOKEN")
+    missing = []
+    if not account_id:
+        missing.append("CLOUDFLARE_ACCOUNT_ID (or R2_ACCOUNT_ID)")
+    if not api_token:
+        missing.append("CLOUDFLARE_API_TOKEN")
+    if missing:
+        raise RuntimeError(
+            "Direct R2 fetch requires Cloudflare credentials in the environment: "
+            + ", ".join(missing)
+        )
+    return account_id, api_token
+
+
+def _object_url(account_id: str, bucket: str, key: str) -> str:
+    bucket_path = urllib.parse.quote(bucket, safe="")
+    # Cloudflare requires slash characters inside an R2 object key to remain literal.
+    key_path = urllib.parse.quote(key, safe="/")
+    return f"{CLOUDFLARE_API_BASE}/accounts/{account_id}/r2/buckets/{bucket_path}/objects/{key_path}"
+
+
 def _get(bucket: str, key: str, target: Path) -> None:
+    account_id, api_token = _cloudflare_credentials()
     target.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        [
-            "npx", "--yes", "wrangler@4.125.0", "r2", "object", "get",
-            f"{bucket}/{key}", "--file", str(target), "--remote",
-        ],
-        check=True,
+    temporary = target.with_name(f"{target.name}.part")
+    request = urllib.request.Request(
+        _object_url(account_id, bucket, key),
+        headers={"Authorization": f"Bearer {api_token}"},
+        method="GET",
     )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as output:
+            while chunk := response.read(1024 * 1024):
+                output.write(chunk)
+        temporary.replace(target)
+    except urllib.error.HTTPError as exc:
+        temporary.unlink(missing_ok=True)
+        detail = exc.read(4096).decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Cloudflare R2 GET failed for {bucket}/{key}: HTTP {exc.code} {detail}"
+        ) from exc
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def fetch_raw(
