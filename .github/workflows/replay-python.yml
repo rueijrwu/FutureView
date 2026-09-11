@@ -7,7 +7,7 @@ on:
       - 'src/**'
       - 'tests/**'
       - 'pyproject.toml'
-      - 'data/databento/mes/raw/**'
+      - 'data/raw_sources.json'
       - '.github/workflows/replay-python.yml'
   workflow_dispatch:
 
@@ -20,24 +20,25 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Pull one real MES month
-        run: |
-          git lfs install
-          git lfs pull --include='data/databento/mes/raw/glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst'
-          test $(stat -c%s data/databento/mes/raw/glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst) -gt 1000
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
       - name: Install replay package
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e '.[test]'
       - name: Unit tests
         run: pytest -q tests
+      - name: Fetch one real MES month from R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        run: futureview-replay fetch-raw --product MES --output .local-data/raw/MES --limit 1
       - name: Prepare real Databento month
-        run: futureview-replay prepare --product MES --raw data/databento/mes/raw --runtime runtime/MES --limit 1
+        run: futureview-replay prepare --product MES --raw .local-data/raw/MES --runtime runtime/MES --limit 1
       - name: Export replay shards
         run: |
           futureview-replay cloud-export --runtime runtime/MES --output runtime/MES/cloud-export

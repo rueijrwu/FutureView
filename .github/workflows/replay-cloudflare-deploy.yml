@@ -8,7 +8,7 @@ on:
       - 'src/**'
       - 'cloudflare/**'
       - 'pyproject.toml'
-      - 'data/databento/mes/raw/**'
+      - 'data/raw_sources.json'
       - '.github/workflows/replay-cloudflare-deploy.yml'
 
 permissions:
@@ -24,8 +24,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        with:
-          lfs: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -33,17 +31,20 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Pull MES historical archive
-        run: |
-          git lfs install
-          git lfs pull --include='data/databento/mes/raw/*.dbn.zst'
-          test $(find data/databento/mes/raw -name '*.dbn.zst' | wc -l) -gt 80
-
-      - name: Build cloud replay data
+      - name: Install replay package
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
-          futureview-replay prepare --product MES --raw data/databento/mes/raw --runtime runtime/MES
+
+      - name: Fetch MES raw archive from R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        run: futureview-replay fetch-raw --product MES --output .local-data/raw/MES
+
+      - name: Build cloud replay data
+        run: |
+          futureview-replay prepare --product MES --raw .local-data/raw/MES --runtime runtime/MES
           futureview-replay cloud-export --runtime runtime/MES --output runtime/MES/cloud-export
           test -f runtime/MES/cloud-export/manifest.json
 

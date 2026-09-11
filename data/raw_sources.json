@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "provider": "Databento",
+      "dataset": "GLBX.MDP3",
+      "product": "MES",
+      "schema": "ohlcv-1m",
+      "format": "dbn.zst",
+      "bucket": "futureview-data",
+      "prefix": "raw/databento/GLBX.MDP3/MES/ohlcv-1m",
+      "manifest_key": "raw/databento/GLBX.MDP3/MES/ohlcv-1m/manifest.json",
+      "manifest_sha256": "a90b528a1f4d9da4b886bb46581d8b570f65e279108a97cf668708b873e1f47b",
+      "file_count": 89,
+      "total_bytes": 52183820,
+      "first_file": "glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst",
+      "last_file": "glbx-mdp3-20260901-20260910.ohlcv-1m.dbn.zst"
+    }
+  ]
+}
