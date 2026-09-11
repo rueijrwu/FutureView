@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "futureview"
 version = "0.1.0"
-description = "FutureView CNN trend research"
+description = "FutureView price-volume research"
 requires-python = ">=3.11"
 dependencies = [
   "torch>=2.4",
@@ -59,3 +59,4 @@ futureview-strategy1-frequency-compare-massive = "futureview.strategy1_frequency
 futureview-strategy1-frequency-compare-limited = "futureview.strategy1_frequency_compare_limited:main"
 futureview-alpaca-data-smoke = "futureview.alpaca_data_smoke:main"
 futureview-massive-data-smoke = "futureview.massive_data_smoke:main"
+futureview-download-bars = "futureview.market_data.cli:main"
