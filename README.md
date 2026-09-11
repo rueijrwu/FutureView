@@ -1,18 +1,6 @@
-# FutureView
+# FutureView Replay
 
-FutureView is a browser-based historical MES replay and backtest platform.
-
-## Current scope
-
-- Instrument: CME Micro E-mini S&P 500 futures (MES)
-- Historical source: Databento GLBX.MDP3 OHLCV-1m
-- Replay clock: 5-minute bars
-- Browser controls: Next, Play, Pause, Restart, 1x–100x and Max
-- User-facing timezone: America/New_York (ET)
-- Internal/storage timestamps: UTC
-- Cloud runtime: Cloudflare Worker + Durable Object + R2 + D1
-
-The browser never receives bars beyond the replay cursor.
+Historical market replay and backtest platform. The replay engine is symbol/product agnostic; MES is the first configured futures product.
 
 ## Local setup
 
@@ -22,34 +10,39 @@ source .venv/bin/activate
 pip install -e '.[test]'
 ```
 
-Prepare historical data:
+## Local data
+
+Raw archives live in Cloudflare R2, not source control. Download only what you need:
 
 ```bash
-mes-replay prepare \
-  --raw data/databento/mes/raw \
-  --runtime runtime
+futureview-replay fetch-raw --product MES --from 2019-05 --to 2019-06
 ```
 
-Run the local replay app:
+This writes to `.local-data/raw/MES/` by default and verifies each file against the R2 raw manifest SHA-256.
+
+Prepare replay data:
 
 ```bash
-mes-replay serve \
-  --manifest runtime/manifest.json \
-  --host 127.0.0.1 \
-  --port 8787
+futureview-replay prepare --product MES
+```
+
+Run locally:
+
+```bash
+futureview-replay serve --manifest runtime/MES/manifest.json
 ```
 
 Open `http://127.0.0.1:8787`.
 
-## Repository layout
+## Architecture
 
 ```text
-src/mes_replay/       Python replay/data package
-tests/                Python tests
-data/databento/       Databento source archive via Git LFS
-cloudflare/           Worker, Durable Object, browser UI, D1 migrations
-.github/workflows/    Python CI, Cloudflare check, production deploy
-HANDOFF.md            current design/status handoff
+R2 raw Databento archive
+  -> local/CI fetch subset
+  -> canonical actual-contract 1m Parquet
+  -> actual-contract 5m Parquet
+  -> replay shards
+  -> local FastAPI or Cloudflare Worker/Durable Object
 ```
 
-There is no Docker requirement.
+User-facing times are America/New_York (ET). Stored/protocol timestamps are UTC. The browser must never receive bars beyond the replay cursor.

@@ -6,8 +6,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
-from mes_replay.models import Bar, ReplayState
-from mes_replay.store import BarStore
+from futureview_replay.models import Bar, ReplayState
+from futureview_replay.store import BarStore
 
 SPEEDS = {1, 5, 10, 25, 50, 100}
 
@@ -45,9 +45,14 @@ class ReplayEngine:
     def snapshot(self) -> dict[str, Any]:
         current = self._bars[self._cursor] if 0 <= self._cursor < len(self._bars) else None
         return {
-            "type": "session_snapshot", "state": self.state.value, "speed": self.speed,
-            "contract": self.contract, "cursor": current.timestamp.isoformat() if current else None,
-            "cursor_index": self._cursor, "bars_total": len(self._bars), "bars_released": max(0, self._cursor + 1),
+            "type": "session_snapshot",
+            "state": self.state.value,
+            "speed": self.speed,
+            "contract": self.contract,
+            "cursor": current.timestamp.isoformat() if current else None,
+            "cursor_index": self._cursor,
+            "bars_total": len(self._bars),
+            "bars_released": max(0, self._cursor + 1),
         }
 
     async def start(self, contract: str, start: datetime, warmup: int = 300) -> dict[str, Any]:
@@ -65,7 +70,11 @@ class ReplayEngine:
             self.state = ReplayState.PAUSED
             self.speed = 1
             first = max(0, idx - self._warmup)
-            payload = {**self.snapshot(), "warmup": [b.wire() for b in self._bars[first:idx + 1]], "future_data_included": False}
+            payload = {
+                **self.snapshot(),
+                "warmup": [b.wire() for b in self._bars[first:idx + 1]],
+                "future_data_included": False,
+            }
         await self._emit(self.snapshot())
         return payload
 
@@ -111,7 +120,11 @@ class ReplayEngine:
             self._cursor = self._origin
             self.state = ReplayState.PAUSED
             first = max(0, self._cursor - self._warmup)
-            payload = {**self.snapshot(), "warmup": [b.wire() for b in self._bars[first:self._cursor + 1]], "future_data_included": False}
+            payload = {
+                **self.snapshot(),
+                "warmup": [b.wire() for b in self._bars[first:self._cursor + 1]],
+                "future_data_included": False,
+            }
         await self._emit(self.snapshot())
         return payload
 

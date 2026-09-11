@@ -1,7 +1,7 @@
+runtime/
+.local-data/
 .venv/
 __pycache__/
 .pytest_cache/
-*.py[cod]
-runtime/
+*.pyc
 cloudflare/.dry-run/
-cloudflare/.wrangler/

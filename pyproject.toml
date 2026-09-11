@@ -3,9 +3,9 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mes-replay"
-version = "0.1.0"
-description = "Standalone MES historical bar replay and backtest simulator"
+name = "futureview-replay"
+version = "0.2.0"
+description = "FutureView historical market replay and backtest platform"
 requires-python = ">=3.12"
 dependencies = [
   "databento>=0.64",
@@ -20,10 +20,10 @@ dependencies = [
 test = ["pytest>=8", "httpx>=0.28"]
 
 [project.scripts]
-mes-replay = "mes_replay.cli:main"
+futureview-replay = "futureview_replay.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-mes_replay = ["static/*.html", "static/*.css", "static/*.js"]
+futureview_replay = ["static/*.html", "static/*.css", "static/*.js"]

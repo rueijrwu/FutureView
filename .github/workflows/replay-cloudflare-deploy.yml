@@ -43,16 +43,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
-          mes-replay prepare --raw data/databento/mes/raw --runtime runtime
-          mes-replay cloud-export --runtime runtime --output runtime/cloud-export
-          test -f runtime/cloud-export/manifest.json
+          futureview-replay prepare --product MES --raw data/databento/mes/raw --runtime runtime/MES
+          futureview-replay cloud-export --runtime runtime/MES --output runtime/MES/cloud-export
+          test -f runtime/MES/cloud-export/manifest.json
 
       - name: Publish replay data to R2
         working-directory: cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-        run: bash publish-r2.sh ../runtime/cloud-export
+        run: bash publish-r2.sh ../runtime/MES/cloud-export
 
       - name: Resolve or create replay D1 database
         env:
@@ -62,9 +62,9 @@ jobs:
           set -euo pipefail
           API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database"
           RESPONSE=$(curl -fsS "$API" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
-          DB_ID=$(printf '%s' "$RESPONSE" | jq -r '.result[]? | select(.name == "futureview-mes-replay") | .uuid' | head -n 1)
+          DB_ID=$(printf '%s' "$RESPONSE" | jq -r '.result[]? | select(.name == "futureview-replay") | .uuid' | head -n 1)
           if [ -z "$DB_ID" ]; then
-            RESPONSE=$(curl -fsS -X POST "$API" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type: application/json" --data '{"name":"futureview-mes-replay"}')
+            RESPONSE=$(curl -fsS -X POST "$API" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type: application/json" --data '{"name":"futureview-replay"}')
             DB_ID=$(printf '%s' "$RESPONSE" | jq -r '.result.uuid // empty')
           fi
           test -n "$DB_ID"
@@ -77,7 +77,7 @@ jobs:
           const fs=require('fs');
           const config=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8'));
           config.name='futureview';
-          config.d1_databases=[{binding:'DB',database_name:'futureview-mes-replay',database_id:process.env.D1_DATABASE_ID,migrations_dir:'migrations'}];
+          config.d1_databases=[{binding:'DB',database_name:'futureview-replay',database_id:process.env.D1_DATABASE_ID,migrations_dir:'migrations'}];
           fs.writeFileSync('.wrangler.deploy.json',JSON.stringify(config,null,2));
           NODE
 
@@ -86,7 +86,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-        run: npx --yes wrangler@4.125.0 d1 migrations apply futureview-mes-replay --remote --config .wrangler.deploy.json
+        run: npx --yes wrangler@4.125.0 d1 migrations apply futureview-replay --remote --config .wrangler.deploy.json
 
       - name: Deploy FutureView replay Worker
         working-directory: cloudflare

@@ -61,9 +61,9 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
         ordered[contract] = info
 
     cloud_manifest = {
-        "version": 1,
-        "dataset": "GLBX.MDP3",
-        "product": "MES",
+        "version": 2,
+        "dataset": manifest.get("dataset"),
+        "product": manifest.get("product"),
         "resolution": "5m",
         "continuous_series": False,
         "roll_rule": None,
@@ -71,5 +71,5 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
     }
     out = output_dir / "manifest.json"
     out.write_text(json.dumps(cloud_manifest, indent=2), encoding="utf-8")
-    print(f"CLOUD_EXPORT_OK contracts={len(ordered)} manifest={out}", flush=True)
+    print(f"CLOUD_EXPORT_OK product={cloud_manifest['product']} contracts={len(ordered)} manifest={out}", flush=True)
     return out

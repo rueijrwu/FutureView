@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from mes_replay.engine import ReplayEngine
-from mes_replay.store import BarStore
+from futureview_replay.engine import ReplayEngine
+from futureview_replay.store import BarStore
 
 
 def store(tmp_path: Path) -> BarStore:
@@ -16,7 +16,7 @@ def store(tmp_path: Path) -> BarStore:
     f = p / "x.parquet"
     ts = pd.date_range("2024-06-10T13:30:00Z", periods=40, freq="5min")
     pd.DataFrame({"timestamp":ts,"symbol":"MESM24","instrument_id":1,"open":range(40),"high":[x+1 for x in range(40)],"low":[x-1 for x in range(40)],"close":[x+.5 for x in range(40)],"volume":[100+x for x in range(40)]}).to_parquet(f,index=False)
-    (tmp_path / "manifest.json").write_text(json.dumps({"files":[{"five_minute":"parquet/5m/x.parquet","symbols":["MESM24"]}]}))
+    (tmp_path / "manifest.json").write_text(json.dumps({"product":"MES","files":[{"five_minute":"parquet/5m/x.parquet","symbols":["MESM24"]}]}))
     return BarStore(tmp_path / "manifest.json")
 
 

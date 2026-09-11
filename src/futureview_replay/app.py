@@ -9,8 +9,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from mes_replay.engine import ReplayEngine
-from mes_replay.store import BarStore
+from futureview_replay.engine import ReplayEngine
+from futureview_replay.store import BarStore
 
 
 class StartRequest(BaseModel):
@@ -27,7 +27,7 @@ def create_app(manifest: str | Path) -> FastAPI:
     store = BarStore(manifest)
     engine = ReplayEngine(store)
     static = Path(__file__).with_name("static")
-    app = FastAPI(title="MES Replay", version="0.1.0")
+    app = FastAPI(title="FutureView Replay", version="0.2.0")
     app.state.engine = engine
     app.mount("/static", StaticFiles(directory=static), name="static")
 
@@ -37,11 +37,11 @@ def create_app(manifest: str | Path) -> FastAPI:
 
     @app.get("/api/health")
     async def health() -> dict[str, Any]:
-        return {"ok": True, "contracts": len(store.contracts())}
+        return {"ok": True, "contracts": len(store.contracts()), "product": store.manifest.get("product")}
 
     @app.get("/api/contracts")
     async def contracts() -> dict[str, Any]:
-        return {"contracts": store.contracts()}
+        return {"product": store.manifest.get("product"), "contracts": store.contracts()}
 
     @app.get("/api/contracts/{contract}")
     async def info(contract: str) -> dict[str, object]:

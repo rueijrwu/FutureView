@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
-from typing import Any
+from enum import Enum
 
 
-class ReplayState(StrEnum):
+class ReplayState(str, Enum):
     STOPPED = "STOPPED"
-    PAUSED = "PAUSED"
     PLAYING = "PLAYING"
+    PAUSED = "PAUSED"
     FINISHED = "FINISHED"
 
 
@@ -23,7 +22,7 @@ class Bar:
     close: float
     volume: float
 
-    def wire(self) -> dict[str, Any]:
+    def wire(self) -> dict[str, object]:
         return {
             "timestamp": self.timestamp.isoformat(),
             "time": int(self.timestamp.timestamp()),

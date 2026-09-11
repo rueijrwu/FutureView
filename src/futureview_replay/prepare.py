@@ -7,11 +7,11 @@ from pathlib import Path
 import databento as db
 import pandas as pd
 
-MES_OUTRIGHT = re.compile(r"^MES[HMUZ]\d{1,2}$")
+MONTH_CODES = "FGHJKMNQUVXZ"
 COLUMNS = ["timestamp", "symbol", "instrument_id", "open", "high", "low", "close", "volume"]
 
 
-def _load(path: Path) -> pd.DataFrame:
+def _load(path: Path, symbol_pattern: re.Pattern[str]) -> pd.DataFrame:
     store = db.DBNStore.from_file(path)
     frame = store.to_df(price_type="float", pretty_ts=True, map_symbols=True).reset_index()
     if frame.empty:
@@ -25,12 +25,11 @@ def _load(path: Path) -> pd.DataFrame:
         raise ValueError(f"{path}: missing DBN columns {missing}")
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
     frame["symbol"] = frame["symbol"].astype(str)
-    frame = frame.loc[frame["symbol"].str.fullmatch(MES_OUTRIGHT), COLUMNS].copy()
+    frame = frame.loc[frame["symbol"].str.fullmatch(symbol_pattern), COLUMNS].copy()
     if frame.empty:
-        raise ValueError(f"{path}: no MES outright futures after filtering")
+        raise ValueError(f"{path}: no matching outright futures after filtering")
     frame = frame.drop_duplicates(["symbol", "timestamp"], keep="last")
-    frame = frame.sort_values(["symbol", "timestamp"], kind="stable").reset_index(drop=True)
-    return frame
+    return frame.sort_values(["symbol", "timestamp"], kind="stable").reset_index(drop=True)
 
 
 def _to_5m(one: pd.DataFrame) -> pd.DataFrame:
@@ -39,8 +38,11 @@ def _to_5m(one: pd.DataFrame) -> pd.DataFrame:
         group = group.sort_values("timestamp").set_index("timestamp")
         out = group.resample("5min", origin="epoch", label="left", closed="left").agg(
             instrument_id=("instrument_id", "last"),
-            open=("open", "first"), high=("high", "max"), low=("low", "min"),
-            close=("close", "last"), volume=("volume", "sum"),
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+            volume=("volume", "sum"),
         )
         out = out.dropna(subset=["open", "high", "low", "close"])
         out.insert(0, "symbol", symbol)
@@ -49,7 +51,20 @@ def _to_5m(one: pd.DataFrame) -> pd.DataFrame:
     return result.sort_values(["symbol", "timestamp"], kind="stable").reset_index(drop=True)
 
 
-def prepare(raw_dir: Path, runtime_dir: Path, *, limit: int | None = None, force: bool = False) -> Path:
+def prepare(
+    raw_dir: Path,
+    runtime_dir: Path,
+    *,
+    product: str = "MES",
+    dataset: str = "GLBX.MDP3",
+    source_schema: str = "ohlcv-1m",
+    symbol_regex: str | None = None,
+    limit: int | None = None,
+    force: bool = False,
+) -> Path:
+    product = product.upper()
+    pattern_text = symbol_regex or rf"^{re.escape(product)}[{MONTH_CODES}]\d{{1,2}}$"
+    symbol_pattern = re.compile(pattern_text)
     files = sorted(raw_dir.glob("*.dbn.zst"))
     if limit is not None:
         files = files[:limit]
@@ -68,7 +83,7 @@ def prepare(raw_dir: Path, runtime_dir: Path, *, limit: int | None = None, force
         five_path = five_dir / f"{stem}.parquet"
         print(f"PREPARE {index}/{len(files)} {raw_path.name}", flush=True)
         if force or not one_path.exists() or not five_path.exists():
-            one = _load(raw_path)
+            one = _load(raw_path, symbol_pattern)
             five = _to_5m(one)
             one.to_parquet(one_path, index=False, compression="zstd")
             five.to_parquet(five_path, index=False, compression="zstd")
@@ -86,18 +101,19 @@ def prepare(raw_dir: Path, runtime_dir: Path, *, limit: int | None = None, force
             "first": pd.to_datetime(one["timestamp"], utc=True).min().isoformat(),
             "last": pd.to_datetime(one["timestamp"], utc=True).max().isoformat(),
         })
-        print(f"PREPARE_OK symbols={','.join(symbols)} rows_1m={len(one)} rows_5m={len(five)}", flush=True)
+        print(f"PREPARE_OK product={product} symbols={','.join(symbols)} rows_1m={len(one)} rows_5m={len(five)}", flush=True)
 
     manifest = {
-        "version": 1,
-        "dataset": "GLBX.MDP3",
-        "product": "MES",
-        "source_schema": "ohlcv-1m",
+        "version": 2,
+        "dataset": dataset,
+        "product": product,
+        "source_schema": source_schema,
+        "symbol_regex": pattern_text,
         "continuous_series": False,
         "roll_rule": None,
         "files": entries,
     }
     manifest_path = runtime_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    print(f"PREPARE_SUMMARY files={len(entries)} manifest={manifest_path}", flush=True)
+    print(f"PREPARE_SUMMARY product={product} files={len(entries)} manifest={manifest_path}", flush=True)
     return manifest_path

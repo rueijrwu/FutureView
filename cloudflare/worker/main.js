@@ -2,6 +2,8 @@ import { ReplaySession } from "./replay-session.js";
 
 export { ReplaySession };
 
+// Existing production shard namespace is retained for compatibility during the
+// raw-data migration. It is data layout, not the platform/package identity.
 const PREFIX = "mes-replay/v1";
 
 async function readManifest(env) {
@@ -21,7 +23,8 @@ export default {
     if (url.pathname === "/api/health") {
       const manifest = await readManifest(env);
       return json({
-        service: "futureview-mes-replay",
+        service: "futureview-replay",
+        product: manifest?.product ?? null,
         status: manifest ? "ok" : "data-unavailable",
         storage: "r2",
         sessions: "durable-objects",
@@ -32,8 +35,8 @@ export default {
 
     if (url.pathname === "/api/contracts") {
       const manifest = await readManifest(env);
-      if (!manifest) return json({ error: "MES replay manifest not published" }, 503);
-      return json({ contracts: Object.values(manifest.contracts ?? {}) });
+      if (!manifest) return json({ error: "Replay manifest not published" }, 503);
+      return json({ product: manifest.product ?? null, contracts: Object.values(manifest.contracts ?? {}) });
     }
 
     const contractMatch = url.pathname.match(/^\/api\/contracts\/([^/]+)$/);

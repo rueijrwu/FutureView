@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from mes_replay.models import Bar
+from futureview_replay.models import Bar
 
 
 class BarStore:
@@ -44,13 +44,26 @@ class BarStore:
         frame = pd.concat(frames, ignore_index=True)
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
         frame = frame.drop_duplicates(["symbol", "timestamp"], keep="last").sort_values("timestamp")
-        result = [Bar(
-            timestamp=row.timestamp.to_pydatetime(), contract=contract,
-            open=float(row.open), high=float(row.high), low=float(row.low), close=float(row.close), volume=float(row.volume),
-        ) for row in frame.itertuples(index=False)]
+        result = [
+            Bar(
+                timestamp=row.timestamp.to_pydatetime(),
+                contract=contract,
+                open=float(row.open),
+                high=float(row.high),
+                low=float(row.low),
+                close=float(row.close),
+                volume=float(row.volume),
+            )
+            for row in frame.itertuples(index=False)
+        ]
         self._cache[contract] = result
         return result
 
     def info(self, contract: str) -> dict[str, object]:
         bars = self.bars(contract)
-        return {"contract": contract, "bars": len(bars), "first": bars[0].timestamp.isoformat(), "last": bars[-1].timestamp.isoformat()}
+        return {
+            "contract": contract,
+            "bars": len(bars),
+            "first": bars[0].timestamp.isoformat(),
+            "last": bars[-1].timestamp.isoformat(),
+        }

@@ -37,15 +37,15 @@ jobs:
       - name: Unit tests
         run: pytest -q tests
       - name: Prepare real Databento month
-        run: mes-replay prepare --raw data/databento/mes/raw --runtime runtime --limit 1
+        run: futureview-replay prepare --product MES --raw data/databento/mes/raw --runtime runtime/MES --limit 1
       - name: Export replay shards
         run: |
-          mes-replay cloud-export --runtime runtime --output runtime/cloud-export
-          test -f runtime/cloud-export/manifest.json
-          find runtime/cloud-export -name '*.json.gz' -print -quit | grep .
+          futureview-replay cloud-export --runtime runtime/MES --output runtime/MES/cloud-export
+          test -f runtime/MES/cloud-export/manifest.json
+          find runtime/MES/cloud-export -name '*.json.gz' -print -quit | grep .
       - name: Server smoke
         run: |
-          mes-replay serve --manifest runtime/manifest.json --host 127.0.0.1 --port 8787 > replay-server.log 2>&1 &
+          futureview-replay serve --manifest runtime/MES/manifest.json --host 127.0.0.1 --port 8787 > replay-server.log 2>&1 &
           SERVER_PID=$!
           for i in $(seq 1 50); do
             if curl -fsS http://127.0.0.1:8787/api/health > health.json; then break; fi

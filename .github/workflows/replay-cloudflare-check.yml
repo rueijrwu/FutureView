@@ -4,9 +4,9 @@ on:
   push:
     branches: [master]
     paths:
+      - 'src/**'
       - 'cloudflare/**'
-      - 'src/mes_replay/cloud_export.py'
-      - 'src/mes_replay/cli.py'
+      - 'pyproject.toml'
       - '.github/workflows/replay-cloudflare-check.yml'
   workflow_dispatch:
 
@@ -24,7 +24,7 @@ jobs:
           node-version: '24'
       - name: Browser and Worker syntax
         run: |
-          node --check src/mes_replay/static/app.js
+          node --check src/futureview_replay/static/app.js
           node --check cloudflare/public/app.js
           node --check cloudflare/worker/main.js
           node --check cloudflare/worker/replay-session.js
