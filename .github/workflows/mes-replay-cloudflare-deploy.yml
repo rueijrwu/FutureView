@@ -5,7 +5,8 @@ on:
   push:
     branches: [master]
     paths:
-      - 'mes-replay/cloudflare/**'
+      - 'mes-replay/**'
+      - 'data/databento/mes/raw/**'
       - '.github/workflows/mes-replay-cloudflare-deploy.yml'
 
 permissions:
@@ -18,10 +19,40 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Resolve or create dedicated D1 database
+        with:
+          lfs: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Pull MES historical archive
+        run: |
+          git lfs install
+          git lfs pull --include='data/databento/mes/raw/*.dbn.zst'
+          test $(find data/databento/mes/raw -name '*.dbn.zst' | wc -l) -gt 80
+
+      - name: Build cloud replay data
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e mes-replay
+          mes-replay prepare --raw data/databento/mes/raw --runtime mes-replay/runtime
+          mes-replay cloud-export --runtime mes-replay/runtime --output mes-replay/runtime/cloud-export
+          test -f mes-replay/runtime/cloud-export/manifest.json
+
+      - name: Publish replay data to R2
+        working-directory: mes-replay/cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        run: bash publish-r2.sh ../runtime/cloud-export
+
+      - name: Resolve or create replay D1 database
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -36,24 +67,26 @@ jobs:
           fi
           test -n "$DB_ID"
           echo "D1_DATABASE_ID=$DB_ID" >> "$GITHUB_ENV"
-      - name: Generate deploy config
+
+      - name: Generate production config
         working-directory: mes-replay/cloudflare
         run: |
           node --input-type=commonjs <<'NODE'
           const fs=require('fs');
-          const text=fs.readFileSync('wrangler.jsonc','utf8');
-          const config=JSON.parse(text);
+          const config=JSON.parse(fs.readFileSync('wrangler.jsonc','utf8'));
           config.name='futureview';
           config.d1_databases=[{binding:'DB',database_name:'futureview-mes-replay',database_id:process.env.D1_DATABASE_ID,migrations_dir:'migrations'}];
           fs.writeFileSync('.wrangler.deploy.json',JSON.stringify(config,null,2));
           NODE
+
       - name: Apply D1 migrations
         working-directory: mes-replay/cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
         run: npx --yes wrangler@4.125.0 d1 migrations apply futureview-mes-replay --remote --config .wrangler.deploy.json
-      - name: Deploy replay Worker as FutureView
+
+      - name: Deploy FutureView replay Worker
         working-directory: mes-replay/cloudflare
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
