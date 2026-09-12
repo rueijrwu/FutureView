@@ -47,6 +47,10 @@ button:disabled { opacity: .4; cursor: default; }
 .tool-group input[type="color"]::-webkit-color-swatch-wrapper { padding: 1px; }
 .tool-group input[type="color"]::-webkit-color-swatch { border: none; border-radius: 3px; }
 .indicator-pick { display: flex; align-items: center; gap: 3px; }
+.fv-context-menu { position: fixed; z-index: 1000; background: #172233; border: 1px solid #35455d; border-radius: 6px; padding: 4px; display: flex; flex-direction: column; gap: 2px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+.fv-context-menu button { background: none; border: none; color: #edf2fa; text-align: left; padding: 6px 12px; font-size: 12px; border-radius: 4px; cursor: pointer; }
+.fv-context-menu button:hover { background: #255ddd; }
+.fv-text-editor { position: fixed; z-index: 1000; min-width: 60px; max-width: 260px; background: #101722; border: 1px solid; border-radius: 4px; padding: 3px 6px; font-size: 12px; color: #edf2fa; outline: none; transform: translate(-2px, -2px); }
 .chart-legend { padding: 5px 14px; min-height: 25px; color: #aab5c5; border-bottom: 1px solid #1b2635; font: 11px/1.3 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #chart { min-height: 500px; }
 .controls { justify-content: space-between; border-top: 1px solid #253247; }

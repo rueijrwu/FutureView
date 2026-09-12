@@ -70,6 +70,7 @@
       this.volume = volume;
       this.toolbar = toolbar;
       this.legend = legend;
+      this.container = container;
       this.formatTime = formatTime;
       this.bars = [];
       this.logScale = false;
@@ -94,7 +95,9 @@
       this.activeDrawTool = null;
       this.pendingAnchors = [];
       this.drawingIds = [];
-      this.pendingText = null;
+      this.previewId = null;
+      this.menuEl = null;
+      this.editorEl = null;
 
       this._bind();
       this._showLegend(null);
@@ -139,6 +142,27 @@
 
       this.chart.subscribeClick((param) => this._handleDrawClick(param));
       this.chart.subscribeCrosshairMove((param) => this._showLegend(param));
+
+      // Live dashed preview while placing a multi-anchor drawing (trend/ray/rect/fib) -
+      // otherwise nothing is visible between the first click and the completing click.
+      this.container.addEventListener("mousemove", (event) => this._handlePreviewMove(event));
+      // Right-click a drawing for Delete / Edit text, instead of only Undo (last-drawn) / Clear (all).
+      this.container.addEventListener("contextmenu", (event) => this._handleContextMenu(event));
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") this._cancelDrawing();
+      });
+    }
+
+    _containerPoint(event) {
+      const rect = this.container.getBoundingClientRect();
+      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    }
+
+    _anchorAtPoint(point) {
+      const time = this.chart.timeScale().coordinateToTime(point.x);
+      const price = this.candles.coordinateToPrice(point.y);
+      if (time == null || price == null || !Number.isFinite(price)) return null;
+      return { time, price };
     }
 
     _toggleIndicator(name, button) {
@@ -164,42 +188,71 @@
 
     _armDrawTool(tool, button) {
       const wasArmed = this.activeDrawTool === tool;
-      this.toolbar.querySelectorAll("button[data-tool].armed").forEach((b) => b.classList.remove("armed"));
-      this.pendingAnchors = [];
-      if (wasArmed) {
-        this.activeDrawTool = null;
-        return;
-      }
-      if (tool === "text") {
-        const text = window.prompt("Annotation text:");
-        if (!text) return;
-        this.pendingText = text;
-      }
+      this._cancelDrawing();
+      if (wasArmed) return;
       this.activeDrawTool = tool;
       button.classList.add("armed");
     }
 
+    _cancelDrawing() {
+      this.toolbar.querySelectorAll("button[data-tool].armed").forEach((b) => b.classList.remove("armed"));
+      this.activeDrawTool = null;
+      this.pendingAnchors = [];
+      this._clearPreview();
+      this._closeEditor();
+    }
+
     _handleDrawClick(param) {
+      if (this.editorEl) return; // don't let a click behind the text editor start a new anchor
       if (!this.activeDrawTool || !param.time || !param.point) return;
       const price = this.candles.coordinateToPrice(param.point.y);
       if (price == null || !Number.isFinite(price)) return;
-      this.pendingAnchors.push({ time: param.time, price });
+      const anchor = { time: param.time, price };
 
+      if (this.activeDrawTool === "text") {
+        this._openTextEditor(param.point, "", (text) => {
+          if (text) this._finalizeDrawing("text-annotation", [anchor], { text });
+          this._cancelDrawing();
+        });
+        return;
+      }
+
+      this.pendingAnchors.push(anchor);
       const registryType = DRAW_TOOLS[this.activeDrawTool];
       const def = this.registry.get(registryType);
       if (this.pendingAnchors.length < def.requiredAnchors) return;
 
+      this._finalizeDrawing(registryType, this.pendingAnchors, {});
+      this._cancelDrawing();
+    }
+
+    _finalizeDrawing(registryType, anchors, options) {
       const id = `fv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       const style = { lineColor: this.drawColor, lineWidth: 2, fillColor: `${this.drawColor}33` };
-      const options = this.pendingText ? { text: this.pendingText } : {};
-      const drawing = this.registry.createDrawing(registryType, id, this.pendingAnchors, style, options);
+      const drawing = this.registry.createDrawing(registryType, id, anchors, style, options);
       this.drawManager.addDrawing(drawing);
       this.drawingIds.push(id);
+      return id;
+    }
 
-      this.pendingAnchors = [];
-      this.pendingText = null;
-      this.activeDrawTool = null;
-      this.toolbar.querySelectorAll("button[data-tool].armed").forEach((b) => b.classList.remove("armed"));
+    // ---- Live preview: a dashed ghost of the pending drawing that follows the mouse
+    // between the first anchor click and the one that completes it. ----
+    _handlePreviewMove(event) {
+      if (!this.activeDrawTool || this.activeDrawTool === "text" || !this.pendingAnchors.length) return;
+      const point = this._containerPoint(event);
+      const anchor = this._anchorAtPoint(point);
+      if (!anchor) return;
+      const registryType = DRAW_TOOLS[this.activeDrawTool];
+      const style = { lineColor: this.drawColor, lineWidth: 1, lineDash: [4, 4], fillColor: `${this.drawColor}1a` };
+      const drawing = this.registry.createDrawing(registryType, "__preview__", [...this.pendingAnchors, anchor], style, {});
+      if (this.previewId) this.drawManager.removeDrawing(this.previewId);
+      this.drawManager.addDrawing(drawing);
+      this.previewId = drawing.id;
+    }
+
+    _clearPreview() {
+      if (this.previewId) this.drawManager.removeDrawing(this.previewId);
+      this.previewId = null;
     }
 
     _undoDrawing() {
@@ -210,6 +263,124 @@
     _clearDrawings() {
       this.drawManager.clearAll();
       this.drawingIds = [];
+    }
+
+    _removeDrawingById(id) {
+      this.drawManager.removeDrawing(id);
+      this.drawingIds = this.drawingIds.filter((existing) => existing !== id);
+    }
+
+    // ---- Right-click menu: makes a drawing feel like an object you can act on,
+    // not just something Undo/Clear touches. ----
+    _handleContextMenu(event) {
+      const point = this._containerPoint(event);
+      const hit = this.drawManager.hitTest(point);
+      if (!hit) return;
+      event.preventDefault();
+      this._showContextMenu(event.clientX, event.clientY, hit);
+    }
+
+    _hideMenu() {
+      if (this.menuEl) {
+        this.menuEl.remove();
+        this.menuEl = null;
+      }
+    }
+
+    _showContextMenu(clientX, clientY, drawing) {
+      this._hideMenu();
+      const menu = document.createElement("div");
+      menu.className = "fv-context-menu";
+      menu.style.left = `${clientX}px`;
+      menu.style.top = `${clientY}px`;
+
+      if (drawing.type === "text-annotation") {
+        const editItem = document.createElement("button");
+        editItem.textContent = "Edit text";
+        editItem.onclick = () => {
+          this._hideMenu();
+          const rect = this.container.getBoundingClientRect();
+          const anchorPoint = this.chart.timeScale().timeToCoordinate(drawing.anchors[0].time);
+          const priceCoord = this.candles.priceToCoordinate(drawing.anchors[0].price);
+          const screenPoint = { x: anchorPoint ?? clientX - rect.left, y: priceCoord ?? clientY - rect.top };
+          this._openTextEditor(screenPoint, drawing.textOptions?.text || "", (text) => {
+            if (text) {
+              this._removeDrawingById(drawing.id);
+              this._finalizeDrawing("text-annotation", drawing.anchors, { text });
+            }
+          });
+        };
+        menu.appendChild(editItem);
+      }
+
+      const deleteItem = document.createElement("button");
+      deleteItem.textContent = "Delete";
+      deleteItem.onclick = () => {
+        this._removeDrawingById(drawing.id);
+        this._hideMenu();
+      };
+      menu.appendChild(deleteItem);
+
+      document.body.appendChild(menu);
+      this.menuEl = menu;
+      const closeOnce = (ev) => {
+        if (!menu.contains(ev.target)) {
+          this._hideMenu();
+          document.removeEventListener("mousedown", closeOnce, true);
+        }
+      };
+      setTimeout(() => document.addEventListener("mousedown", closeOnce, true), 0);
+    }
+
+    // ---- Inline text editor: a small contenteditable box positioned at the click,
+    // instead of a blocking window.prompt(). Enter commits, Escape/blur-empty cancels. ----
+    _openTextEditor(point, initialText, onCommit) {
+      this._closeEditor();
+      const rect = this.container.getBoundingClientRect();
+      const box = document.createElement("div");
+      box.className = "fv-text-editor";
+      box.contentEditable = "true";
+      box.textContent = initialText;
+      box.style.left = `${rect.left + point.x}px`;
+      box.style.top = `${rect.top + point.y}px`;
+      box.style.borderColor = this.drawColor;
+      document.body.appendChild(box);
+      this.editorEl = box;
+      box.focus();
+      document.execCommand?.("selectAll", false, null);
+
+      let settled = false;
+      const commit = () => {
+        if (settled) return;
+        settled = true;
+        const text = box.textContent.trim();
+        box.remove();
+        if (this.editorEl === box) this.editorEl = null;
+        onCommit(text);
+      };
+      const cancel = () => {
+        if (settled) return;
+        settled = true;
+        box.remove();
+        if (this.editorEl === box) this.editorEl = null;
+      };
+      box.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          commit();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          cancel();
+        }
+      });
+      box.addEventListener("blur", commit);
+    }
+
+    _closeEditor() {
+      if (this.editorEl) {
+        this.editorEl.remove();
+        this.editorEl = null;
+      }
     }
 
     _toggleLog(button) {
