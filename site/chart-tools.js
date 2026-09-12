@@ -206,18 +206,32 @@
     }
 
     // Anchor placement (idle -> placing -> complete, Escape -> cancel) is delegated to
-    // the plugin's own InteractionHandler FSM rather than hand-rolled bookkeeping -
-    // DrawingManager itself never wires this up (createOverlay-style click-to-place is
-    // opt-in), but the FSM it ships for exactly this purpose is public and exported.
+    // the plugin's own InteractionHandler FSM rather than hand-rolled bookkeeping for
+    // tools that need 2+ clicks - DrawingManager itself never wires this up
+    // (createOverlay-style click-to-place is opt-in), but the FSM it ships for exactly
+    // this purpose is public and exported.
+    //
+    // Single-anchor tools (h-line, v-line) bypass the FSM: its onMouseDown only checks
+    // requiredAnchors in the 'placing' branch, never in 'idle', so a 1-anchor tool adds
+    // its one anchor, lands in 'placing', and then silently never reaches 'complete' -
+    // confirmed by tracing state after a real click (stuck at "placing", zero drawings
+    // created). That's a real defect in the library for this case, not a missing
+    // feature to build around inside it, so these tools place directly on click instead,
+    // the same way text-annotation already does.
     _armDrawTool(tool, button) {
       const wasArmed = this.activeDrawTool === tool;
       this._cancelDrawing();
       if (wasArmed) return;
       this.activeDrawTool = tool;
       button.classList.add("armed");
-      if (tool === "text") return; // text uses the inline editor flow, not the FSM
+      // Match TradingView: chart panning/scroll-zoom is suspended while a drawing tool
+      // is armed, so a natural click-drag-release places the tool instead of silently
+      // scrolling the chart out from under the cursor mid-draw.
+      this.chart.applyOptions({ handleScroll: false, handleScale: false });
+      if (tool === "text") return;
       const registryType = DRAW_TOOLS[tool];
       const def = this.registry.get(registryType);
+      if (def.requiredAnchors <= 1) return;
       this.interactionHandler = new LCD.InteractionHandler({
         requiredAnchors: def.requiredAnchors,
         pixelToChart: (point) => this._anchorAtPoint(point),
@@ -234,6 +248,7 @@
       this.toolbar.querySelectorAll("button[data-tool].armed").forEach((b) => b.classList.remove("armed"));
       this.activeDrawTool = null;
       this.interactionHandler = null;
+      this.chart.applyOptions({ handleScroll: true, handleScale: true });
       this._clearPreview();
       this._closeEditor();
     }
@@ -248,9 +263,20 @@
         if (price == null || !Number.isFinite(price)) return;
         const anchor = { time: param.time, price };
         this._openTextEditor(param.point, "", (text) => {
-          if (text) this._finalizeDrawing("text-annotation", [anchor], { text });
+          if (text) this._finalizeDrawing("text-annotation", [anchor], { text, backgroundColor: "transparent" });
           this._cancelDrawing();
         });
+        return;
+      }
+
+      const registryType = DRAW_TOOLS[this.activeDrawTool];
+      const def = this.registry.get(registryType);
+      if (def.requiredAnchors <= 1) {
+        if (!param.time) return;
+        const price = this.candles.coordinateToPrice(param.point.y);
+        if (price == null || !Number.isFinite(price)) return;
+        this._finalizeDrawing(registryType, [{ time: param.time, price }], {});
+        this._cancelDrawing();
         return;
       }
 
