@@ -74,14 +74,18 @@
       this.formatTime = formatTime;
       this.bars = [];
       this.logScale = false;
-      this.magnet = false;
+      // lightweight-charts defaults crosshair.mode to Magnet (CrosshairMode.Magnet = 1),
+      // so magnet snapping is already on before we touch it - this just makes the
+      // toolbar button reflect that instead of showing off while it's actually on.
+      this.magnet = true;
+      this.indicatorWidths = { sma5: 2, sma10: 2, sma20: 2, sma60: 2, vwap: 2 };
       this.vwapSession = null;
       this.vwapPriceVolume = 0;
       this.vwapVolume = 0;
       this.indicatorColors = { sma5: THEME.sma5, sma10: THEME.sma10, sma20: THEME.sma20, sma60: THEME.sma60, vwap: THEME.vwap };
       this.indicators = {};
       Object.keys(this.indicatorColors).forEach((key) => {
-        this.indicators[key] = chart.addSeries(TV.LineSeries, this._lineOptions(this.indicatorColors[key], 2));
+        this.indicators[key] = chart.addSeries(TV.LineSeries, this._lineOptions(this.indicatorColors[key], this.indicatorWidths[key]));
       });
       Object.values(this.indicators).forEach((series) => series.applyOptions({ visible: false }));
 
@@ -93,7 +97,7 @@
       this.registry = LCD.getToolRegistry();
       this.drawColor = THEME.overlay;
       this.activeDrawTool = null;
-      this.pendingAnchors = [];
+      this.interactionHandler = null;
       this.drawingIds = [];
       this.previewId = null;
       this.menuEl = null;
@@ -139,9 +143,17 @@
       });
       const drawColorInput = this.toolbar.querySelector("#draw-color");
       if (drawColorInput) drawColorInput.value = this.drawColor;
+      const magnetButton = this.toolbar.querySelector('[data-tool="crosshair"]');
+      if (magnetButton) {
+        magnetButton.classList.toggle("active", this.magnet);
+        magnetButton.setAttribute("aria-pressed", String(this.magnet));
+      }
 
       this.chart.subscribeClick((param) => this._handleDrawClick(param));
-      this.chart.subscribeCrosshairMove((param) => this._showLegend(param));
+      this.chart.subscribeCrosshairMove((param) => {
+        this.lastCrosshairParam = param;
+        this._showLegend(param);
+      });
 
       // Live dashed preview while placing a multi-anchor drawing (trend/ray/rect/fib) -
       // otherwise nothing is visible between the first click and the completing click.
@@ -149,7 +161,9 @@
       // Right-click a drawing for Delete / Edit text, instead of only Undo (last-drawn) / Clear (all).
       this.container.addEventListener("contextmenu", (event) => this._handleContextMenu(event));
       document.addEventListener("keydown", (event) => {
-        if (event.key === "Escape") this._cancelDrawing();
+        if (event.key !== "Escape") return;
+        if (this.interactionHandler) this.interactionHandler.onKeyDown("Escape");
+        else this._cancelDrawing();
       });
     }
 
@@ -177,6 +191,11 @@
       this.indicators[key].applyOptions({ color });
     }
 
+    _setIndicatorWidth(key, width) {
+      this.indicatorWidths[key] = width;
+      this.indicators[key].applyOptions({ lineWidth: width });
+    }
+
     _toggleCrosshair(button) {
       this.magnet = !this.magnet;
       button.classList.toggle("active", this.magnet);
@@ -186,30 +205,48 @@
       });
     }
 
+    // Anchor placement (idle -> placing -> complete, Escape -> cancel) is delegated to
+    // the plugin's own InteractionHandler FSM rather than hand-rolled bookkeeping -
+    // DrawingManager itself never wires this up (createOverlay-style click-to-place is
+    // opt-in), but the FSM it ships for exactly this purpose is public and exported.
     _armDrawTool(tool, button) {
       const wasArmed = this.activeDrawTool === tool;
       this._cancelDrawing();
       if (wasArmed) return;
       this.activeDrawTool = tool;
       button.classList.add("armed");
+      if (tool === "text") return; // text uses the inline editor flow, not the FSM
+      const registryType = DRAW_TOOLS[tool];
+      const def = this.registry.get(registryType);
+      this.interactionHandler = new LCD.InteractionHandler({
+        requiredAnchors: def.requiredAnchors,
+        pixelToChart: (point) => this._anchorAtPoint(point),
+        onPreviewMove: (previewAnchor) => this._renderPreview(registryType, this.interactionHandler.getAnchors(), previewAnchor),
+        onComplete: () => {
+          this._finalizeDrawing(registryType, this.interactionHandler.getAnchors(), {});
+          this._cancelDrawing();
+        },
+        onCancel: () => this._cancelDrawing(),
+      });
     }
 
     _cancelDrawing() {
       this.toolbar.querySelectorAll("button[data-tool].armed").forEach((b) => b.classList.remove("armed"));
       this.activeDrawTool = null;
-      this.pendingAnchors = [];
+      this.interactionHandler = null;
       this._clearPreview();
       this._closeEditor();
     }
 
     _handleDrawClick(param) {
       if (this.editorEl) return; // don't let a click behind the text editor start a new anchor
-      if (!this.activeDrawTool || !param.time || !param.point) return;
-      const price = this.candles.coordinateToPrice(param.point.y);
-      if (price == null || !Number.isFinite(price)) return;
-      const anchor = { time: param.time, price };
+      if (!this.activeDrawTool || !param.point) return;
 
       if (this.activeDrawTool === "text") {
+        if (!param.time) return;
+        const price = this.candles.coordinateToPrice(param.point.y);
+        if (price == null || !Number.isFinite(price)) return;
+        const anchor = { time: param.time, price };
         this._openTextEditor(param.point, "", (text) => {
           if (text) this._finalizeDrawing("text-annotation", [anchor], { text });
           this._cancelDrawing();
@@ -217,13 +254,7 @@
         return;
       }
 
-      this.pendingAnchors.push(anchor);
-      const registryType = DRAW_TOOLS[this.activeDrawTool];
-      const def = this.registry.get(registryType);
-      if (this.pendingAnchors.length < def.requiredAnchors) return;
-
-      this._finalizeDrawing(registryType, this.pendingAnchors, {});
-      this._cancelDrawing();
+      this.interactionHandler?.onMouseDown({ point: param.point, time: param.time ?? null, price: null, srcEvent: null });
     }
 
     _finalizeDrawing(registryType, anchors, options) {
@@ -235,16 +266,16 @@
       return id;
     }
 
-    // ---- Live preview: a dashed ghost of the pending drawing that follows the mouse
-    // between the first anchor click and the one that completes it. ----
+    // ---- Live preview: a dashed ghost of the pending drawing that follows the mouse,
+    // fed by InteractionHandler's onPreviewMove rather than tracked here. ----
     _handlePreviewMove(event) {
-      if (!this.activeDrawTool || this.activeDrawTool === "text" || !this.pendingAnchors.length) return;
-      const point = this._containerPoint(event);
-      const anchor = this._anchorAtPoint(point);
-      if (!anchor) return;
-      const registryType = DRAW_TOOLS[this.activeDrawTool];
+      if (!this.interactionHandler || this.activeDrawTool === "text") return;
+      this.interactionHandler.onMouseMove({ point: this._containerPoint(event), time: null, price: null, srcEvent: null });
+    }
+
+    _renderPreview(registryType, anchors, previewAnchor) {
       const style = { lineColor: this.drawColor, lineWidth: 1, lineDash: [4, 4], fillColor: `${this.drawColor}1a` };
-      const drawing = this.registry.createDrawing(registryType, "__preview__", [...this.pendingAnchors, anchor], style, {});
+      const drawing = this.registry.createDrawing(registryType, "__preview__", [...anchors, previewAnchor], style, {});
       if (this.previewId) this.drawManager.removeDrawing(this.previewId);
       this.drawManager.addDrawing(drawing);
       this.previewId = drawing.id;
@@ -270,14 +301,35 @@
       this.drawingIds = this.drawingIds.filter((existing) => existing !== id);
     }
 
-    // ---- Right-click menu: makes a drawing feel like an object you can act on,
-    // not just something Undo/Clear touches. ----
+    // ---- Right-click menu: makes a drawing (or an indicator line) feel like an
+    // object you can act on - restyle or delete - not just something Undo/Clear touches. ----
     _handleContextMenu(event) {
       const point = this._containerPoint(event);
       const hit = this.drawManager.hitTest(point);
-      if (!hit) return;
-      event.preventDefault();
-      this._showContextMenu(event.clientX, event.clientY, hit);
+      if (hit) {
+        event.preventDefault();
+        return this._showDrawingMenu(event.clientX, event.clientY, hit);
+      }
+      const indicatorKey = this._hitTestIndicator(point);
+      if (indicatorKey) {
+        event.preventDefault();
+        return this._showIndicatorMenu(event.clientX, event.clientY, indicatorKey);
+      }
+    }
+
+    _hitTestIndicator(point) {
+      const data = this.lastCrosshairParam?.seriesData;
+      if (!data) return null;
+      const TOLERANCE = 6;
+      for (const [key, series] of Object.entries(this.indicators)) {
+        if (!series.options().visible) continue;
+        const point2 = data.get(series);
+        const value = typeof point2 === "number" ? point2 : point2?.value;
+        if (value == null) continue;
+        const y = series.priceToCoordinate(value);
+        if (y != null && Math.abs(y - point.y) <= TOLERANCE) return key;
+      }
+      return null;
     }
 
     _hideMenu() {
@@ -287,40 +339,13 @@
       }
     }
 
-    _showContextMenu(clientX, clientY, drawing) {
+    _openMenu(clientX, clientY, buildRows) {
       this._hideMenu();
       const menu = document.createElement("div");
       menu.className = "fv-context-menu";
       menu.style.left = `${clientX}px`;
       menu.style.top = `${clientY}px`;
-
-      if (drawing.type === "text-annotation") {
-        const editItem = document.createElement("button");
-        editItem.textContent = "Edit text";
-        editItem.onclick = () => {
-          this._hideMenu();
-          const rect = this.container.getBoundingClientRect();
-          const anchorPoint = this.chart.timeScale().timeToCoordinate(drawing.anchors[0].time);
-          const priceCoord = this.candles.priceToCoordinate(drawing.anchors[0].price);
-          const screenPoint = { x: anchorPoint ?? clientX - rect.left, y: priceCoord ?? clientY - rect.top };
-          this._openTextEditor(screenPoint, drawing.textOptions?.text || "", (text) => {
-            if (text) {
-              this._removeDrawingById(drawing.id);
-              this._finalizeDrawing("text-annotation", drawing.anchors, { text });
-            }
-          });
-        };
-        menu.appendChild(editItem);
-      }
-
-      const deleteItem = document.createElement("button");
-      deleteItem.textContent = "Delete";
-      deleteItem.onclick = () => {
-        this._removeDrawingById(drawing.id);
-        this._hideMenu();
-      };
-      menu.appendChild(deleteItem);
-
+      buildRows(menu);
       document.body.appendChild(menu);
       this.menuEl = menu;
       const closeOnce = (ev) => {
@@ -330,6 +355,125 @@
         }
       };
       setTimeout(() => document.addEventListener("mousedown", closeOnce, true), 0);
+      return menu;
+    }
+
+    _menuRow(menu, label, control) {
+      const row = document.createElement("div");
+      row.className = "fv-menu-row";
+      const span = document.createElement("span");
+      span.textContent = label;
+      row.append(span, control);
+      menu.appendChild(row);
+      return row;
+    }
+
+    _menuColorRow(menu, label, value, onChange) {
+      const input = document.createElement("input");
+      input.type = "color";
+      input.value = value;
+      input.oninput = () => onChange(input.value);
+      this._menuRow(menu, label, input);
+    }
+
+    _menuSelectRow(menu, label, value, options, onChange) {
+      const select = document.createElement("select");
+      options.forEach(([optValue, optLabel]) => {
+        const opt = document.createElement("option");
+        opt.value = optValue;
+        opt.textContent = optLabel;
+        opt.selected = optValue === String(value);
+        select.appendChild(opt);
+      });
+      select.onchange = () => onChange(select.value);
+      this._menuRow(menu, label, select);
+    }
+
+    _menuCheckboxRow(menu, label, checked, onChange) {
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = !!checked;
+      input.onchange = () => onChange(input.checked);
+      this._menuRow(menu, label, input);
+    }
+
+    _menuButton(menu, label, onClick) {
+      const button = document.createElement("button");
+      button.className = "fv-menu-action";
+      button.textContent = label;
+      button.onclick = onClick;
+      menu.appendChild(button);
+    }
+
+    _menuDivider(menu) {
+      const hr = document.createElement("div");
+      hr.className = "fv-menu-divider";
+      menu.appendChild(hr);
+    }
+
+    static LINE_DASHES = { solid: [], dashed: [6, 4], dotted: [2, 2] };
+
+    _dashKey(dash) {
+      const entry = Object.entries(FutureViewChartTools.LINE_DASHES).find(([, value]) => JSON.stringify(value) === JSON.stringify(dash || []));
+      return entry ? entry[0] : "solid";
+    }
+
+    _showDrawingMenu(clientX, clientY, drawing) {
+      this._openMenu(clientX, clientY, (menu) => {
+        this._menuColorRow(menu, "Line color", drawing.style.lineColor, (v) => { drawing.style = { ...drawing.style, lineColor: v }; });
+        this._menuSelectRow(menu, "Line style", this._dashKey(drawing.style.lineDash), [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"]], (v) => {
+          drawing.style = { ...drawing.style, lineDash: FutureViewChartTools.LINE_DASHES[v] };
+        });
+        this._menuSelectRow(menu, "Line width", String(drawing.style.lineWidth), [["1", "1px"], ["2", "2px"], ["3", "3px"], ["4", "4px"]], (v) => {
+          drawing.style = { ...drawing.style, lineWidth: Number(v) };
+        });
+
+        if (drawing.type === "rectangle") {
+          this._menuColorRow(menu, "Fill color", (drawing.style.fillColor || "#00000033").slice(0, 7), (v) => {
+            drawing.style = { ...drawing.style, fillColor: `${v}33` };
+          });
+          this._menuCheckboxRow(menu, "Filled", drawing.rectangleOptions?.filled, (checked) => drawing.setRectangleOptions({ filled: checked }));
+        }
+
+        if (drawing.type === "fib-retracement") {
+          this._menuDivider(menu);
+          this._menuCheckboxRow(menu, "Extend lines", drawing.fibOptions?.extendLines, (checked) => drawing.setFibOptions({ extendLines: checked }));
+          this._menuCheckboxRow(menu, "Reverse", drawing.fibOptions?.reverseDirection, (checked) => drawing.setFibOptions({ reverseDirection: checked }));
+          this._menuCheckboxRow(menu, "Show prices", drawing.fibOptions?.showPrices, (checked) => drawing.setFibOptions({ showPrices: checked }));
+          this._menuCheckboxRow(menu, "Show %", drawing.fibOptions?.showPercentages, (checked) => drawing.setFibOptions({ showPercentages: checked }));
+        }
+
+        this._menuDivider(menu);
+        if (drawing.type === "text-annotation") {
+          this._menuButton(menu, "Edit text", () => {
+            this._hideMenu();
+            const rect = this.container.getBoundingClientRect();
+            const anchorPoint = this.chart.timeScale().timeToCoordinate(drawing.anchors[0].time);
+            const priceCoord = this.candles.priceToCoordinate(drawing.anchors[0].price);
+            const screenPoint = { x: anchorPoint ?? clientX - rect.left, y: priceCoord ?? clientY - rect.top };
+            this._openTextEditor(screenPoint, drawing.textOptions?.text || "", (text) => {
+              if (text) drawing.setText(text);
+            });
+          });
+        }
+        this._menuButton(menu, "Delete", () => {
+          this._removeDrawingById(drawing.id);
+          this._hideMenu();
+        });
+      });
+    }
+
+    _showIndicatorMenu(clientX, clientY, key) {
+      this._openMenu(clientX, clientY, (menu) => {
+        this._menuColorRow(menu, "Line color", this.indicatorColors[key], (v) => this._setIndicatorColor(key, v));
+        this._menuSelectRow(menu, "Line width", String(this.indicatorWidths[key]), [["1", "1px"], ["2", "2px"], ["3", "3px"], ["4", "4px"]], (v) => this._setIndicatorWidth(key, Number(v)));
+        this._menuDivider(menu);
+        this._menuButton(menu, "Remove", () => {
+          const button = this.toolbar.querySelector(`[data-tool="${key}"]`);
+          if (button) this._toggleIndicator(key, button);
+          this._hideMenu();
+        });
+      });
     }
 
     // ---- Inline text editor: a small contenteditable box positioned at the click,

@@ -110,6 +110,7 @@
     attributionLogo: true,
     layout: { background: { type: "solid", color: cssVar("--chart-bg", "#0b1017") }, textColor: cssVar("--chart-text", "#a9b4c4") },
     grid: { vertLines: { color: cssVar("--chart-grid", "#18222f") }, horzLines: { color: cssVar("--chart-grid", "#18222f") } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Magnet },
     localization: {
       timeFormatter: (time) => statusFormatter.format(new Date(epochMs(time))),
     },
