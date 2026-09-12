@@ -1,5 +1,28 @@
 (() => {
   const KC = window.klinecharts;
+
+  // Single source of truth for chart colors is the CSS custom properties on :root
+  // (see style.css). Nothing here should hardcode a hex value.
+  function readTheme() {
+    const style = getComputedStyle(document.documentElement);
+    const v = (name, fallback) => (style.getPropertyValue(name) || fallback).trim();
+    return {
+      bg: v("--chart-bg", "#090e15"),
+      grid: v("--chart-grid", "#17202d"),
+      text: v("--chart-text", "#aab5c5"),
+      up: v("--chart-up", "#26a69a"),
+      down: v("--chart-down", "#ef5350"),
+      neutral: v("--chart-neutral", "#888888"),
+      sma20: v("--chart-sma20", "#4da3ff"),
+      sma50: v("--chart-sma50", "#f0b90b"),
+      vwap: v("--chart-vwap", "#bb86fc"),
+      overlay: v("--chart-overlay", "#f0b90b"),
+      overlayPoint: v("--chart-overlay-point", "#f0b90b"),
+    };
+  }
+  // Assumes 6-digit hex (fills get an alpha suffix appended below) - keep --chart-* values hex.
+  const THEME = readTheme();
+  window.FutureViewTheme = THEME;
   const sessionFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
@@ -58,19 +81,19 @@
     KC.registerIndicator({
       name: "FV_SMA20",
       shortName: "SMA20",
-      figures: [{ key: "sma20", title: "SMA20 ", type: "line", styles: () => ({ style: "solid", size: 2, color: "#4da3ff", dashedValue: [] }) }],
+      figures: [{ key: "sma20", title: "SMA20 ", type: "line", styles: () => ({ style: "solid", size: 2, color: THEME.sma20, dashedValue: [] }) }],
       calc: sma(20, "sma20"),
     });
     KC.registerIndicator({
       name: "FV_SMA50",
       shortName: "SMA50",
-      figures: [{ key: "sma50", title: "SMA50 ", type: "line", styles: () => ({ style: "solid", size: 2, color: "#f0b90b", dashedValue: [] }) }],
+      figures: [{ key: "sma50", title: "SMA50 ", type: "line", styles: () => ({ style: "solid", size: 2, color: THEME.sma50, dashedValue: [] }) }],
       calc: sma(50, "sma50"),
     });
     KC.registerIndicator({
       name: "FV_VWAP",
       shortName: "VWAP",
-      figures: [{ key: "vwap", title: "VWAP ", type: "line", styles: () => ({ style: "solid", size: 2, color: "#bb86fc", dashedValue: [] }) }],
+      figures: [{ key: "vwap", title: "VWAP ", type: "line", styles: () => ({ style: "solid", size: 2, color: THEME.vwap, dashedValue: [] }) }],
       calc: vwap,
     });
   }
@@ -137,12 +160,23 @@
       button.classList.toggle("active", visible);
       button.setAttribute("aria-pressed", String(visible));
       const indicatorName = `FV_${name.toUpperCase()}`;
-      if (visible) this.chart.createIndicator(indicatorName, false, { id: "candle_pane" });
+      // isStack:true is required - klinecharts wipes every other indicator on a pane when isStack is false.
+      if (visible) this.chart.createIndicator(indicatorName, true, { id: "candle_pane" });
       else this.chart.removeIndicator("candle_pane", indicatorName);
     }
 
     _draw(tool) {
-      const id = this.chart.createOverlay({ name: DRAW_TOOLS[tool], mode: this.overlayMode });
+      const id = this.chart.createOverlay({
+        name: DRAW_TOOLS[tool],
+        mode: this.overlayMode,
+        styles: {
+          line: { color: THEME.overlay },
+          point: { color: THEME.overlayPoint, borderColor: THEME.overlay },
+          rect: { color: `${THEME.overlay}33`, borderColor: THEME.overlay },
+          circle: { color: `${THEME.overlay}33`, borderColor: THEME.overlay },
+          text: { color: THEME.text, backgroundColor: THEME.overlay },
+        },
+      });
       if (id) this.overlayIds.push(id);
     }
 

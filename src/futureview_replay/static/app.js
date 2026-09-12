@@ -90,23 +90,28 @@
   }
 
 
+  const T = window.FutureViewTheme;
+  // candle/indicator tooltip.showRule:"none" - the chart-legend bar above the chart is our
+  // single OHLCV readout, so klinecharts' own floating tooltip would just duplicate it.
   const chart = klinecharts.init("chart", {
     timezone: DISPLAY_TIME_ZONE,
     styles: {
-      grid: { horizontal: { color: "#18222f" }, vertical: { color: "#18222f" } },
+      grid: { horizontal: { color: T.grid }, vertical: { color: T.grid } },
       candle: {
         bar: {
-          upColor: "#26a69a",
-          downColor: "#ef5350",
-          noChangeColor: "#888",
-          upBorderColor: "#26a69a",
-          downBorderColor: "#ef5350",
-          noChangeBorderColor: "#888",
-          upWickColor: "#26a69a",
-          downWickColor: "#ef5350",
-          noChangeWickColor: "#888",
+          upColor: T.up,
+          downColor: T.down,
+          noChangeColor: T.neutral,
+          upBorderColor: T.up,
+          downBorderColor: T.down,
+          noChangeBorderColor: T.neutral,
+          upWickColor: T.up,
+          downWickColor: T.down,
+          noChangeWickColor: T.neutral,
         },
+        tooltip: { showRule: "none" },
       },
+      indicator: { tooltip: { showRule: "none" } },
     },
   });
   chart.createIndicator("VOL", false, { id: "volume_pane", height: 100 });

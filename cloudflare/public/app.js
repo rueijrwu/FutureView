@@ -14,7 +14,10 @@
   function inputValueFromSeconds(seconds){const p=partsAt(new Date(seconds*1000)),pad=n=>String(n).padStart(2,"0");return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`}
   function displaySeconds(seconds){return statusFormatter.format(new Date(seconds*1000))}
 
-  const chart=klinecharts.init("chart",{timezone:DISPLAY_TIME_ZONE,styles:{grid:{horizontal:{color:"#17202d"},vertical:{color:"#17202d"}},candle:{bar:{upColor:"#26a69a",downColor:"#ef5350",noChangeColor:"#888",upBorderColor:"#26a69a",downBorderColor:"#ef5350",noChangeBorderColor:"#888",upWickColor:"#26a69a",downWickColor:"#ef5350",noChangeWickColor:"#888"}}}});
+  const T=window.FutureViewTheme;
+  // candle/indicator tooltip.showRule:"none" - the chart-legend bar above the chart is our
+  // single OHLCV readout, so klinecharts' own floating tooltip would just duplicate it.
+  const chart=klinecharts.init("chart",{timezone:DISPLAY_TIME_ZONE,styles:{grid:{horizontal:{color:T.grid},vertical:{color:T.grid}},candle:{bar:{upColor:T.up,downColor:T.down,noChangeColor:T.neutral,upBorderColor:T.up,downBorderColor:T.down,noChangeBorderColor:T.neutral,upWickColor:T.up,downWickColor:T.down,noChangeWickColor:T.neutral},tooltip:{showRule:"none"}},indicator:{tooltip:{showRule:"none"}}}});
   chart.createIndicator("VOL",false,{id:"volume_pane",height:100});
   const chartTools=new window.FutureViewChartTools({chart,toolbar:$("chart-toolbar"),legend:$("chart-legend"),formatTime:displaySeconds});
   const bar=b=>({timestamp:b.t*1000,open:b.o,high:b.h,low:b.l,close:b.c,volume:b.v});

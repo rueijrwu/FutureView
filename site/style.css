@@ -3,6 +3,20 @@
   font-family: Inter, system-ui, sans-serif;
   background: #090e15;
   color: #edf2fa;
+
+  /* Chart palette - single source of truth, read at runtime by app.js / chart-tools.js
+     via getComputedStyle so JS never hardcodes a hex value. Edit here to retheme the chart. */
+  --chart-bg: #090e15;
+  --chart-grid: #17202d;
+  --chart-text: #aab5c5;
+  --chart-up: #26a69a;
+  --chart-down: #ef5350;
+  --chart-neutral: #888888;
+  --chart-sma20: #4da3ff;
+  --chart-sma50: #f0b90b;
+  --chart-vwap: #bb86fc;
+  --chart-overlay: #f0b90b;
+  --chart-overlay-point: #f0b90b;
 }
 * { box-sizing: border-box; }
 body { margin: 0; }
