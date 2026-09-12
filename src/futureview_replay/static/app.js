@@ -129,6 +129,14 @@
     priceScaleId: "vol",
   });
   volume.priceScale().applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+  const chartTools = new window.FutureViewChartTools({
+    chart,
+    candles,
+    volume,
+    toolbar: $("chart-toolbar"),
+    legend: $("chart-legend"),
+    formatTime: (seconds) => statusFormatter.format(new Date(seconds * 1000)),
+  });
 
   const candle = (b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
   const volumeBar = (b) => ({
@@ -139,10 +147,19 @@
   function renderBar(b) {
     candles.update(candle(b));
     volume.update(volumeBar(b));
+    chartTools.append(b);
+  }
+  function renderBars(bars) {
+    bars.forEach((bar) => {
+      candles.update(candle(bar));
+      volume.update(volumeBar(bar));
+    });
+    chartTools.appendMany(bars);
   }
   function setWarmup(bars) {
     candles.setData(bars.map(candle));
     volume.setData(bars.map(volumeBar));
+    chartTools.reset(bars);
     chart.timeScale().fitContent();
   }
 
@@ -241,7 +258,7 @@
   websocket.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (message.type === "bar") renderBar(message.bar);
-    else if (message.type === "bars_batch") message.bars.forEach(renderBar);
+    else if (message.type === "bars_batch") renderBars(message.bars);
     else state(message);
   };
   websocket.onerror = () => error("WebSocket disconnected");

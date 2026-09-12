@@ -348,6 +348,7 @@ The active Pages frontend is in:
 site/index.html
 site/style.css
 site/app.js
+site/chart-tools.js
 ```
 
 It is the new Replay UI, not the old dashboard.
@@ -361,6 +362,13 @@ warmup bar count
 automatic actual-contract selection
 candlestick chart
 volume histogram
+OHLCV crosshair legend
+SMA 20 / SMA 50
+CME-session VWAP
+magnet crosshair
+horizontal price lines with undo/clear
+zoom in/out, fit, latest
+linear/log price scale
 Restart
 Next
 Play
@@ -388,6 +396,8 @@ https://futureview.pages.dev
 WebSocket sessions also connect to the Worker origin.
 
 TradingView Lightweight Charts is visualization only. It is not the simulation engine.
+
+Rich chart tools are implemented locally in `chart-tools.js`; this is not TradingView Advanced Charts. Indicators consume only the warmup and bars already released to the browser, preserving the no-lookahead boundary.
 
 ## 9. Replay cloud namespace
 

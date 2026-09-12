@@ -60,3 +60,7 @@ User-facing times are America/New_York (ET). Stored/protocol timestamps are UTC.
 The resolver groups bars by CME equity-index trading session (18:00 ET boundary). The first available session uses the nearest listed quarterly expiry. Every later session uses only the preceding completed session's volume and may either retain the current contract or roll once to the next quarterly contract. It never rolls backward, skips a listed contract, or uses same-session future volume.
 
 The selected contract and selection reason are returned in `contract_selection` when a replay starts. Contract endpoints remain available for diagnostics, but contract selection is not part of the normal UI or start request.
+
+## Chart tools
+
+The Lightweight Charts UI includes SMA 20, SMA 50, CME-session VWAP, magnet crosshair, horizontal price lines with undo/clear, zoom, fit/latest navigation, linear/log price scale, and an OHLCV crosshair legend. Indicators are computed only from warmup and bars already released by the replay backend; chart tools never request or expose future bars.

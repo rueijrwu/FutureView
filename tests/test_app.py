@@ -22,4 +22,8 @@ def test_health_and_index(tmp_path: Path) -> None:
         started=c.post("/api/replay/start",json={"product":"MES","start":ts[1].isoformat(),"warmup":1})
         assert started.status_code == 200
         assert started.json()["contract"] == "MESM24"
-        assert c.get("/").status_code==200
+        index=c.get("/")
+        assert index.status_code==200
+        assert "/static/chart-tools.js" in index.text
+        assert 'data-tool="sma20"' in index.text
+        assert 'data-tool="hline"' in index.text
