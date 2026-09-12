@@ -395,9 +395,11 @@ https://futureview.pages.dev
 
 WebSocket sessions also connect to the Worker origin.
 
-KLineCharts is visualization only. It is not the simulation engine.
+TradingView Lightweight Charts is visualization only. It is not the simulation engine.
 
-Rich chart tools (SMA20/50, VWAP, and TradingView-style drawing tools — trend line, ray, horizontal/vertical line, rectangle, circle, fibonacci retracement, parallel channel, text) are implemented in `chart-tools.js` on top of KLineCharts' built-in indicator/overlay APIs. Indicators consume only the warmup and bars already released to the browser, preserving the no-lookahead boundary.
+Rich chart tools (SMA5/10/20/60, VWAP, and drawing tools — trend line, ray, horizontal/vertical line, rectangle, fibonacci retracement, text annotation) are implemented in `chart-tools.js`. Indicator lines use Lightweight Charts' own LineSeries API directly; drawing tools use the `lightweight-charts-drawing` plugin (github.com/deepentropy/lightweight-charts-drawing) for rendering/hit-testing/drag-editing, with a small custom click-to-place glue layer in `chart-tools.js` since the plugin's `setActiveTool()` only gates its own click-to-select behavior and does not itself wire up interactive placement. Both indicator lines and new drawings read their default color from CSS custom properties on `:root` in `style.css` and can be recolored per-instance from the toolbar's color pickers. Indicators consume only the warmup and bars already released to the browser, preserving the no-lookahead boundary.
+
+The project briefly (within one session) evaluated switching away from Lightweight Charts to KLineCharts, then TradeX-chart, then fcsapi/chart-js, before returning to Lightweight Charts + lightweight-charts-drawing as the final choice. TradeX-chart's drawing tools are unimplemented in the shipped library despite its docs describing an API; fcsapi/chart-js ships obfuscated source and requires a third-party API key/service. Do not consider either of those a live option without addressing those blockers.
 
 ## 9. Replay cloud namespace
 

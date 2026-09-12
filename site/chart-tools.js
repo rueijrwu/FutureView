@@ -1,36 +1,6 @@
 (() => {
-  const KC = window.klinecharts;
-
-  // Single source of truth for chart colors is the CSS custom properties on :root
-  // (see style.css). Nothing here should hardcode a hex value as a *default*; the
-  // color pickers wired up below let the user override any of these at runtime.
-  function readTheme() {
-    const style = getComputedStyle(document.documentElement);
-    const v = (name, fallback) => (style.getPropertyValue(name) || fallback).trim();
-    return {
-      bg: v("--chart-bg", "#090e15"),
-      grid: v("--chart-grid", "#17202d"),
-      text: v("--chart-text", "#aab5c5"),
-      up: v("--chart-up", "#26a69a"),
-      down: v("--chart-down", "#ef5350"),
-      neutral: v("--chart-neutral", "#888888"),
-      sma5: v("--chart-sma5", "#4da3ff"),
-      sma10: v("--chart-sma10", "#34d399"),
-      sma20: v("--chart-sma20", "#f0b90b"),
-      sma60: v("--chart-sma60", "#ff8a3d"),
-      vwap: v("--chart-vwap", "#bb86fc"),
-      overlay: v("--chart-overlay", "#f0b90b"),
-      overlayPoint: v("--chart-overlay-point", "#f0b90b"),
-    };
-  }
-  const THEME = readTheme();
-  window.FutureViewTheme = THEME;
-
-  // Mutable, module-level so the indicator figures' styles() closures (registered once,
-  // globally, below) always read the latest user-picked color rather than a frozen THEME
-  // snapshot - this is what makes the per-indicator color pickers work.
-  const colors = { sma5: THEME.sma5, sma10: THEME.sma10, sma20: THEME.sma20, sma60: THEME.sma60, vwap: THEME.vwap };
-
+  const TV = window.LightweightCharts;
+  const LCD = window.LightweightChartsDrawing;
   const sessionFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
@@ -39,6 +9,34 @@
     hour: "2-digit",
     hourCycle: "h23",
   });
+
+  // Single source of truth for chart colors is the CSS custom properties on :root
+  // (see style.css). Nothing here should hardcode a hex value as a *default*; the
+  // color pickers wired up below let the user override any of these at runtime.
+  function readTheme() {
+    const style = getComputedStyle(document.documentElement);
+    const v = (name, fallback) => (style.getPropertyValue(name) || fallback).trim();
+    return {
+      sma5: v("--chart-sma5", "#4da3ff"),
+      sma10: v("--chart-sma10", "#34d399"),
+      sma20: v("--chart-sma20", "#f0b90b"),
+      sma60: v("--chart-sma60", "#ff8a3d"),
+      vwap: v("--chart-vwap", "#bb86fc"),
+      overlay: v("--chart-overlay", "#f0b90b"),
+    };
+  }
+  const THEME = readTheme();
+
+  function normalize(raw) {
+    return {
+      time: Number(raw.t ?? raw.time),
+      open: Number(raw.o ?? raw.open),
+      high: Number(raw.h ?? raw.high),
+      low: Number(raw.l ?? raw.low),
+      close: Number(raw.c ?? raw.close),
+      volume: Number(raw.v ?? raw.volume),
+    };
+  }
 
   function sessionKey(seconds) {
     const parts = Object.fromEntries(
@@ -51,125 +49,65 @@
     return date.toISOString().slice(0, 10);
   }
 
-  function sma(period, key) {
-    return (dataList) => {
-      let sum = 0;
-      return dataList.map((bar, index) => {
-        sum += bar.close;
-        if (index >= period) sum -= dataList[index - period].close;
-        if (index < period - 1) return {};
-        return { [key]: sum / period };
-      });
-    };
-  }
+  // period-based SMAs the toolbar exposes, plus VWAP (session-anchored, no period)
+  const SMA_PERIODS = { sma5: 5, sma10: 10, sma20: 20, sma60: 60 };
 
-  function vwap(dataList) {
-    let session = null;
-    let cumulativePriceVolume = 0;
-    let cumulativeVolume = 0;
-    return dataList.map((bar) => {
-      const key = sessionKey(bar.timestamp / 1000);
-      if (key !== session) {
-        session = key;
-        cumulativePriceVolume = 0;
-        cumulativeVolume = 0;
-      }
-      const typical = (bar.high + bar.low + bar.close) / 3;
-      cumulativePriceVolume += typical * (bar.volume || 0);
-      cumulativeVolume += bar.volume || 0;
-      if (cumulativeVolume <= 0) return {};
-      return { vwap: cumulativePriceVolume / cumulativeVolume };
-    });
-  }
-
-  // key -> {period, label} for the SMA family; VWAP is handled separately (no period).
-  const SMA_INDICATORS = {
-    sma5: { period: 5, label: "SMA5" },
-    sma10: { period: 10, label: "SMA10" },
-    sma20: { period: 20, label: "SMA20" },
-    sma60: { period: 60, label: "SMA60" },
-  };
-  const INDICATOR_LABELS = { ...Object.fromEntries(Object.entries(SMA_INDICATORS).map(([k, v]) => [k, v.label])), vwap: "VWAP" };
-
-  function indicatorFigure(key) {
-    // styles() runs at every draw, so reading colors[key] here (not a captured constant)
-    // is what makes chart.overrideIndicator's recolor take effect immediately.
-    return { key, title: `${INDICATOR_LABELS[key]} `, type: "line", styles: () => ({ style: "solid", size: 2, color: colors[key], dashedValue: [] }) };
-  }
-
-  let registered = false;
-  function registerAll() {
-    if (registered) return;
-    registered = true;
-    Object.entries(SMA_INDICATORS).forEach(([key, { period }]) => {
-      KC.registerIndicator({ name: `FV_${key.toUpperCase()}`, shortName: INDICATOR_LABELS[key], figures: [indicatorFigure(key)], calc: sma(period, key) });
-    });
-    KC.registerIndicator({ name: "FV_VWAP", shortName: "VWAP", figures: [indicatorFigure("vwap")], calc: vwap });
-
-    // klinecharts ships no rectangle or freeform-text overlay - "rect"/"circle"/"text" are
-    // figure *primitives*, not overlay names, so createOverlay({name:"rect"}) silently no-ops.
-    // Registering these two custom overlays is what makes Rect and Text actually draw.
-    KC.registerOverlay({
-      name: "fvRect",
-      totalStep: 3,
-      needDefaultPointFigure: true,
-      needDefaultXAxisFigure: true,
-      needDefaultYAxisFigure: true,
-      createPointFigures: ({ coordinates }) => {
-        if (coordinates.length < 2) return [];
-        const [p1, p2] = coordinates;
-        return [{ type: "rect", attrs: { x: Math.min(p1.x, p2.x), y: Math.min(p1.y, p2.y), width: Math.abs(p2.x - p1.x), height: Math.abs(p2.y - p1.y) } }];
-      },
-    });
-    KC.registerOverlay({
-      name: "fvText",
-      totalStep: 2,
-      needDefaultPointFigure: false,
-      needDefaultXAxisFigure: false,
-      needDefaultYAxisFigure: false,
-      createPointFigures: ({ overlay, coordinates }) => {
-        const text = typeof overlay.extendData === "string" ? overlay.extendData : "";
-        if (!text) return [];
-        return [{ type: "text", attrs: { x: coordinates[0].x, y: coordinates[0].y, text }, styles: { color: THEME.text, backgroundColor: overlay.styles?.text?.backgroundColor ?? THEME.overlay } }];
-      },
-    });
-  }
-
+  // Draw-tool button -> lightweight-charts-drawing registry type name.
   const DRAW_TOOLS = {
-    trend: "segment",
-    ray: "rayLine",
-    hline: "horizontalStraightLine",
-    vline: "verticalStraightLine",
-    rect: "fvRect",
-    fib: "fibonacciLine",
-    text: "fvText",
+    trend: "trend-line",
+    ray: "ray",
+    hline: "horizontal-line",
+    vline: "vertical-line",
+    rect: "rectangle",
+    fib: "fib-retracement",
+    text: "text-annotation",
   };
 
   class FutureViewChartTools {
-    constructor({ chart, toolbar, legend, formatTime }) {
-      registerAll();
+    constructor({ chart, candles, volume, toolbar, legend, container, formatTime }) {
       this.chart = chart;
+      this.candles = candles;
+      this.volume = volume;
       this.toolbar = toolbar;
       this.legend = legend;
       this.formatTime = formatTime;
-      this.activeIndicators = { sma5: false, sma10: false, sma20: false, sma60: false, vwap: false };
-      this.overlayIds = [];
-      this.overlayMode = KC.OverlayMode.Normal;
-      this.drawColor = THEME.overlay;
+      this.bars = [];
       this.logScale = false;
+      this.magnet = false;
+      this.vwapSession = null;
+      this.vwapPriceVolume = 0;
+      this.vwapVolume = 0;
+      this.indicatorColors = { sma5: THEME.sma5, sma10: THEME.sma10, sma20: THEME.sma20, sma60: THEME.sma60, vwap: THEME.vwap };
+      this.indicators = {};
+      Object.keys(this.indicatorColors).forEach((key) => {
+        this.indicators[key] = chart.addSeries(TV.LineSeries, this._lineOptions(this.indicatorColors[key], 2));
+      });
+      Object.values(this.indicators).forEach((series) => series.applyOptions({ visible: false }));
+
+      // Drawing tools: lightweight-charts ships no click-to-draw glue for its own
+      // primitives, so DrawingManager only wires selection/drag-editing on attach();
+      // the "click toolbar button, click chart, tool appears" flow below is ours.
+      this.drawManager = new LCD.DrawingManager();
+      this.drawManager.attach(chart, candles, container);
+      this.registry = LCD.getToolRegistry();
+      this.drawColor = THEME.overlay;
+      this.activeDrawTool = null;
+      this.pendingAnchors = [];
+      this.drawingIds = [];
+      this.pendingText = null;
+
       this._bind();
-      this._initColorInputs();
-      this._observeResize();
       this._showLegend(null);
     }
 
-    // klinecharts only watches the canvas for pixel-ratio changes, so container
-    // reflow (window resize, the mobile breakpoint) needs an explicit resize().
-    _observeResize() {
-      const container = this.chart.getDom();
-      if (!container || typeof ResizeObserver === "undefined") return;
-      this.resizeObserver = new ResizeObserver(() => this.chart.resize());
-      this.resizeObserver.observe(container);
+    _lineOptions(color, lineWidth) {
+      return {
+        color,
+        lineWidth,
+        crosshairMarkerVisible: false,
+        lastValueVisible: true,
+        priceLineVisible: false,
+      };
     }
 
     _bind() {
@@ -177,16 +115,15 @@
         const button = event.target.closest("button[data-tool]");
         if (!button) return;
         const tool = button.dataset.tool;
-        if (tool in this.activeIndicators) this._toggleIndicator(tool, button);
-        else if (tool === "text") this._drawText();
-        else if (tool in DRAW_TOOLS) this._draw(tool);
-        else if (tool === "magnet") this._toggleMagnet(button);
-        else if (tool === "undo") this._undoOverlay();
-        else if (tool === "clear") this._clearOverlays();
-        else if (tool === "zoom-in") this.chart.zoomAtCoordinate(1.4);
-        else if (tool === "zoom-out") this.chart.zoomAtCoordinate(1 / 1.4);
-        else if (tool === "fit") this._fit();
-        else if (tool === "latest") this.chart.scrollToRealTime();
+        if (tool in this.indicators) this._toggleIndicator(tool, button);
+        else if (tool === "crosshair") this._toggleCrosshair(button);
+        else if (tool in DRAW_TOOLS) this._armDrawTool(tool, button);
+        else if (tool === "undo") this._undoDrawing();
+        else if (tool === "clear") this._clearDrawings();
+        else if (tool === "zoom-in") this._zoom(0.72);
+        else if (tool === "zoom-out") this._zoom(1.38);
+        else if (tool === "fit") this.chart.timeScale().fitContent();
+        else if (tool === "latest") this.chart.timeScale().scrollToRealTime();
         else if (tool === "log") this._toggleLog(button);
       });
       this.toolbar.addEventListener("input", (event) => {
@@ -194,115 +131,213 @@
         if (indicatorInput) return this._setIndicatorColor(indicatorInput.dataset.indicatorColor, indicatorInput.value);
         if (event.target.id === "draw-color") this.drawColor = event.target.value;
       });
-      this.chart.subscribeAction(KC.ActionType.OnCrosshairChange, (crosshair) => this._showLegend(crosshair));
-    }
-
-    _initColorInputs() {
       this.toolbar.querySelectorAll("input[type=color][data-indicator-color]").forEach((input) => {
-        input.value = colors[input.dataset.indicatorColor] || THEME.overlay;
+        input.value = this.indicatorColors[input.dataset.indicatorColor];
       });
       const drawColorInput = this.toolbar.querySelector("#draw-color");
       if (drawColorInput) drawColorInput.value = this.drawColor;
+
+      this.chart.subscribeClick((param) => this._handleDrawClick(param));
+      this.chart.subscribeCrosshairMove((param) => this._showLegend(param));
     }
 
     _toggleIndicator(name, button) {
-      const visible = !this.activeIndicators[name];
-      this.activeIndicators[name] = visible;
+      const visible = !button.classList.contains("active");
       button.classList.toggle("active", visible);
       button.setAttribute("aria-pressed", String(visible));
-      const indicatorName = `FV_${name.toUpperCase()}`;
-      // isStack:true is required - klinecharts wipes every other indicator on a pane when isStack is false.
-      if (visible) this.chart.createIndicator(indicatorName, true, { id: "candle_pane" });
-      else this.chart.removeIndicator("candle_pane", indicatorName);
+      this.indicators[name].applyOptions({ visible });
     }
 
     _setIndicatorColor(key, color) {
-      colors[key] = color;
-      // Forces a redraw with the new color; the figures' styles() closures already read
-      // the updated `colors` object, so re-supplying the same figure definition is enough.
-      this.chart.overrideIndicator({ name: `FV_${key.toUpperCase()}`, figures: [indicatorFigure(key)] }, "candle_pane");
+      this.indicatorColors[key] = color;
+      this.indicators[key].applyOptions({ color });
     }
 
-    _overlayStyles() {
-      return {
-        line: { color: this.drawColor },
-        point: { color: this.drawColor, borderColor: this.drawColor },
-        rect: { color: `${this.drawColor}33`, borderColor: this.drawColor },
-        text: { color: THEME.text, backgroundColor: this.drawColor },
-      };
+    _toggleCrosshair(button) {
+      this.magnet = !this.magnet;
+      button.classList.toggle("active", this.magnet);
+      button.setAttribute("aria-pressed", String(this.magnet));
+      this.chart.applyOptions({
+        crosshair: { mode: this.magnet ? TV.CrosshairMode.Magnet : TV.CrosshairMode.Normal },
+      });
     }
 
-    _draw(tool) {
-      const id = this.chart.createOverlay({ name: DRAW_TOOLS[tool], mode: this.overlayMode, styles: this._overlayStyles() });
-      if (id) this.overlayIds.push(id);
+    _armDrawTool(tool, button) {
+      const wasArmed = this.activeDrawTool === tool;
+      this.toolbar.querySelectorAll("button[data-tool].armed").forEach((b) => b.classList.remove("armed"));
+      this.pendingAnchors = [];
+      if (wasArmed) {
+        this.activeDrawTool = null;
+        return;
+      }
+      if (tool === "text") {
+        const text = window.prompt("Annotation text:");
+        if (!text) return;
+        this.pendingText = text;
+      }
+      this.activeDrawTool = tool;
+      button.classList.add("armed");
     }
 
-    _drawText() {
-      const text = window.prompt("Annotation text:");
-      if (!text) return;
-      const id = this.chart.createOverlay({ name: "fvText", mode: this.overlayMode, extendData: text, styles: this._overlayStyles() });
-      if (id) this.overlayIds.push(id);
+    _handleDrawClick(param) {
+      if (!this.activeDrawTool || !param.time || !param.point) return;
+      const price = this.candles.coordinateToPrice(param.point.y);
+      if (price == null || !Number.isFinite(price)) return;
+      this.pendingAnchors.push({ time: param.time, price });
+
+      const registryType = DRAW_TOOLS[this.activeDrawTool];
+      const def = this.registry.get(registryType);
+      if (this.pendingAnchors.length < def.requiredAnchors) return;
+
+      const id = `fv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const style = { lineColor: this.drawColor, lineWidth: 2, fillColor: `${this.drawColor}33` };
+      const options = this.pendingText ? { text: this.pendingText } : {};
+      const drawing = this.registry.createDrawing(registryType, id, this.pendingAnchors, style, options);
+      this.drawManager.addDrawing(drawing);
+      this.drawingIds.push(id);
+
+      this.pendingAnchors = [];
+      this.pendingText = null;
+      this.activeDrawTool = null;
+      this.toolbar.querySelectorAll("button[data-tool].armed").forEach((b) => b.classList.remove("armed"));
     }
 
-    _toggleMagnet(button) {
-      const magnet = this.overlayMode !== KC.OverlayMode.WeakMagnet;
-      this.overlayMode = magnet ? KC.OverlayMode.WeakMagnet : KC.OverlayMode.Normal;
-      button.classList.toggle("active", magnet);
-      button.setAttribute("aria-pressed", String(magnet));
+    _undoDrawing() {
+      const id = this.drawingIds.pop();
+      if (id) this.drawManager.removeDrawing(id);
     }
 
-    _undoOverlay() {
-      const id = this.overlayIds.pop();
-      if (id) this.chart.removeOverlay(id);
-    }
-
-    _clearOverlays() {
-      this.chart.removeOverlay();
-      this.overlayIds = [];
+    _clearDrawings() {
+      this.drawManager.clearAll();
+      this.drawingIds = [];
     }
 
     _toggleLog(button) {
       this.logScale = !this.logScale;
       button.classList.toggle("active", this.logScale);
       button.setAttribute("aria-pressed", String(this.logScale));
-      this.chart.setPaneOptions({ id: "candle_pane", axisOptions: { name: this.logScale ? "log" : "normal" } });
+      this.candles.priceScale().applyOptions({
+        mode: this.logScale ? TV.PriceScaleMode.Logarithmic : TV.PriceScaleMode.Normal,
+      });
       button.textContent = this.logScale ? "Log" : "Linear";
     }
 
-    _fit() {
-      const dataList = this.chart.getDataList();
-      if (!dataList.length) return;
-      const size = this.chart.getSize("candle_pane");
-      const width = (size && size.width) || 800;
-      const space = Math.max(3, Math.min(30, width / dataList.length));
-      this.chart.setBarSpace(space);
-      this.chart.scrollToDataIndex(dataList.length - 1);
+    _zoom(factor) {
+      const range = this.chart.timeScale().getVisibleLogicalRange();
+      if (!range) return this.chart.timeScale().fitContent();
+      const center = (range.from + range.to) / 2;
+      const half = Math.max(5, ((range.to - range.from) * factor) / 2);
+      this.chart.timeScale().setVisibleLogicalRange({ from: center - half, to: center + half });
     }
 
-    _showLegend(crosshair) {
-      let bar = crosshair && crosshair.kLineData;
-      if (!bar) {
-        const dataList = this.chart.getDataList();
-        bar = dataList.at(-1) || null;
+    _showLegend(param) {
+      let bar = null;
+      let volume = null;
+      if (param?.time != null && param.seriesData) {
+        bar = param.seriesData.get(this.candles) ?? null;
+        volume = param.seriesData.get(this.volume)?.value ?? null;
+      }
+      if (!bar && this.bars.length) {
+        bar = this.bars.at(-1);
+        volume = bar.volume;
       }
       if (!bar) {
         this.legend.textContent = "O —  H —  L —  C —  V —";
         return;
       }
-      const time = Math.round(bar.timestamp / 1000);
-      this.legend.textContent = `${this.formatTime(time)}  O ${Number(bar.open).toFixed(2)}  H ${Number(bar.high).toFixed(2)}  L ${Number(bar.low).toFixed(2)}  C ${Number(bar.close).toFixed(2)}  V ${Number(bar.volume || 0).toLocaleString()}`;
+      const time = Number(param?.time ?? bar.time);
+      this.legend.textContent = `${this.formatTime(time)}  O ${Number(bar.open).toFixed(2)}  H ${Number(bar.high).toFixed(2)}  L ${Number(bar.low).toFixed(2)}  C ${Number(bar.close).toFixed(2)}  V ${Number(volume ?? 0).toLocaleString()}`;
     }
 
-    reset() {
+    _indicatorData() {
+      const series = { sma5: [], sma10: [], sma20: [], sma60: [] };
+      const sums = { sma5: 0, sma10: 0, sma20: 0, sma60: 0 };
+      const vwap = [];
+      let currentSession = null;
+      let cumulativePriceVolume = 0;
+      let cumulativeVolume = 0;
+      this.bars.forEach((bar, index) => {
+        Object.entries(SMA_PERIODS).forEach(([key, period]) => {
+          sums[key] += bar.close;
+          if (index >= period) sums[key] -= this.bars[index - period].close;
+          if (index >= period - 1) series[key].push({ time: bar.time, value: sums[key] / period });
+        });
+        const key = sessionKey(bar.time);
+        if (key !== currentSession) {
+          currentSession = key;
+          cumulativePriceVolume = 0;
+          cumulativeVolume = 0;
+        }
+        const typical = (bar.high + bar.low + bar.close) / 3;
+        cumulativePriceVolume += typical * bar.volume;
+        cumulativeVolume += bar.volume;
+        if (cumulativeVolume > 0) vwap.push({ time: bar.time, value: cumulativePriceVolume / cumulativeVolume });
+      });
+      this.vwapSession = currentSession;
+      this.vwapPriceVolume = cumulativePriceVolume;
+      this.vwapVolume = cumulativeVolume;
+      return { ...series, vwap };
+    }
+
+    _refreshIndicators() {
+      const data = this._indicatorData();
+      Object.entries(data).forEach(([name, values]) => this.indicators[name].setData(values));
+    }
+
+    reset(rawBars) {
+      this.bars = rawBars.map(normalize);
+      this._refreshIndicators();
       this._showLegend(null);
     }
 
-    append() {
+    append(rawBar) {
+      const replaced = this._appendNormalized(normalize(rawBar));
+      if (replaced) this._refreshIndicators();
+      else this._updateIndicatorsForLastBar();
       this._showLegend(null);
     }
 
-    appendMany() {
+    appendMany(rawBars) {
+      let rebuild = false;
+      rawBars.map(normalize).forEach((bar) => {
+        const replaced = this._appendNormalized(bar);
+        if (replaced) rebuild = true;
+        else if (!rebuild) this._updateIndicatorsForLastBar();
+      });
+      if (rebuild) this._refreshIndicators();
       this._showLegend(null);
+    }
+
+    _appendNormalized(bar) {
+      const last = this.bars.at(-1);
+      if (last && bar.time < last.time) return true;
+      if (last && bar.time === last.time) {
+        this.bars[this.bars.length - 1] = bar;
+        return true;
+      }
+      this.bars.push(bar);
+      return false;
+    }
+
+    _updateIndicatorsForLastBar() {
+      const bar = this.bars.at(-1);
+      if (!bar) return;
+      Object.entries(SMA_PERIODS).forEach(([key, period]) => {
+        if (this.bars.length < period) return;
+        const values = this.bars.slice(-period);
+        this.indicators[key].update({ time: bar.time, value: values.reduce((sum, item) => sum + item.close, 0) / period });
+      });
+      const key = sessionKey(bar.time);
+      if (key !== this.vwapSession) {
+        this.vwapSession = key;
+        this.vwapPriceVolume = 0;
+        this.vwapVolume = 0;
+      }
+      this.vwapPriceVolume += ((bar.high + bar.low + bar.close) / 3) * bar.volume;
+      this.vwapVolume += bar.volume;
+      if (this.vwapVolume > 0) {
+        this.indicators.vwap.update({ time: bar.time, value: this.vwapPriceVolume / this.vwapVolume });
+      }
     }
   }
 

@@ -24,6 +24,14 @@
     hourCycle: "h23",
     timeZoneName: "short",
   });
+  const axisFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: DISPLAY_TIME_ZONE,
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
 
   function partsAt(date) {
     const parts = Object.fromEntries(
@@ -89,63 +97,73 @@
     return statusFormatter.format(new Date(value));
   }
 
+  function epochMs(time) {
+    if (typeof time === "number") return time * 1000;
+    if (typeof time === "string") return Date.parse(time);
+    return Date.UTC(time.year, time.month - 1, time.day);
+  }
 
-  const T = window.FutureViewTheme;
-  // candle/indicator tooltip.showRule:"none" - the chart-legend bar above the chart is our
-  // single OHLCV readout, so klinecharts' own floating tooltip would just duplicate it.
-  const chart = klinecharts.init("chart", {
-    timezone: DISPLAY_TIME_ZONE,
-    styles: {
-      grid: { horizontal: { color: T.grid }, vertical: { color: T.grid } },
-      candle: {
-        bar: {
-          upColor: T.up,
-          downColor: T.down,
-          noChangeColor: T.neutral,
-          upBorderColor: T.up,
-          downBorderColor: T.down,
-          noChangeBorderColor: T.neutral,
-          upWickColor: T.up,
-          downWickColor: T.down,
-          noChangeWickColor: T.neutral,
-        },
-        tooltip: { showRule: "none" },
-      },
-      indicator: { tooltip: { showRule: "none" } },
+  const cssStyle = getComputedStyle(document.documentElement);
+  const cssVar = (name, fallback) => (cssStyle.getPropertyValue(name) || fallback).trim();
+  const chart = LightweightCharts.createChart($("chart"), {
+    autoSize: true,
+    attributionLogo: true,
+    layout: { background: { type: "solid", color: cssVar("--chart-bg", "#0b1017") }, textColor: cssVar("--chart-text", "#a9b4c4") },
+    grid: { vertLines: { color: cssVar("--chart-grid", "#18222f") }, horzLines: { color: cssVar("--chart-grid", "#18222f") } },
+    localization: {
+      timeFormatter: (time) => statusFormatter.format(new Date(epochMs(time))),
+    },
+    timeScale: {
+      timeVisible: true,
+      secondsVisible: false,
+      tickMarkFormatter: (time) => axisFormatter.format(new Date(epochMs(time))),
     },
   });
-  chart.createIndicator("VOL", false, { id: "volume_pane", height: 100 });
+  const candles = chart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor: cssVar("--chart-up", "#26a69a"),
+    downColor: cssVar("--chart-down", "#ef5350"),
+    borderVisible: false,
+    wickUpColor: cssVar("--chart-up", "#26a69a"),
+    wickDownColor: cssVar("--chart-down", "#ef5350"),
+  });
+  const volume = chart.addSeries(LightweightCharts.HistogramSeries, {
+    priceFormat: { type: "volume" },
+    priceScaleId: "vol",
+  });
+  volume.priceScale().applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
   const chartTools = new window.FutureViewChartTools({
     chart,
+    candles,
+    volume,
     toolbar: $("chart-toolbar"),
     legend: $("chart-legend"),
+    container: $("chart"),
     formatTime: (seconds) => statusFormatter.format(new Date(seconds * 1000)),
   });
 
-  const kline = (b) => ({ timestamp: b.time * 1000, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume });
+  const candle = (b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
+  const volumeBar = (b) => ({
+    time: b.time,
+    value: b.volume,
+    color: b.close >= b.open ? "rgba(38,166,154,.45)" : "rgba(239,83,80,.45)",
+  });
   function renderBar(b) {
-    chart.updateData(kline(b));
+    candles.update(candle(b));
+    volume.update(volumeBar(b));
     chartTools.append(b);
   }
-  // Batches go through a single applyNewData: klinecharts recalculates and repaints every
-  // indicator across the whole dataset on each updateData, so a per-bar loop is O(batch x history).
-  function mergeBars(list, incoming) {
-    const out = list.slice();
-    for (const b of incoming) {
-      const last = out[out.length - 1];
-      if (!last || b.timestamp > last.timestamp) out.push(b);
-      else if (b.timestamp === last.timestamp) out[out.length - 1] = b;
-    }
-    return out;
-  }
   function renderBars(bars) {
-    chart.applyNewData(mergeBars(chart.getDataList(), bars.map(kline)));
+    bars.forEach((bar) => {
+      candles.update(candle(bar));
+      volume.update(volumeBar(bar));
+    });
     chartTools.appendMany(bars);
   }
   function setWarmup(bars) {
-    chart.applyNewData(bars.map(kline));
+    candles.setData(bars.map(candle));
+    volume.setData(bars.map(volumeBar));
     chartTools.reset(bars);
-    chart.scrollToRealTime();
+    chart.timeScale().fitContent();
   }
 
   async function api(path, opts = {}) {
