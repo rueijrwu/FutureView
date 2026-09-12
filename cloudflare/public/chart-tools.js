@@ -394,12 +394,78 @@
       return row;
     }
 
+    // TradingView's own color controls are a swatch button that opens a small preset
+    // palette, not a bare native <input type="color"> - matching that keeps picking a
+    // color a single click for the common case, with the native picker kept only as a
+    // "Custom" fallback swatch inside the popup.
+    static PRESET_COLORS = [
+      "#f0b90b", "#ffffff", "#b2b5be", "#787b86", "#2962ff", "#089981",
+      "#f23645", "#ff9800", "#9c27b0", "#00bcd4", "#4caf50", "#000000",
+    ];
+
     _menuColorRow(menu, label, value, onChange) {
-      const input = document.createElement("input");
-      input.type = "color";
-      input.value = value;
-      input.oninput = () => onChange(input.value);
-      this._menuRow(menu, label, input);
+      const swatch = document.createElement("button");
+      swatch.type = "button";
+      swatch.className = "fv-color-swatch";
+      this._paintSwatch(swatch, value);
+      swatch.onclick = (event) => {
+        event.stopPropagation();
+        this._openColorPopup(swatch, value, (color) => {
+          value = color;
+          this._paintSwatch(swatch, color);
+          onChange(color);
+        });
+      };
+      this._menuRow(menu, label, swatch);
+    }
+
+    _paintSwatch(swatch, value) {
+      swatch.style.background =
+        !value || value === "transparent"
+          ? "repeating-conic-gradient(#666 0% 25%, #333 0% 50%) 50% / 8px 8px"
+          : value;
+    }
+
+    _openColorPopup(anchorEl, currentValue, onChange) {
+      document.querySelector(".fv-color-popup")?.remove();
+      const popup = document.createElement("div");
+      popup.className = "fv-color-popup";
+
+      FutureViewChartTools.PRESET_COLORS.forEach((color) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "fv-color-swatch-item";
+        item.style.background = color;
+        if (color.toLowerCase() === String(currentValue || "").toLowerCase()) item.classList.add("selected");
+        item.onclick = (event) => {
+          event.stopPropagation();
+          onChange(color);
+          popup.remove();
+        };
+        popup.appendChild(item);
+      });
+
+      const custom = document.createElement("input");
+      custom.type = "color";
+      custom.className = "fv-color-swatch-item fv-color-custom";
+      custom.title = "Custom color";
+      custom.value = /^#[0-9a-f]{6}$/i.test(currentValue) ? currentValue : "#ffffff";
+      custom.onclick = (event) => event.stopPropagation();
+      custom.oninput = () => onChange(custom.value);
+      popup.appendChild(custom);
+
+      document.body.appendChild(popup);
+      const rect = anchorEl.getBoundingClientRect();
+      popup.style.left = `${rect.left}px`;
+      popup.style.top = `${rect.bottom + 4}px`;
+
+      const closeOnce = (event) => {
+        if (!popup.contains(event.target)) {
+          popup.remove();
+          document.removeEventListener("mousedown", closeOnce, true);
+        }
+      };
+      setTimeout(() => document.addEventListener("mousedown", closeOnce, true), 0);
     }
 
     _menuSelectRow(menu, label, value, options, onChange) {
