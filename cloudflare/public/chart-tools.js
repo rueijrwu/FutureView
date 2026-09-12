@@ -1,5 +1,5 @@
 (() => {
-  const TV = window.LightweightCharts;
+  const KC = window.klinecharts;
   const sessionFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
@@ -8,17 +8,6 @@
     hour: "2-digit",
     hourCycle: "h23",
   });
-
-  function normalize(raw) {
-    return {
-      time: Number(raw.t ?? raw.time),
-      open: Number(raw.o ?? raw.open),
-      high: Number(raw.h ?? raw.high),
-      low: Number(raw.l ?? raw.low),
-      close: Number(raw.c ?? raw.close),
-      volume: Number(raw.v ?? raw.volume),
-    };
-  }
 
   function sessionKey(seconds) {
     const parts = Object.fromEntries(
@@ -31,40 +20,86 @@
     return date.toISOString().slice(0, 10);
   }
 
+  function sma(period, key) {
+    return (dataList) => {
+      let sum = 0;
+      return dataList.map((bar, index) => {
+        sum += bar.close;
+        if (index >= period) sum -= dataList[index - period].close;
+        if (index < period - 1) return {};
+        return { [key]: sum / period };
+      });
+    };
+  }
+
+  function vwap(dataList) {
+    let session = null;
+    let cumulativePriceVolume = 0;
+    let cumulativeVolume = 0;
+    return dataList.map((bar) => {
+      const key = sessionKey(bar.timestamp / 1000);
+      if (key !== session) {
+        session = key;
+        cumulativePriceVolume = 0;
+        cumulativeVolume = 0;
+      }
+      const typical = (bar.high + bar.low + bar.close) / 3;
+      cumulativePriceVolume += typical * (bar.volume || 0);
+      cumulativeVolume += bar.volume || 0;
+      if (cumulativeVolume <= 0) return {};
+      return { vwap: cumulativePriceVolume / cumulativeVolume };
+    });
+  }
+
+  let indicatorsRegistered = false;
+  function registerIndicators() {
+    if (indicatorsRegistered) return;
+    indicatorsRegistered = true;
+    KC.registerIndicator({
+      name: "FV_SMA20",
+      shortName: "SMA20",
+      figures: [{ key: "sma20", title: "SMA20 ", type: "line", styles: () => ({ style: "solid", size: 2, color: "#4da3ff", dashedValue: [] }) }],
+      calc: sma(20, "sma20"),
+    });
+    KC.registerIndicator({
+      name: "FV_SMA50",
+      shortName: "SMA50",
+      figures: [{ key: "sma50", title: "SMA50 ", type: "line", styles: () => ({ style: "solid", size: 2, color: "#f0b90b", dashedValue: [] }) }],
+      calc: sma(50, "sma50"),
+    });
+    KC.registerIndicator({
+      name: "FV_VWAP",
+      shortName: "VWAP",
+      figures: [{ key: "vwap", title: "VWAP ", type: "line", styles: () => ({ style: "solid", size: 2, color: "#bb86fc", dashedValue: [] }) }],
+      calc: vwap,
+    });
+  }
+
+  const DRAW_TOOLS = {
+    trend: "segment",
+    ray: "rayLine",
+    hline: "horizontalStraightLine",
+    vline: "verticalStraightLine",
+    rect: "rect",
+    circle: "circle",
+    fib: "fibonacciLine",
+    channel: "parallelStraightLine",
+    text: "text",
+  };
+
   class FutureViewChartTools {
-    constructor({ chart, candles, volume, toolbar, legend, formatTime }) {
+    constructor({ chart, toolbar, legend, formatTime }) {
+      registerIndicators();
       this.chart = chart;
-      this.candles = candles;
-      this.volume = volume;
       this.toolbar = toolbar;
       this.legend = legend;
       this.formatTime = formatTime;
-      this.bars = [];
-      this.priceLines = [];
-      this.hLineArmed = false;
+      this.activeIndicators = { sma20: false, sma50: false, vwap: false };
+      this.overlayIds = [];
+      this.overlayMode = KC.OverlayMode.Normal;
       this.logScale = false;
-      this.magnet = false;
-      this.vwapSession = null;
-      this.vwapPriceVolume = 0;
-      this.vwapVolume = 0;
-      this.indicators = {
-        sma20: chart.addSeries(TV.LineSeries, this._lineOptions("#4da3ff", 2)),
-        sma50: chart.addSeries(TV.LineSeries, this._lineOptions("#f0b90b", 2)),
-        vwap: chart.addSeries(TV.LineSeries, this._lineOptions("#bb86fc", 2)),
-      };
-      Object.values(this.indicators).forEach((series) => series.applyOptions({ visible: false }));
       this._bind();
       this._showLegend(null);
-    }
-
-    _lineOptions(color, lineWidth) {
-      return {
-        color,
-        lineWidth,
-        crosshairMarkerVisible: false,
-        lastValueVisible: true,
-        priceLineVisible: false,
-      };
     }
 
     _bind() {
@@ -72,203 +107,94 @@
         const button = event.target.closest("button[data-tool]");
         if (!button) return;
         const tool = button.dataset.tool;
-        if (tool in this.indicators) this._toggleIndicator(tool, button);
-        else if (tool === "crosshair") this._toggleCrosshair(button);
-        else if (tool === "hline") this._armHorizontalLine(button);
-        else if (tool === "undo") this._undoLine();
-        else if (tool === "clear") this._clearLines();
-        else if (tool === "zoom-in") this._zoom(0.72);
-        else if (tool === "zoom-out") this._zoom(1.38);
-        else if (tool === "fit") this.chart.timeScale().fitContent();
-        else if (tool === "latest") this.chart.timeScale().scrollToRealTime();
+        if (tool in this.activeIndicators) this._toggleIndicator(tool, button);
+        else if (tool in DRAW_TOOLS) this._draw(tool);
+        else if (tool === "magnet") this._toggleMagnet(button);
+        else if (tool === "undo") this._undoOverlay();
+        else if (tool === "clear") this._clearOverlays();
+        else if (tool === "zoom-in") this.chart.zoomAtCoordinate(1.4);
+        else if (tool === "zoom-out") this.chart.zoomAtCoordinate(1 / 1.4);
+        else if (tool === "fit") this._fit();
+        else if (tool === "latest") this.chart.scrollToRealTime();
         else if (tool === "log") this._toggleLog(button);
       });
-      this.chart.subscribeClick((param) => this._placeHorizontalLine(param));
-      this.chart.subscribeCrosshairMove((param) => this._showLegend(param));
+      this.chart.subscribeAction(KC.ActionType.OnCrosshairChange, (crosshair) => this._showLegend(crosshair));
     }
 
     _toggleIndicator(name, button) {
-      const visible = !button.classList.contains("active");
+      const visible = !this.activeIndicators[name];
+      this.activeIndicators[name] = visible;
       button.classList.toggle("active", visible);
       button.setAttribute("aria-pressed", String(visible));
-      this.indicators[name].applyOptions({ visible });
+      const indicatorName = `FV_${name.toUpperCase()}`;
+      if (visible) this.chart.createIndicator(indicatorName, false, { id: "candle_pane" });
+      else this.chart.removeIndicator("candle_pane", indicatorName);
     }
 
-    _toggleCrosshair(button) {
-      this.magnet = !this.magnet;
-      button.classList.toggle("active", this.magnet);
-      button.setAttribute("aria-pressed", String(this.magnet));
-      this.chart.applyOptions({
-        crosshair: { mode: this.magnet ? TV.CrosshairMode.Magnet : TV.CrosshairMode.Normal },
-      });
+    _draw(tool) {
+      const id = this.chart.createOverlay({ name: DRAW_TOOLS[tool], mode: this.overlayMode });
+      if (id) this.overlayIds.push(id);
     }
 
-    _armHorizontalLine(button) {
-      this.hLineArmed = !this.hLineArmed;
-      button.classList.toggle("armed", this.hLineArmed);
-      button.setAttribute("aria-pressed", String(this.hLineArmed));
+    _toggleMagnet(button) {
+      const magnet = this.overlayMode !== KC.OverlayMode.WeakMagnet;
+      this.overlayMode = magnet ? KC.OverlayMode.WeakMagnet : KC.OverlayMode.Normal;
+      button.classList.toggle("active", magnet);
+      button.setAttribute("aria-pressed", String(magnet));
     }
 
-    _placeHorizontalLine(param) {
-      if (!this.hLineArmed || !param.point) return;
-      const price = this.candles.coordinateToPrice(param.point.y);
-      if (price == null || !Number.isFinite(price)) return;
-      this.priceLines.push(this.candles.createPriceLine({
-        price,
-        color: "#f0b90b",
-        lineWidth: 1,
-        lineStyle: TV.LineStyle.Dashed,
-        axisLabelVisible: true,
-        title: "H-Line",
-      }));
-      this.hLineArmed = false;
-      const button = this.toolbar.querySelector('[data-tool="hline"]');
-      button.classList.remove("armed");
-      button.setAttribute("aria-pressed", "false");
+    _undoOverlay() {
+      const id = this.overlayIds.pop();
+      if (id) this.chart.removeOverlay(id);
     }
 
-    _undoLine() {
-      const line = this.priceLines.pop();
-      if (line) this.candles.removePriceLine(line);
-    }
-
-    _clearLines() {
-      this.priceLines.forEach((line) => this.candles.removePriceLine(line));
-      this.priceLines = [];
+    _clearOverlays() {
+      this.chart.removeOverlay();
+      this.overlayIds = [];
     }
 
     _toggleLog(button) {
       this.logScale = !this.logScale;
       button.classList.toggle("active", this.logScale);
       button.setAttribute("aria-pressed", String(this.logScale));
-      this.candles.priceScale().applyOptions({
-        mode: this.logScale ? TV.PriceScaleMode.Logarithmic : TV.PriceScaleMode.Normal,
-      });
+      this.chart.setPaneOptions({ id: "candle_pane", axisOptions: { name: this.logScale ? "log" : "normal" } });
       button.textContent = this.logScale ? "Log" : "Linear";
     }
 
-    _zoom(factor) {
-      const range = this.chart.timeScale().getVisibleLogicalRange();
-      if (!range) return this.chart.timeScale().fitContent();
-      const center = (range.from + range.to) / 2;
-      const half = Math.max(5, ((range.to - range.from) * factor) / 2);
-      this.chart.timeScale().setVisibleLogicalRange({ from: center - half, to: center + half });
+    _fit() {
+      const dataList = this.chart.getDataList();
+      if (!dataList.length) return;
+      const size = this.chart.getSize("candle_pane");
+      const width = (size && size.width) || 800;
+      const space = Math.max(3, Math.min(30, width / dataList.length));
+      this.chart.setBarSpace(space);
+      this.chart.scrollToDataIndex(dataList.length - 1);
     }
 
-    _showLegend(param) {
-      let bar = null;
-      let volume = null;
-      if (param?.time != null && param.seriesData) {
-        bar = param.seriesData.get(this.candles) ?? null;
-        volume = param.seriesData.get(this.volume)?.value ?? null;
-      }
-      if (!bar && this.bars.length) {
-        bar = this.bars.at(-1);
-        volume = bar.volume;
+    _showLegend(crosshair) {
+      let bar = crosshair && crosshair.kLineData;
+      if (!bar) {
+        const dataList = this.chart.getDataList();
+        bar = dataList.at(-1) || null;
       }
       if (!bar) {
         this.legend.textContent = "O —  H —  L —  C —  V —";
         return;
       }
-      const time = Number(param?.time ?? bar.time);
-      this.legend.textContent = `${this.formatTime(time)}  O ${Number(bar.open).toFixed(2)}  H ${Number(bar.high).toFixed(2)}  L ${Number(bar.low).toFixed(2)}  C ${Number(bar.close).toFixed(2)}  V ${Number(volume ?? 0).toLocaleString()}`;
+      const time = Math.round(bar.timestamp / 1000);
+      this.legend.textContent = `${this.formatTime(time)}  O ${Number(bar.open).toFixed(2)}  H ${Number(bar.high).toFixed(2)}  L ${Number(bar.low).toFixed(2)}  C ${Number(bar.close).toFixed(2)}  V ${Number(bar.volume || 0).toLocaleString()}`;
     }
 
-    _indicatorData() {
-      const sma20 = [];
-      const sma50 = [];
-      const vwap = [];
-      let sum20 = 0;
-      let sum50 = 0;
-      let currentSession = null;
-      let cumulativePriceVolume = 0;
-      let cumulativeVolume = 0;
-      this.bars.forEach((bar, index) => {
-        sum20 += bar.close;
-        sum50 += bar.close;
-        if (index >= 20) sum20 -= this.bars[index - 20].close;
-        if (index >= 50) sum50 -= this.bars[index - 50].close;
-        if (index >= 19) sma20.push({ time: bar.time, value: sum20 / 20 });
-        if (index >= 49) sma50.push({ time: bar.time, value: sum50 / 50 });
-        const key = sessionKey(bar.time);
-        if (key !== currentSession) {
-          currentSession = key;
-          cumulativePriceVolume = 0;
-          cumulativeVolume = 0;
-        }
-        const typical = (bar.high + bar.low + bar.close) / 3;
-        cumulativePriceVolume += typical * bar.volume;
-        cumulativeVolume += bar.volume;
-        if (cumulativeVolume > 0) vwap.push({ time: bar.time, value: cumulativePriceVolume / cumulativeVolume });
-      });
-      this.vwapSession = currentSession;
-      this.vwapPriceVolume = cumulativePriceVolume;
-      this.vwapVolume = cumulativeVolume;
-      return { sma20, sma50, vwap };
-    }
-
-    _refreshIndicators() {
-      const data = this._indicatorData();
-      Object.entries(data).forEach(([name, values]) => this.indicators[name].setData(values));
-    }
-
-    reset(rawBars) {
-      this.bars = rawBars.map(normalize);
-      this._refreshIndicators();
+    reset() {
       this._showLegend(null);
     }
 
-    append(rawBar) {
-      const replaced = this._appendNormalized(normalize(rawBar));
-      if (replaced) this._refreshIndicators();
-      else this._updateIndicatorsForLastBar();
+    append() {
       this._showLegend(null);
     }
 
-    appendMany(rawBars) {
-      let rebuild = false;
-      rawBars.map(normalize).forEach((bar) => {
-        const replaced = this._appendNormalized(bar);
-        if (replaced) rebuild = true;
-        else if (!rebuild) this._updateIndicatorsForLastBar();
-      });
-      if (rebuild) this._refreshIndicators();
+    appendMany() {
       this._showLegend(null);
-    }
-
-    _appendNormalized(bar) {
-      const last = this.bars.at(-1);
-      if (last && bar.time < last.time) return true;
-      if (last && bar.time === last.time) {
-        this.bars[this.bars.length - 1] = bar;
-        return true;
-      }
-      this.bars.push(bar);
-      return false;
-    }
-
-    _updateIndicatorsForLastBar() {
-      const bar = this.bars.at(-1);
-      if (!bar) return;
-      if (this.bars.length >= 20) {
-        const values = this.bars.slice(-20);
-        this.indicators.sma20.update({ time: bar.time, value: values.reduce((sum, item) => sum + item.close, 0) / 20 });
-      }
-      if (this.bars.length >= 50) {
-        const values = this.bars.slice(-50);
-        this.indicators.sma50.update({ time: bar.time, value: values.reduce((sum, item) => sum + item.close, 0) / 50 });
-      }
-      const key = sessionKey(bar.time);
-      if (key !== this.vwapSession) {
-        this.vwapSession = key;
-        this.vwapPriceVolume = 0;
-        this.vwapVolume = 0;
-      }
-      this.vwapPriceVolume += ((bar.high + bar.low + bar.close) / 3) * bar.volume;
-      this.vwapVolume += bar.volume;
-      if (this.vwapVolume > 0) {
-        this.indicators.vwap.update({ time: bar.time, value: this.vwapPriceVolume / this.vwapVolume });
-      }
     }
   }
 

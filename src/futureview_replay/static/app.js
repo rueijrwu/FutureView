@@ -103,64 +103,46 @@
     return Date.UTC(time.year, time.month - 1, time.day);
   }
 
-  const chart = LightweightCharts.createChart($("chart"), {
-    autoSize: true,
-    attributionLogo: true,
-    layout: { background: { type: "solid", color: "#0b1017" }, textColor: "#a9b4c4" },
-    grid: { vertLines: { color: "#18222f" }, horzLines: { color: "#18222f" } },
-    localization: {
-      timeFormatter: (time) => statusFormatter.format(new Date(epochMs(time))),
+  const chart = klinecharts.init("chart", {
+    timezone: DISPLAY_TIME_ZONE,
+    styles: {
+      grid: { horizontal: { color: "#18222f" }, vertical: { color: "#18222f" } },
+      candle: {
+        bar: {
+          upColor: "#26a69a",
+          downColor: "#ef5350",
+          noChangeColor: "#888",
+          upBorderColor: "#26a69a",
+          downBorderColor: "#ef5350",
+          noChangeBorderColor: "#888",
+          upWickColor: "#26a69a",
+          downWickColor: "#ef5350",
+          noChangeWickColor: "#888",
+        },
+      },
     },
-    timeScale: {
-      timeVisible: true,
-      secondsVisible: false,
-      tickMarkFormatter: (time) => axisFormatter.format(new Date(epochMs(time))),
-    },
   });
-  const candles = chart.addSeries(LightweightCharts.CandlestickSeries, {
-    upColor: "#26a69a",
-    downColor: "#ef5350",
-    borderVisible: false,
-    wickUpColor: "#26a69a",
-    wickDownColor: "#ef5350",
-  });
-  const volume = chart.addSeries(LightweightCharts.HistogramSeries, {
-    priceFormat: { type: "volume" },
-    priceScaleId: "vol",
-  });
-  volume.priceScale().applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+  chart.createIndicator("VOL", false, { id: "volume_pane", height: 100 });
   const chartTools = new window.FutureViewChartTools({
     chart,
-    candles,
-    volume,
     toolbar: $("chart-toolbar"),
     legend: $("chart-legend"),
     formatTime: (seconds) => statusFormatter.format(new Date(seconds * 1000)),
   });
 
-  const candle = (b) => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
-  const volumeBar = (b) => ({
-    time: b.time,
-    value: b.volume,
-    color: b.close >= b.open ? "rgba(38,166,154,.45)" : "rgba(239,83,80,.45)",
-  });
+  const kline = (b) => ({ timestamp: b.time * 1000, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume });
   function renderBar(b) {
-    candles.update(candle(b));
-    volume.update(volumeBar(b));
+    chart.updateData(kline(b));
     chartTools.append(b);
   }
   function renderBars(bars) {
-    bars.forEach((bar) => {
-      candles.update(candle(bar));
-      volume.update(volumeBar(bar));
-    });
+    bars.forEach((b) => chart.updateData(kline(b)));
     chartTools.appendMany(bars);
   }
   function setWarmup(bars) {
-    candles.setData(bars.map(candle));
-    volume.setData(bars.map(volumeBar));
+    chart.applyNewData(bars.map(kline));
     chartTools.reset(bars);
-    chart.timeScale().fitContent();
+    chart.scrollToRealTime();
   }
 
   async function api(path, opts = {}) {
