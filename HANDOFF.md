@@ -395,9 +395,9 @@ https://futureview.pages.dev
 
 WebSocket sessions also connect to the Worker origin.
 
-TradingView Lightweight Charts is visualization only. It is not the simulation engine.
+KLineCharts is visualization only. It is not the simulation engine.
 
-Rich chart tools are implemented locally in `chart-tools.js`; this is not TradingView Advanced Charts. Indicators consume only the warmup and bars already released to the browser, preserving the no-lookahead boundary.
+Rich chart tools (SMA20/50, VWAP, and TradingView-style drawing tools — trend line, ray, horizontal/vertical line, rectangle, circle, fibonacci retracement, parallel channel, text) are implemented in `chart-tools.js` on top of KLineCharts' built-in indicator/overlay APIs. Indicators consume only the warmup and bars already released to the browser, preserving the no-lookahead boundary.
 
 ## 9. Replay cloud namespace
 
