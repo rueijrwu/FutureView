@@ -4,6 +4,10 @@
   let speed = 1;
   let sessionId = null;
   let ws = null;
+  let wsOpen = false;
+  let wsPath = null;
+  let wsReconnectTimer = null;
+  let wsReconnectDelay = 1000;
   let lastState = "STOPPED";
 
   const zonedPartsFormatter = new Intl.DateTimeFormat("en-US", {timeZone: DISPLAY_TIME_ZONE, year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit", hourCycle:"h23"});
@@ -25,9 +29,16 @@
   const candle=b=>({time:b.t,open:b.o,high:b.h,low:b.l,close:b.c}),vol=b=>({time:b.t,value:b.v,color:b.c>=b.o?"rgba(38,166,154,.46)":"rgba(239,83,80,.46)"});
   function render(b){candles.update(candle(b));volume.update(vol(b));chartTools.append(b)}function renderMany(bs){bs.forEach(b=>{candles.update(candle(b));volume.update(vol(b))});chartTools.appendMany(bs)}function reset(bs){candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chart.timeScale().fitContent()}function error(m=""){$("error").textContent=m}
   async function api(path,opts={}){const r=await fetch(path,{headers:{"Content-Type":"application/json"},...opts});if(!r.ok){let m=`HTTP ${r.status}`;try{m=(await r.json()).error||m}catch{}throw new Error(m)}return r.json()}
-  function update(s){if(!s)return;lastState=s.state||lastState;$("state-status").textContent=lastState;$("contract-status").textContent=s.contract||$("contract-status").textContent;$("time-status").textContent=s.cursor?displaySeconds(s.cursor):"No session";$("play").disabled=!sessionId||lastState==="PLAYING";$("pause").disabled=!sessionId||lastState!=="PLAYING";$("next").disabled=!sessionId||lastState==="PLAYING"||lastState==="FINISHED";$("restart").disabled=!sessionId}
-  function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN){error("Replay socket is not connected");return}ws.send(JSON.stringify({type,...extra}))}
-  function connect(path){if(ws)ws.close();const proto=location.protocol==="https:"?"wss":"ws";ws=new WebSocket(`${proto}://${location.host}${path}`);ws.onmessage=e=>{const x=JSON.parse(e.data);if(x.type==="bar")render(x.bar);else if(x.type==="bars_batch")renderMany(x.bars);else if(x.type==="reset"){reset(x.warmup||[]);update(x.snapshot)}else if(x.type==="error")error(x.error);else update(x)};ws.onerror=()=>error("Replay WebSocket disconnected")}
+  function update(s){if(!s)return;lastState=s.state||lastState;$("state-status").textContent=lastState;$("contract-status").textContent=s.contract||$("contract-status").textContent;$("time-status").textContent=s.cursor?displaySeconds(s.cursor):"No session";$("play").disabled=!sessionId||!wsOpen||lastState==="PLAYING";$("pause").disabled=!sessionId||!wsOpen||lastState!=="PLAYING";$("next").disabled=!sessionId||!wsOpen||lastState==="PLAYING"||lastState==="FINISHED";$("restart").disabled=!sessionId||!wsOpen}
+  function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN){error("Replay socket is not connected - reconnecting…");return}ws.send(JSON.stringify({type,...extra}))}
+  // The socket can drop on its own (idle timeout, a Worker cold-start, a network blip)
+  // independent of anything the user clicks, and previously the only feedback was every
+  // control silently failing with "not connected" the next time it was pressed. Track
+  // connection state explicitly (wsOpen) so controls disable themselves the moment the
+  // socket drops, and reconnect automatically with backoff instead of leaving the replay
+  // dead until the user restarts it - the session lives server-side (a Durable Object),
+  // so a fresh WebSocket to the same path just re-attaches and gets a current snapshot.
+  function connect(path){wsPath=path;clearTimeout(wsReconnectTimer);if(ws)ws.close();const proto=location.protocol==="https:"?"wss":"ws";ws=new WebSocket(`${proto}://${location.host}${path}`);ws.onopen=()=>{wsOpen=true;wsReconnectDelay=1000;error();update({state:lastState})};ws.onmessage=e=>{const x=JSON.parse(e.data);if(x.type==="bar")render(x.bar);else if(x.type==="bars_batch")renderMany(x.bars);else if(x.type==="reset"){reset(x.warmup||[]);update(x.snapshot)}else if(x.type==="error")error(x.error);else update(x)};ws.onerror=()=>{};ws.onclose=()=>{wsOpen=false;update({state:lastState});if(!sessionId||lastState==="FINISHED")return;error("Replay socket disconnected - reconnecting…");wsReconnectTimer=setTimeout(()=>connect(wsPath),wsReconnectDelay);wsReconnectDelay=Math.min(wsReconnectDelay*2,8000)}}
   async function loadRange(){const x=await api("/api/replay/range");$("product").value=x.product;$("start").value=inputValueFromSeconds(x.first_time);$("range").textContent=`${displaySeconds(x.first_time)} → ${displaySeconds(x.last_time)} · contract selected automatically`}
   $("start-btn").onclick=async()=>{try{error();const raw=$("start").value;if(!raw)throw new Error("Choose a start time");const x=await api("/api/replay/sessions",{method:"POST",body:JSON.stringify({product:$("product").value,start:wallTimeToUtcIso(raw),warmup:Number($("warmup").value||300)})});sessionId=x.session_id;reset(x.warmup||[]);update(x);const selected=x.contract_selection;if(selected)$("range").textContent=`Selected ${selected.contract} from ${selected.source_session||"the first available session"} (${selected.reason})`;connect(x.websocket)}catch(e){error(e.message)}};
   $("play").onclick=()=>command("play",{speed});$("pause").onclick=()=>command("pause");$("next").onclick=()=>command("step");$("restart").onclick=()=>command("restart");$("speeds").onclick=e=>{const b=e.target.closest("button[data-speed]");if(!b)return;document.querySelectorAll("#speeds button").forEach(x=>x.classList.remove("active"));b.classList.add("active");speed=b.dataset.speed==="max"?"max":Number(b.dataset.speed);if(lastState==="PLAYING")command("play",{speed})};loadRange().catch(e=>error(e.message));update({state:"STOPPED"});
