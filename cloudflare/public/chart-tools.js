@@ -99,7 +99,17 @@
       this.overlayMode = KC.OverlayMode.Normal;
       this.logScale = false;
       this._bind();
+      this._observeResize();
       this._showLegend(null);
+    }
+
+    // klinecharts only watches the canvas for pixel-ratio changes, so container
+    // reflow (window resize, the mobile breakpoint) needs an explicit resize().
+    _observeResize() {
+      const container = this.chart.getDom();
+      if (!container || typeof ResizeObserver === "undefined") return;
+      this.resizeObserver = new ResizeObserver(() => this.chart.resize());
+      this.resizeObserver.observe(container);
     }
 
     _bind() {

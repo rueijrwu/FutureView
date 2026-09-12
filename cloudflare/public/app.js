@@ -8,19 +8,20 @@
 
   const zonedPartsFormatter = new Intl.DateTimeFormat("en-US", {timeZone: DISPLAY_TIME_ZONE, year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", second:"2-digit", hourCycle:"h23"});
   const statusFormatter = new Intl.DateTimeFormat("en-US", {timeZone: DISPLAY_TIME_ZONE, year:"numeric", month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", hourCycle:"h23", timeZoneName:"short"});
-  const axisFormatter = new Intl.DateTimeFormat("en-US", {timeZone: DISPLAY_TIME_ZONE, month:"2-digit", day:"2-digit", hour:"2-digit", minute:"2-digit", hourCycle:"h23"});
 
   function partsAt(date){const parts=Object.fromEntries(zonedPartsFormatter.formatToParts(date).filter(p=>p.type!=="literal").map(p=>[p.type,p.value]));return {year:+parts.year,month:+parts.month,day:+parts.day,hour:+parts.hour,minute:+parts.minute,second:+parts.second}}
   function wallTimeToUtcIso(raw){const m=/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(raw);if(!m)throw new Error("Invalid replay start time");const wanted={year:+m[1],month:+m[2],day:+m[3],hour:+m[4],minute:+m[5],second:0};const wall=Date.UTC(wanted.year,wanted.month-1,wanted.day,wanted.hour,wanted.minute,0);let guess=wall;for(let i=0;i<4;i++){const shown=partsAt(new Date(guess));const shownWall=Date.UTC(shown.year,shown.month-1,shown.day,shown.hour,shown.minute,shown.second);const d=wall-shownWall;guess+=d;if(d===0)break}return new Date(guess).toISOString()}
   function inputValueFromSeconds(seconds){const p=partsAt(new Date(seconds*1000)),pad=n=>String(n).padStart(2,"0");return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`}
   function displaySeconds(seconds){return statusFormatter.format(new Date(seconds*1000))}
-  function epochMs(time){if(typeof time==="number")return time*1000;if(typeof time==="string")return Date.parse(time);return Date.UTC(time.year,time.month-1,time.day)}
 
   const chart=klinecharts.init("chart",{timezone:DISPLAY_TIME_ZONE,styles:{grid:{horizontal:{color:"#17202d"},vertical:{color:"#17202d"}},candle:{bar:{upColor:"#26a69a",downColor:"#ef5350",noChangeColor:"#888",upBorderColor:"#26a69a",downBorderColor:"#ef5350",noChangeBorderColor:"#888",upWickColor:"#26a69a",downWickColor:"#ef5350",noChangeWickColor:"#888"}}}});
   chart.createIndicator("VOL",false,{id:"volume_pane",height:100});
   const chartTools=new window.FutureViewChartTools({chart,toolbar:$("chart-toolbar"),legend:$("chart-legend"),formatTime:displaySeconds});
   const bar=b=>({timestamp:b.t*1000,open:b.o,high:b.h,low:b.l,close:b.c,volume:b.v});
-  function render(b){chart.updateData(bar(b));chartTools.append(b)}function renderMany(bs){bs.forEach(b=>chart.updateData(bar(b)));chartTools.appendMany(bs)}function reset(bs){chart.applyNewData(bs.map(bar));chartTools.reset(bs);chart.scrollToRealTime()}function error(m=""){$("error").textContent=m}
+  // Batches go through a single applyNewData: klinecharts recalculates and repaints every
+  // indicator across the whole dataset on each updateData, so a per-bar loop is O(batch x history).
+  function mergeBars(list,incoming){const out=list.slice();for(const b of incoming){const last=out[out.length-1];if(!last||b.timestamp>last.timestamp)out.push(b);else if(b.timestamp===last.timestamp)out[out.length-1]=b}return out}
+  function render(b){chart.updateData(bar(b));chartTools.append(b)}function renderMany(bs){chart.applyNewData(mergeBars(chart.getDataList(),bs.map(bar)));chartTools.appendMany(bs)}function reset(bs){chart.applyNewData(bs.map(bar));chartTools.reset(bs);chart.scrollToRealTime()}function error(m=""){$("error").textContent=m}
   async function api(path,opts={}){const r=await fetch(path,{headers:{"Content-Type":"application/json"},...opts});if(!r.ok){let m=`HTTP ${r.status}`;try{m=(await r.json()).error||m}catch{}throw new Error(m)}return r.json()}
   function update(s){if(!s)return;lastState=s.state||lastState;$("state-status").textContent=lastState;$("contract-status").textContent=s.contract||$("contract-status").textContent;$("time-status").textContent=s.cursor?displaySeconds(s.cursor):"No session";$("play").disabled=!sessionId||lastState==="PLAYING";$("pause").disabled=!sessionId||lastState!=="PLAYING";$("next").disabled=!sessionId||lastState==="PLAYING"||lastState==="FINISHED";$("restart").disabled=!sessionId}
   function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN){error("Replay socket is not connected");return}ws.send(JSON.stringify({type,...extra}))}

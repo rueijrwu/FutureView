@@ -24,14 +24,6 @@
     hourCycle: "h23",
     timeZoneName: "short",
   });
-  const axisFormatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: DISPLAY_TIME_ZONE,
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
 
   function partsAt(date) {
     const parts = Object.fromEntries(
@@ -97,11 +89,6 @@
     return statusFormatter.format(new Date(value));
   }
 
-  function epochMs(time) {
-    if (typeof time === "number") return time * 1000;
-    if (typeof time === "string") return Date.parse(time);
-    return Date.UTC(time.year, time.month - 1, time.day);
-  }
 
   const chart = klinecharts.init("chart", {
     timezone: DISPLAY_TIME_ZONE,
@@ -135,8 +122,19 @@
     chart.updateData(kline(b));
     chartTools.append(b);
   }
+  // Batches go through a single applyNewData: klinecharts recalculates and repaints every
+  // indicator across the whole dataset on each updateData, so a per-bar loop is O(batch x history).
+  function mergeBars(list, incoming) {
+    const out = list.slice();
+    for (const b of incoming) {
+      const last = out[out.length - 1];
+      if (!last || b.timestamp > last.timestamp) out.push(b);
+      else if (b.timestamp === last.timestamp) out[out.length - 1] = b;
+    }
+    return out;
+  }
   function renderBars(bars) {
-    bars.forEach((b) => chart.updateData(kline(b)));
+    chart.applyNewData(mergeBars(chart.getDataList(), bars.map(kline)));
     chartTools.appendMany(bars);
   }
   function setWarmup(bars) {
