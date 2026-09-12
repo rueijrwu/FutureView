@@ -43,9 +43,6 @@ button:disabled { opacity: .4; cursor: default; }
 .tool-group { display: flex; align-items: center; gap: 5px; }
 .tool-group span { margin-right: 3px; color: #748297; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .chart-toolbar button { padding: 5px 9px; border-radius: 5px; font-size: 11px; }
-.tool-group input[type="color"] { width: 20px; height: 20px; padding: 0; border: 1px solid #35455d; border-radius: 5px; background: none; cursor: pointer; }
-.tool-group input[type="color"]::-webkit-color-swatch-wrapper { padding: 1px; }
-.tool-group input[type="color"]::-webkit-color-swatch { border: none; border-radius: 3px; }
 .indicator-pick { display: flex; align-items: center; gap: 3px; }
 .fv-context-menu { position: fixed; z-index: 1000; min-width: 168px; background: #172233; border: 1px solid #35455d; border-radius: 6px; padding: 6px; display: flex; flex-direction: column; gap: 3px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
 .fv-menu-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 6px; font-size: 11px; color: #aab5c5; }

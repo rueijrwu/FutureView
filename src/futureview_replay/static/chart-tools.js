@@ -102,6 +102,7 @@
       this.previewId = null;
       this.menuEl = null;
       this.editorEl = null;
+      this.dragState = null;
 
       this._bind();
       this._showLegend(null);
@@ -119,6 +120,23 @@
 
     _bind() {
       this.toolbar.addEventListener("click", (event) => {
+        const swatch = event.target.closest("button.fv-color-swatch");
+        if (swatch) {
+          event.stopPropagation();
+          if (swatch.dataset.indicatorColor) {
+            const key = swatch.dataset.indicatorColor;
+            this._openColorPopup(swatch, this.indicatorColors[key], (color) => {
+              this._paintSwatch(swatch, color);
+              this._setIndicatorColor(key, color);
+            });
+          } else if (swatch.id === "draw-color") {
+            this._openColorPopup(swatch, this.drawColor, (color) => {
+              this._paintSwatch(swatch, color);
+              this.drawColor = color;
+            });
+          }
+          return;
+        }
         const button = event.target.closest("button[data-tool]");
         if (!button) return;
         const tool = button.dataset.tool;
@@ -133,16 +151,11 @@
         else if (tool === "latest") this.chart.timeScale().scrollToRealTime();
         else if (tool === "log") this._toggleLog(button);
       });
-      this.toolbar.addEventListener("input", (event) => {
-        const indicatorInput = event.target.closest("input[type=color][data-indicator-color]");
-        if (indicatorInput) return this._setIndicatorColor(indicatorInput.dataset.indicatorColor, indicatorInput.value);
-        if (event.target.id === "draw-color") this.drawColor = event.target.value;
+      this.toolbar.querySelectorAll("button.fv-color-swatch[data-indicator-color]").forEach((swatch) => {
+        this._paintSwatch(swatch, this.indicatorColors[swatch.dataset.indicatorColor]);
       });
-      this.toolbar.querySelectorAll("input[type=color][data-indicator-color]").forEach((input) => {
-        input.value = this.indicatorColors[input.dataset.indicatorColor];
-      });
-      const drawColorInput = this.toolbar.querySelector("#draw-color");
-      if (drawColorInput) drawColorInput.value = this.drawColor;
+      const drawColorSwatch = this.toolbar.querySelector("#draw-color");
+      if (drawColorSwatch) this._paintSwatch(drawColorSwatch, this.drawColor);
       const magnetButton = this.toolbar.querySelector('[data-tool="crosshair"]');
       if (magnetButton) {
         magnetButton.classList.toggle("active", this.magnet);
@@ -160,6 +173,12 @@
       this.container.addEventListener("mousemove", (event) => this._handlePreviewMove(event));
       // Right-click a drawing for Delete / Edit text, instead of only Undo (last-drawn) / Clear (all).
       this.container.addEventListener("contextmenu", (event) => this._handleContextMenu(event));
+      // Left-drag an existing drawing to move it. DrawingManager.attach() already wires
+      // its own container mousedown/mousemove/mouseup for per-anchor resize (only once a
+      // drawing is selected and the grab lands within 8px of an anchor) - that fires
+      // first since it was registered in the constructor before _bind() runs, so we only
+      // need to step aside for that exact case and otherwise own the gesture ourselves.
+      this.container.addEventListener("mousedown", (event) => this._handleDragStart(event));
       document.addEventListener("keydown", (event) => {
         if (event.key !== "Escape") return;
         if (this.interactionHandler) this.interactionHandler.onKeyDown("Escape");
@@ -295,8 +314,102 @@
     // ---- Live preview: a dashed ghost of the pending drawing that follows the mouse,
     // fed by InteractionHandler's onPreviewMove rather than tracked here. ----
     _handlePreviewMove(event) {
-      if (!this.interactionHandler || this.activeDrawTool === "text") return;
-      this.interactionHandler.onMouseMove({ point: this._containerPoint(event), time: null, price: null, srcEvent: null });
+      if (this.interactionHandler && this.activeDrawTool !== "text") {
+        this.interactionHandler.onMouseMove({ point: this._containerPoint(event), time: null, price: null, srcEvent: null });
+        return;
+      }
+      // Hover feedback: show a move cursor over a drawing (magnet-widened) when idle,
+      // so a line too thin to click precisely still reads as grabbable.
+      if (this.dragState || this.activeDrawTool || this.editorEl) return;
+      const hit = this._hitTestMagnet(this._containerPoint(event));
+      this.container.style.cursor = hit ? "move" : "";
+    }
+
+    // testHit() on each drawing type is a fixed, small pixel threshold (5-10px) with no
+    // way to widen it from outside - so for a "magnet" that forgives an imprecise click on
+    // a thin line, we retry the library's own hitTest at a small ring of points around the
+    // cursor instead of the exact point, rather than reimplementing per-type hit geometry.
+    static MAGNET_HIT_RADIUS = 6;
+
+    _hitTestMagnet(point) {
+      let hit = this.drawManager.hitTest(point);
+      if (hit) return hit;
+      const r = FutureViewChartTools.MAGNET_HIT_RADIUS;
+      const offsets = [[r, 0], [-r, 0], [0, r], [0, -r], [r, r], [r, -r], [-r, r], [-r, -r]];
+      for (const [dx, dy] of offsets) {
+        hit = this.drawManager.hitTest({ x: point.x + dx, y: point.y + dy });
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    _viewport() {
+      const rect = this.container.getBoundingClientRect();
+      return {
+        width: rect.width,
+        height: rect.height,
+        timeScale: {
+          coordinateToTime: (x) => this.chart.timeScale().coordinateToTime(x),
+          timeToCoordinate: (t) => this.chart.timeScale().timeToCoordinate(t),
+          logicalToCoordinate: (l) => this.chart.timeScale().logicalToCoordinate(l),
+        },
+        priceScale: {
+          coordinateToPrice: (y) => this.candles.coordinateToPrice(y),
+          priceToCoordinate: (p) => this.candles.priceToCoordinate(p),
+        },
+      };
+    }
+
+    _handleDragStart(event) {
+      if (event.button !== 0 || this.editorEl || this.activeDrawTool) return;
+      const point = this._containerPoint(event);
+      const hit = this._hitTestMagnet(point);
+      if (!hit) return;
+
+      // A grab within 8px of an anchor on an already-selected drawing is a resize -
+      // DrawingManager's own mousedown handler (wired in attach(), runs before this one)
+      // already started that drag, so back off instead of also translating the whole shape.
+      const isSelected = this.drawManager.getSelectedDrawing()?.id === hit.id;
+      if (isSelected && hit.hitTestAnchor(point, this._viewport()) !== null) return;
+
+      const time = this.chart.timeScale().coordinateToTime(point.x);
+      const price = this.candles.coordinateToPrice(point.y);
+      if (time == null || price == null || !Number.isFinite(price)) return;
+
+      event.preventDefault();
+      this.dragState = {
+        drawing: hit,
+        startAnchors: hit.anchors.map((a) => ({ ...a })),
+        startTime: time,
+        startPrice: price,
+      };
+      this.chart.applyOptions({ handleScroll: false, handleScale: false });
+      this.container.style.cursor = "move";
+      this._onDragMove = (e) => this._handleDragMove(e);
+      this._onDragEnd = (e) => this._handleDragEnd(e);
+      document.addEventListener("mousemove", this._onDragMove);
+      document.addEventListener("mouseup", this._onDragEnd);
+    }
+
+    _handleDragMove(event) {
+      if (!this.dragState) return;
+      const point = this._containerPoint(event);
+      const time = this.chart.timeScale().coordinateToTime(point.x);
+      const price = this.candles.coordinateToPrice(point.y);
+      if (time == null || price == null || !Number.isFinite(price)) return;
+      const timeDelta = time - this.dragState.startTime;
+      const priceDelta = price - this.dragState.startPrice;
+      const newAnchors = this.dragState.startAnchors.map((a) => ({ time: a.time + timeDelta, price: a.price + priceDelta }));
+      this.dragState.drawing.setAnchors(newAnchors);
+    }
+
+    _handleDragEnd() {
+      if (!this.dragState) return;
+      this.dragState = null;
+      this.chart.applyOptions({ handleScroll: true, handleScale: true });
+      this.container.style.cursor = "";
+      document.removeEventListener("mousemove", this._onDragMove);
+      document.removeEventListener("mouseup", this._onDragEnd);
     }
 
     _renderPreview(registryType, anchors, previewAnchor) {
@@ -331,7 +444,7 @@
     // object you can act on - restyle or delete - not just something Undo/Clear touches. ----
     _handleContextMenu(event) {
       const point = this._containerPoint(event);
-      const hit = this.drawManager.hitTest(point);
+      const hit = this._hitTestMagnet(point);
       if (hit) {
         event.preventDefault();
         return this._showDrawingMenu(event.clientX, event.clientY, hit);
