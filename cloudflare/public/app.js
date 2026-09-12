@@ -16,12 +16,11 @@
   function displaySeconds(seconds){return statusFormatter.format(new Date(seconds*1000))}
   function epochMs(time){if(typeof time==="number")return time*1000;if(typeof time==="string")return Date.parse(time);return Date.UTC(time.year,time.month-1,time.day)}
 
-  const chart=LightweightCharts.createChart($("chart"),{autoSize:true,attributionLogo:true,layout:{background:{type:"solid",color:"#090e15"},textColor:"#aab5c5"},grid:{vertLines:{color:"#17202d"},horzLines:{color:"#17202d"}},localization:{timeFormatter:t=>statusFormatter.format(new Date(epochMs(t)))},timeScale:{timeVisible:true,secondsVisible:false,tickMarkFormatter:t=>axisFormatter.format(new Date(epochMs(t)))}});
-  const candles=chart.addSeries(LightweightCharts.CandlestickSeries,{upColor:"#26a69a",downColor:"#ef5350",borderVisible:false,wickUpColor:"#26a69a",wickDownColor:"#ef5350"});
-  const volume=chart.addSeries(LightweightCharts.HistogramSeries,{priceFormat:{type:"volume"},priceScaleId:"volume"});volume.priceScale().applyOptions({scaleMargins:{top:.8,bottom:0}});
-  const chartTools=new window.FutureViewChartTools({chart,candles,volume,toolbar:$("chart-toolbar"),legend:$("chart-legend"),formatTime:displaySeconds});
-  const candle=b=>({time:b.t,open:b.o,high:b.h,low:b.l,close:b.c}),vol=b=>({time:b.t,value:b.v,color:b.c>=b.o?"rgba(38,166,154,.46)":"rgba(239,83,80,.46)"});
-  function render(b){candles.update(candle(b));volume.update(vol(b));chartTools.append(b)}function renderMany(bs){bs.forEach(b=>{candles.update(candle(b));volume.update(vol(b))});chartTools.appendMany(bs)}function reset(bs){candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chart.timeScale().fitContent()}function error(m=""){$("error").textContent=m}
+  const chart=klinecharts.init("chart",{timezone:DISPLAY_TIME_ZONE,styles:{grid:{horizontal:{color:"#17202d"},vertical:{color:"#17202d"}},candle:{bar:{upColor:"#26a69a",downColor:"#ef5350",noChangeColor:"#888",upBorderColor:"#26a69a",downBorderColor:"#ef5350",noChangeBorderColor:"#888",upWickColor:"#26a69a",downWickColor:"#ef5350",noChangeWickColor:"#888"}}}});
+  chart.createIndicator("VOL",false,{id:"volume_pane",height:100});
+  const chartTools=new window.FutureViewChartTools({chart,toolbar:$("chart-toolbar"),legend:$("chart-legend"),formatTime:displaySeconds});
+  const bar=b=>({timestamp:b.t*1000,open:b.o,high:b.h,low:b.l,close:b.c,volume:b.v});
+  function render(b){chart.updateData(bar(b));chartTools.append(b)}function renderMany(bs){bs.forEach(b=>chart.updateData(bar(b)));chartTools.appendMany(bs)}function reset(bs){chart.applyNewData(bs.map(bar));chartTools.reset(bs);chart.scrollToRealTime()}function error(m=""){$("error").textContent=m}
   async function api(path,opts={}){const r=await fetch(path,{headers:{"Content-Type":"application/json"},...opts});if(!r.ok){let m=`HTTP ${r.status}`;try{m=(await r.json()).error||m}catch{}throw new Error(m)}return r.json()}
   function update(s){if(!s)return;lastState=s.state||lastState;$("state-status").textContent=lastState;$("contract-status").textContent=s.contract||$("contract-status").textContent;$("time-status").textContent=s.cursor?displaySeconds(s.cursor):"No session";$("play").disabled=!sessionId||lastState==="PLAYING";$("pause").disabled=!sessionId||lastState!=="PLAYING";$("next").disabled=!sessionId||lastState==="PLAYING"||lastState==="FINISHED";$("restart").disabled=!sessionId}
   function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN){error("Replay socket is not connected");return}ws.send(JSON.stringify({type,...extra}))}
