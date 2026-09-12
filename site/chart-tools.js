@@ -444,15 +444,39 @@
       return entry ? entry[0] : "solid";
     }
 
+    static TEXT_FONT_SIZES = ["10", "12", "14", "16", "18", "24", "32"];
+    static TEXT_BG_TRANSPARENT = "transparent";
+
     _showDrawingMenu(clientX, clientY, drawing) {
       this._openMenu(clientX, clientY, (menu) => {
-        this._menuColorRow(menu, "Line color", drawing.style.lineColor, (v) => { drawing.style = { ...drawing.style, lineColor: v }; });
-        this._menuSelectRow(menu, "Line style", this._dashKey(drawing.style.lineDash), [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"]], (v) => {
-          drawing.style = { ...drawing.style, lineDash: FutureViewChartTools.LINE_DASHES[v] };
-        });
-        this._menuSelectRow(menu, "Line width", String(drawing.style.lineWidth), [["1", "1px"], ["2", "2px"], ["3", "3px"], ["4", "4px"]], (v) => {
-          drawing.style = { ...drawing.style, lineWidth: Number(v) };
-        });
+        if (drawing.type === "text-annotation") {
+          this._menuColorRow(menu, "Text color", drawing.style.labelColor || "#2962ff", (v) => { drawing.style = { ...drawing.style, labelColor: v }; });
+          this._menuSelectRow(menu, "Text size", String(drawing.textOptions?.fontSize ?? 14), FutureViewChartTools.TEXT_FONT_SIZES.map((s) => [s, `${s}px`]), (v) => {
+            drawing.setTextOptions({ fontSize: Number(v) });
+          });
+          const bgIsTransparent = !drawing.textOptions?.backgroundColor || drawing.textOptions.backgroundColor === FutureViewChartTools.TEXT_BG_TRANSPARENT;
+          this._menuColorRow(menu, "Background", bgIsTransparent ? "#000000" : drawing.textOptions.backgroundColor.slice(0, 7), (v) => {
+            drawing.setTextOptions({ backgroundColor: v });
+          });
+          this._menuCheckboxRow(menu, "Transparent background", bgIsTransparent, (checked) => {
+            drawing.setTextOptions({ backgroundColor: checked ? FutureViewChartTools.TEXT_BG_TRANSPARENT : "#000000" });
+          });
+          const borderIsNone = !drawing.textOptions?.borderColor || drawing.textOptions.borderColor === "transparent";
+          this._menuColorRow(menu, "Outline", borderIsNone ? drawing.style.lineColor : drawing.textOptions.borderColor.slice(0, 7), (v) => {
+            drawing.setTextOptions({ borderColor: v });
+          });
+          this._menuCheckboxRow(menu, "No outline", borderIsNone, (checked) => {
+            drawing.setTextOptions({ borderColor: checked ? "transparent" : drawing.style.lineColor });
+          });
+        } else {
+          this._menuColorRow(menu, "Line color", drawing.style.lineColor, (v) => { drawing.style = { ...drawing.style, lineColor: v }; });
+          this._menuSelectRow(menu, "Line style", this._dashKey(drawing.style.lineDash), [["solid", "Solid"], ["dashed", "Dashed"], ["dotted", "Dotted"]], (v) => {
+            drawing.style = { ...drawing.style, lineDash: FutureViewChartTools.LINE_DASHES[v] };
+          });
+          this._menuSelectRow(menu, "Line width", String(drawing.style.lineWidth), [["1", "1px"], ["2", "2px"], ["3", "3px"], ["4", "4px"]], (v) => {
+            drawing.style = { ...drawing.style, lineWidth: Number(v) };
+          });
+        }
 
         if (drawing.type === "rectangle") {
           this._menuColorRow(menu, "Fill color", (drawing.style.fillColor || "#00000033").slice(0, 7), (v) => {
