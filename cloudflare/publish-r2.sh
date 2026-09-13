@@ -3,7 +3,12 @@ set -euo pipefail
 
 ROOT=${1:-../runtime/cloud-export}
 BUCKET=${MES_REPLAY_R2_BUCKET:-futureview-data}
-PREFIX=${REPLAY_PREFIX:-mes-replay/v1}
+if [[ -z "${REPLAY_PREFIX:-}" ]]; then
+  PRODUCT=$(python3 -c "import json; print(json.load(open('$ROOT/manifest.json')).get('product', 'MES'))" 2>/dev/null || echo "MES")
+  PREFIX="$(echo "$PRODUCT" | tr '[:upper:]' '[:lower:]')-replay/v1"
+else
+  PREFIX="$REPLAY_PREFIX"
+fi
 PARALLELISM=${R2_PUBLISH_PARALLELISM:-12}
 
 if [[ ! -f "$ROOT/manifest.json" ]]; then

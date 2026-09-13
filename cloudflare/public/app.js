@@ -40,7 +40,7 @@
   // so a fresh WebSocket to the same path just re-attaches and gets a current snapshot.
   function connect(path){wsPath=path;clearTimeout(wsReconnectTimer);if(ws)ws.close();const proto=location.protocol==="https:"?"wss":"ws";const thisWs=ws=new WebSocket(`${proto}://${location.host}${path}`);thisWs.onopen=()=>{if(ws!==thisWs)return;wsOpen=true;wsReconnectDelay=1000;error();update({state:lastState})};thisWs.onmessage=e=>{if(ws!==thisWs)return;const x=JSON.parse(e.data);if(x.type==="bar")render(x.bar);else if(x.type==="bars_batch")renderMany(x.bars);else if(x.type==="reset"){reset(x.warmup||[]);update(x.snapshot)}else if(x.type==="error")error(x.error);else update(x)};thisWs.onerror=()=>{};thisWs.onclose=()=>{if(ws!==thisWs)return;wsOpen=false;update({state:lastState});if(!sessionId||lastState==="FINISHED")return;error("Replay socket disconnected - reconnecting…");wsReconnectTimer=setTimeout(()=>connect(wsPath),wsReconnectDelay);wsReconnectDelay=Math.min(wsReconnectDelay*2,8000)}}
   let replayRangeInfo = null;
-  async function loadRange(){const p=$("product")?.value;const q=p?`?product=${encodeURIComponent(p)}`:"";try{replayRangeInfo=await api(`/api/replay/range${q}`)}catch(err){if(p){replayRangeInfo=await api("/api/replay/range")}else{throw err}}if(replayRangeInfo.product&&$("product")){$("product").value=replayRangeInfo.product}$("start").value=inputValueFromSeconds(replayRangeInfo.first_time);$("range").textContent=`${displaySeconds(replayRangeInfo.first_time)} → ${displaySeconds(replayRangeInfo.last_time)} · contract selected automatically`}
+  async function loadRange(explicit = false){error();const p=$("product")?.value||"MES";try{replayRangeInfo=await api(`/api/replay/range?product=${encodeURIComponent(p)}`);$("start").value=inputValueFromSeconds(replayRangeInfo.first_time);$("range").textContent=`${displaySeconds(replayRangeInfo.first_time)} → ${displaySeconds(replayRangeInfo.last_time)} · contract selected automatically`}catch(err){if(!explicit){try{replayRangeInfo=await api("/api/replay/range");if(replayRangeInfo.product&&$("product"))$("product").value=replayRangeInfo.product;$("start").value=inputValueFromSeconds(replayRangeInfo.first_time);$("range").textContent=`${displaySeconds(replayRangeInfo.first_time)} → ${displaySeconds(replayRangeInfo.last_time)} · contract selected automatically`;return}catch{}}error(err.message)}}
   const DEFAULT_REPLAY_TIME = "08:30";
   function pickRandomTradingDate(firstSec, lastSec){
     const minSec = Number(firstSec);
@@ -70,7 +70,7 @@
   }
   let isStarting = false;
   async function startReplay(){if(isStarting)return;isStarting=true;$("start-btn").disabled=true;$("random-btn").disabled=true;try{error();const raw=$("start").value;if(!raw)throw new Error("Choose a start time");const x=await api("/api/replay/sessions",{method:"POST",body:JSON.stringify({product:$("product").value,start:wallTimeToUtcIso(raw),warmup:Number($("warmup").value||300)})});sessionId=x.session_id;reset(x.warmup||[]);update(x);const selected=x.contract_selection;if(selected)$("range").textContent=`Selected ${selected.contract} from ${selected.source_session||"the first available session"} (${selected.reason})`;connect(x.websocket)}catch(e){error(e.message)}finally{isStarting=false;$("start-btn").disabled=false;$("random-btn").disabled=false;}}
-  $("product").onchange=()=>loadRange().catch(e=>error(e.message));
+  $("product").onchange=()=>loadRange(true);
   $("start-btn").onclick=()=>startReplay();
   $("random-btn").onclick=async()=>{
     if(isStarting)return;
