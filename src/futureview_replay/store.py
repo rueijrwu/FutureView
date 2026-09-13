@@ -68,10 +68,16 @@ class BarStore:
 
     def replay_range(self) -> dict[str, object]:
         infos = [self.info(contract) for contract in self.contracts()]
+        first_iso = min(str(info["first"]) for info in infos)
+        last_iso = max(str(info["last"]) for info in infos)
+        first_dt = datetime.fromisoformat(first_iso)
+        last_dt = datetime.fromisoformat(last_iso)
         return {
             "product": self.product,
-            "first": min(str(info["first"]) for info in infos),
-            "last": max(str(info["last"]) for info in infos),
+            "first": first_iso,
+            "last": last_iso,
+            "first_time": int(first_dt.timestamp()),
+            "last_time": int(last_dt.timestamp()),
         }
 
     def resolve_contract(self, product: str, start: datetime) -> dict[str, object]:

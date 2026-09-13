@@ -19,6 +19,7 @@ def test_health_and_index(tmp_path: Path) -> None:
         assert health["ok"] is True and health["contracts"]==1 and health["product"]=="MES"
         replay_range=c.get("/api/replay/range").json()
         assert replay_range["product"] == "MES"
+        assert "first_time" in replay_range and "last_time" in replay_range
         started=c.post("/api/replay/start",json={"product":"MES","start":ts[1].isoformat(),"warmup":1})
         assert started.status_code == 200
         assert started.json()["contract"] == "MESM24"
@@ -27,3 +28,4 @@ def test_health_and_index(tmp_path: Path) -> None:
         assert "/static/chart-tools.js" in index.text
         assert 'data-tool="sma20"' in index.text
         assert 'data-tool="hline"' in index.text
+        assert 'id="random-btn"' in index.text

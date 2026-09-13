@@ -189,12 +189,13 @@
   }
   function error(message = "") { $("error").textContent = message; }
 
+  let replayRangeInfo = null;
   async function replayRange() {
     try {
-      const info = await api("/api/replay/range");
-      $("product").value = info.product;
-      $("range").textContent = `${displayTime(info.first)} → ${displayTime(info.last)} · contract selected automatically`;
-      $("start").value = inputValue(info.first);
+      replayRangeInfo = await api("/api/replay/range");
+      $("product").value = replayRangeInfo.product;
+      $("range").textContent = `${displayTime(replayRangeInfo.first)} → ${displayTime(replayRangeInfo.last)} · contract selected automatically`;
+      $("start").value = inputValue(replayRangeInfo.first);
     } catch (e) {
       error(e.message);
     }
@@ -220,7 +221,31 @@
     }
   }
 
-  $("start-btn").onclick = async () => {
+  function pickRandomTradingSeconds(firstSec, lastSec) {
+    const minSec = Number(firstSec);
+    const maxSec = Number(lastSec);
+    if (!Number.isFinite(minSec) || !Number.isFinite(maxSec) || maxSec <= minSec) return minSec;
+    for (let i = 0; i < 30; i++) {
+      const rawSec = minSec + Math.floor(Math.random() * (maxSec - minSec));
+      const candSec = Math.floor(rawSec / 300) * 300;
+      const p = partsAt(new Date(candSec * 1000));
+      const dt = new Date(Date.UTC(p.year, p.month - 1, p.day));
+      const dayOfWeek = dt.getUTCDay();
+      if (dayOfWeek === 6) continue;
+      if (dayOfWeek === 0 && p.hour < 18) continue;
+      if (dayOfWeek === 5 && p.hour >= 17) continue;
+      if (dayOfWeek >= 1 && dayOfWeek <= 4 && p.hour === 17) continue;
+      return candSec;
+    }
+    return minSec;
+  }
+
+  let isStarting = false;
+  async function startReplay() {
+    if (isStarting) return;
+    isStarting = true;
+    $("start-btn").disabled = true;
+    $("random-btn").disabled = true;
     try {
       error();
       const raw = $("start").value;
@@ -242,7 +267,29 @@
       }
     } catch (e) {
       error(e.message);
+    } finally {
+      isStarting = false;
+      $("start-btn").disabled = false;
+      $("random-btn").disabled = false;
     }
+  }
+
+  $("start-btn").onclick = () => startReplay();
+  $("random-btn").onclick = async () => {
+    if (isStarting) return;
+    if (!replayRangeInfo) {
+      try {
+        await replayRange();
+      } catch (e) {
+        error(e.message);
+        return;
+      }
+    }
+    const firstSec = replayRangeInfo.first_time ?? Math.floor(new Date(replayRangeInfo.first).getTime() / 1000);
+    const lastSec = replayRangeInfo.last_time ?? Math.floor(new Date(replayRangeInfo.last).getTime() / 1000);
+    const randSec = pickRandomTradingSeconds(firstSec, lastSec);
+    $("start").value = inputValue(new Date(randSec * 1000).toISOString());
+    await startReplay();
   };
   $("next").onclick = () => post("/api/replay/step");
   $("restart").onclick = () => post("/api/replay/restart");
