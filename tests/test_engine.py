@@ -23,7 +23,7 @@ def store(tmp_path: Path) -> BarStore:
 def test_no_lookahead_and_step(tmp_path: Path) -> None:
     s=store(tmp_path); bars=s.bars("MESM24")
     async def run():
-        e=ReplayEngine(s); r=await e.start("MES",bars[10].timestamp,3)
+        e=ReplayEngine({"MES": s}); r=await e.start("MES",bars[10].timestamp,3)
         assert r["contract"] == "MESM24"
         assert r["contract_selection"]["reason"] == "nearest_expiry_fallback"
         assert r["future_data_included"] is False
@@ -36,7 +36,7 @@ def test_no_lookahead_and_step(tmp_path: Path) -> None:
 def test_100x_preserves_order(tmp_path: Path) -> None:
     s=store(tmp_path); bars=s.bars("MESM24")
     async def run():
-        e=ReplayEngine(s); await e.start("MES",bars[5].timestamp,1); q=e.subscribe(); await e.play(100)
+        e=ReplayEngine({"MES": s}); await e.start("MES",bars[5].timestamp,1); q=e.subscribe(); await e.play(100)
         seen=[]
         while not seen:
             x=await asyncio.wait_for(q.get(),.5)
