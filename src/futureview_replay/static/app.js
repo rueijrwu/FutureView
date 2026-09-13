@@ -199,8 +199,20 @@
   let replayRangeInfo = null;
   async function replayRange() {
     try {
-      replayRangeInfo = await api(`/api/replay/range?product=${$("product").value||"MES"}`);
-      $("product").value = replayRangeInfo.product;
+      const product = $("product")?.value;
+      const q = product ? `?product=${encodeURIComponent(product)}` : "";
+      try {
+        replayRangeInfo = await api(`/api/replay/range${q}`);
+      } catch (err) {
+        if (product) {
+          replayRangeInfo = await api("/api/replay/range");
+        } else {
+          throw err;
+        }
+      }
+      if (replayRangeInfo.product && $("product")) {
+        $("product").value = replayRangeInfo.product;
+      }
       $("range").textContent = `${displayTime(replayRangeInfo.first)} → ${displayTime(replayRangeInfo.last)} · contract selected automatically`;
       $("start").value = inputValue(replayRangeInfo.first);
     } catch (e) {
@@ -297,6 +309,7 @@
     }
   }
 
+  $("product").onchange = () => replayRange();
   $("start-btn").onclick = () => startReplay();
   $("random-btn").onclick = async () => {
     if (isStarting) return;

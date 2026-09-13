@@ -40,8 +40,9 @@ def main() -> None:
     e.add_argument("--output", type=Path, default=Path("runtime/cloud-export"))
 
     s = sub.add_parser("serve", help="Run the local browser replay server")
-    s.add_argument("--runtime", type=Path, default=Path("runtime"))
-    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--manifest", type=Path, default=None, help="Path to manifest.json or product runtime directory")
+    s.add_argument("--runtime", type=Path, default=Path("runtime"), help="Directory containing runtime manifests")
+    s.add_argument("--host", default="0.0.0.0")
     s.add_argument("--port", type=int, default=8787)
 
     args = parser.parse_args()
@@ -75,4 +76,5 @@ def main() -> None:
     if args.command == "cloud-export":
         export_cloud(args.runtime, args.output)
         return
-    uvicorn.run(create_app(args.runtime), host=args.host, port=args.port, log_level="info")
+    target = args.manifest or args.runtime
+    uvicorn.run(create_app(target), host=args.host, port=args.port, log_level="info")
