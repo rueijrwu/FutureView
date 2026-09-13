@@ -3,6 +3,7 @@
   const DISPLAY_TIME_ZONE = "America/New_York";
   let speed = 1;
   let started = false;
+  let currentState = "STOPPED";
 
   const zonedPartsFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: DISPLAY_TIME_ZONE,
@@ -152,6 +153,7 @@
     candles.update(candle(b));
     volume.update(volumeBar(b));
     chartTools.append(b);
+    $("status-time").textContent = displayTime(b.timestamp || (b.time * 1000));
   }
   function renderBars(bars) {
     bars.forEach((bar) => {
@@ -159,6 +161,10 @@
       volume.update(volumeBar(bar));
     });
     chartTools.appendMany(bars);
+    if (bars.length) {
+      const last = bars[bars.length - 1];
+      $("status-time").textContent = displayTime(last.timestamp || (last.time * 1000));
+    }
   }
   function setWarmup(bars) {
     candles.setData(bars.map(candle));
@@ -179,12 +185,13 @@
 
   function state(snapshot) {
     if (!snapshot || !snapshot.state) return;
-    $("status-state").textContent = snapshot.state;
+    currentState = snapshot.state;
+    $("status-state").textContent = currentState;
     $("status-contract").textContent = snapshot.contract || "—";
     $("status-time").textContent = snapshot.cursor ? displayTime(snapshot.cursor) : "No session";
-    $("play").disabled = !started || snapshot.state === "PLAYING";
-    $("pause").disabled = !started || snapshot.state !== "PLAYING";
-    $("next").disabled = !started || snapshot.state === "PLAYING" || snapshot.state === "FINISHED";
+    $("play").disabled = !started || currentState === "PLAYING" || currentState === "FINISHED";
+    $("pause").disabled = !started || currentState !== "PLAYING";
+    $("next").disabled = !started || currentState === "PLAYING" || currentState === "FINISHED";
     $("restart").disabled = !started;
   }
   function error(message = "") { $("error").textContent = message; }
@@ -204,7 +211,11 @@
   async function init() {
     try {
       await replayRange();
-      state(await api("/api/replay/state"));
+      const snapshot = await api("/api/replay/state");
+      // If the engine already has an active session (e.g. page reload), restore started flag
+      // so the transport controls become usable without requiring a new Start Replay.
+      if (snapshot && snapshot.contract) started = true;
+      state(snapshot);
     } catch (e) {
       error(e.message);
     }
@@ -312,7 +323,7 @@
     document.querySelectorAll("#speeds button").forEach((x) => x.classList.remove("active"));
     button.classList.add("active");
     speed = button.dataset.speed === "max" ? "max" : Number(button.dataset.speed);
-    if ($("status-state").textContent === "PLAYING") post("/api/replay/play", { speed });
+    if (currentState === "PLAYING") post("/api/replay/play", { speed });
   };
 
   const protocol = location.protocol === "https:" ? "wss" : "ws";

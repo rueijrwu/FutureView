@@ -15,6 +15,21 @@
       "total_bytes": 52183820,
       "first_file": "glbx-mdp3-20190506-20190531.ohlcv-1m.dbn.zst",
       "last_file": "glbx-mdp3-20260901-20260910.ohlcv-1m.dbn.zst"
+    },
+    {
+      "provider": "Databento",
+      "dataset": "GLBX.MDP3",
+      "product": "ES",
+      "schema": "ohlcv-1m",
+      "format": "dbn.zst",
+      "bucket": "futureview-data",
+      "prefix": "raw/databento/GLBX.MDP3/ES/ohlcv-1m",
+      "manifest_key": "raw/databento/GLBX.MDP3/ES/ohlcv-1m/manifest.json",
+      "manifest_sha256": "70363f06b3b57ad83661d9ccff999056623ffceb34d76d7f5d94b42f16d4e150",
+      "file_count": 196,
+      "total_bytes": 99219150,
+      "first_file": "glbx-mdp3-20100606-20100630.ohlcv-1m.dbn.zst",
+      "last_file": "glbx-mdp3-20260901-20260912.ohlcv-1m.dbn.zst"
     }
   ]
 }

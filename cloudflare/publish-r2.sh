@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT=${1:-../runtime/cloud-export}
 BUCKET=${MES_REPLAY_R2_BUCKET:-futureview-data}
-PREFIX=mes-replay/v1
+PREFIX=${REPLAY_PREFIX:-mes-replay/v1}
 PARALLELISM=${R2_PUBLISH_PARALLELISM:-12}
 
 if [[ ! -f "$ROOT/manifest.json" ]]; then

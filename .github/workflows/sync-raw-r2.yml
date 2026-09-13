@@ -1,0 +1,96 @@
+name: Sync Raw Data to R2
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: 'Product to sync to R2 (e.g. ES, MES, or ALL)'
+        required: true
+        default: 'ES'
+  push:
+    branches: [master]
+    paths:
+      - 'data/databento/**'
+      - '.github/workflows/sync-raw-r2.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: futureview-raw-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Sync ES to R2
+        if: ${{ github.event_name == 'push' || github.event.inputs.product == 'ES' || github.event.inputs.product == 'ALL' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          git lfs install
+          git lfs pull --include='data/databento/es/raw/*.dbn.zst'
+          COUNT=$(find data/databento/es/raw -type f -name '*.dbn.zst' | wc -l)
+          echo "ES raw files: $COUNT"
+          test "$COUNT" -gt 0
+
+          # Build immutable raw manifest
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+
+          root = Path('data/databento/es/raw')
+          files = []
+          for path in sorted(root.glob('*.dbn.zst')):
+              h = hashlib.sha256()
+              with path.open('rb') as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b''):
+                      h.update(chunk)
+              files.append({
+                  'filename': path.name,
+                  'bytes': path.stat().st_size,
+                  'sha256': h.hexdigest(),
+                  'r2_key': f'raw/databento/GLBX.MDP3/ES/ohlcv-1m/{path.name}',
+              })
+          manifest = {
+              'version': 1,
+              'provider': 'Databento',
+              'dataset': 'GLBX.MDP3',
+              'product': 'ES',
+              'schema': 'ohlcv-1m',
+              'format': 'dbn.zst',
+              'files': files,
+          }
+          Path('es-raw-manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+          print(f'ES_RAW_MANIFEST files={len(files)} bytes={sum(x["bytes"] for x in files)}')
+          PY
+
+          # Upload raw files to R2
+          PREFIX='raw/databento/GLBX.MDP3/ES/ohlcv-1m'
+          while IFS= read -r file; do
+            name=$(basename "$file")
+            echo "R2 PUT $PREFIX/$name"
+            npx --yes wrangler@4.125.0 r2 object put "futureview-data/$PREFIX/$name" --file "$file" --remote
+          done < <(find data/databento/es/raw -type f -name '*.dbn.zst' | sort)
+
+          # Upload manifest
+          npx --yes wrangler@4.125.0 r2 object put "futureview-data/$PREFIX/manifest.json" --file es-raw-manifest.json --remote
+
+          # Verify manifest in R2
+          npx --yes wrangler@4.125.0 r2 object get "futureview-data/$PREFIX/manifest.json" --file r2-manifest.json --remote
+          cmp es-raw-manifest.json r2-manifest.json
+          echo "ES R2 sync verified successfully."

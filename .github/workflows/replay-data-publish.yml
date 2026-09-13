@@ -2,6 +2,11 @@ name: Replay Data Publish
 
 on:
   workflow_dispatch:
+    inputs:
+      product:
+        description: 'Product to build and publish (MES or ES)'
+        required: true
+        default: 'MES'
   push:
     branches: [master]
     paths:
@@ -24,6 +29,8 @@ jobs:
   publish:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      PRODUCT: ${{ github.event.inputs.product || 'MES' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -38,17 +45,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .
 
-      - name: Fetch MES raw archive from R2
+      - name: Fetch raw archive from R2
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-        run: futureview-replay fetch-raw --product MES --output .local-data/raw/MES
+        run: futureview-replay fetch-raw --product "$PRODUCT" --output ".local-data/raw/$PRODUCT"
 
       - name: Build cloud replay data
         run: |
-          futureview-replay prepare --product MES --raw .local-data/raw/MES --runtime runtime/MES
-          futureview-replay cloud-export --runtime runtime/MES --output runtime/MES/cloud-export
-          test -f runtime/MES/cloud-export/manifest.json
+          futureview-replay prepare --product "$PRODUCT" --raw ".local-data/raw/$PRODUCT" --runtime "runtime/$PRODUCT"
+          futureview-replay cloud-export --runtime "runtime/$PRODUCT" --output "runtime/$PRODUCT/cloud-export"
+          test -f "runtime/$PRODUCT/cloud-export/manifest.json"
 
       - name: Publish replay data to R2
         working-directory: cloudflare
@@ -56,4 +63,4 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_PUBLISH_PARALLELISM: '12'
-        run: bash publish-r2.sh ../runtime/MES/cloud-export
+        run: bash publish-r2.sh "../runtime/$PRODUCT/cloud-export"
