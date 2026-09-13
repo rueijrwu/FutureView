@@ -199,7 +199,7 @@
   let replayRangeInfo = null;
   async function replayRange() {
     try {
-      replayRangeInfo = await api("/api/replay/range");
+      replayRangeInfo = await api(`/api/replay/range?product=${$("product").value||"MES"}`);
       $("product").value = replayRangeInfo.product;
       $("range").textContent = `${displayTime(replayRangeInfo.first)} → ${displayTime(replayRangeInfo.last)} · contract selected automatically`;
       $("start").value = inputValue(replayRangeInfo.first);

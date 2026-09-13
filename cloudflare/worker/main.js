@@ -4,7 +4,7 @@ export { ReplaySession };
 
 // Existing production shard namespace is retained for compatibility during the
 // raw-data migration. It is data layout, not the platform/package identity.
-const PREFIX = "mes-replay/v1";
+
 const PAGES_ORIGIN = "https://futureview.pages.dev";
 const DISPLAY_TIME_ZONE = "America/New_York";
 const SESSION_END_HOUR_ET = 17;
@@ -17,10 +17,13 @@ const sessionFormatter = new Intl.DateTimeFormat("en-US", {
   hourCycle: "h23",
 });
 
-async function readManifest(env) {
-  const object = await env.MES_DATA.get(`${PREFIX}/manifest.json`);
+async function readManifest(env, product = "MES") {
+  const prefix = `${product.toLowerCase()}-replay/v1`;
+  const object = await env.MES_DATA.get(`${prefix}/manifest.json`);
   if (!object) return null;
-  return JSON.parse(await object.text());
+  const manifest = JSON.parse(await object.text());
+  manifest.product = manifest.product || product.toUpperCase();
+  return manifest;
 }
 
 function tradingSessionDate(value) {
@@ -77,7 +80,8 @@ export default {
     }
 
     if (url.pathname === "/api/health") {
-      const manifest = await readManifest(env);
+      const product = url.searchParams.get("product") || "MES";
+      const manifest = await readManifest(env, product);
       return json(request, {
         service: "futureview-replay",
         product: manifest?.product ?? null,
@@ -90,13 +94,15 @@ export default {
     }
 
     if (url.pathname === "/api/contracts") {
-      const manifest = await readManifest(env);
+      const product = url.searchParams.get("product") || "MES";
+      const manifest = await readManifest(env, product);
       if (!manifest) return json(request, { error: "Replay manifest not published" }, 503);
       return json(request, { product: manifest.product ?? null, contracts: Object.values(manifest.contracts ?? {}) });
     }
 
     if (url.pathname === "/api/replay/range" && request.method === "GET") {
-      const manifest = await readManifest(env);
+      const product = url.searchParams.get("product") || "MES";
+      const manifest = await readManifest(env, product);
       if (!manifest) return json(request, { error: "Replay manifest not published" }, 503);
       const contracts = Object.values(manifest.contracts ?? {});
       if (!contracts.length) return json(request, { error: "No replay contracts published" }, 503);
@@ -110,7 +116,8 @@ export default {
 
     const contractMatch = url.pathname.match(/^\/api\/contracts\/([^/]+)$/);
     if (contractMatch && request.method === "GET") {
-      const manifest = await readManifest(env);
+      const product = url.searchParams.get("product") || "MES";
+      const manifest = await readManifest(env, product);
       const contract = decodeURIComponent(contractMatch[1]);
       const info = manifest?.contracts?.[contract];
       return info ? json(request, info) : json(request, { error: `Unknown contract ${contract}` }, 404);
@@ -119,9 +126,10 @@ export default {
     if (url.pathname === "/api/replay/sessions" && request.method === "POST") {
       try {
         const body = await request.json();
-        const manifest = await readManifest(env);
+        const product = body.product || "MES";
+        const manifest = await readManifest(env, product);
         if (!manifest) return json(request, { error: "Replay manifest not published" }, 503);
-        const selection = resolveContract(manifest, body.product, body.start);
+        const selection = resolveContract(manifest, product, body.start);
         const id = crypto.randomUUID();
         const stub = env.REPLAY_SESSION.get(env.REPLAY_SESSION.idFromName(id));
         const response = await stub.fetch("https://session/init", {
@@ -129,6 +137,7 @@ export default {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             session_id: id,
+            product: product,
             contract: selection.contract,
             contract_selection: selection,
             start: body.start,

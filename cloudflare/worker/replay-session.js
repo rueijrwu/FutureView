@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 
-const PREFIX = "mes-replay/v1";
 const SPEEDS = new Set([1, 5, 10, 25, 50, 100]);
 
 export class ReplaySession extends DurableObject {
@@ -47,10 +46,16 @@ export class ReplaySession extends DurableObject {
     return new Response("Not found", { status: 404 });
   }
 
-  async _manifest() {
+  _getPrefix(product) {
+    const prod = product ?? this.session?.product ?? "MES";
+    return `${prod.toLowerCase()}-replay/v1`;
+  }
+
+  async _manifest(product) {
     if (this.manifest) return this.manifest;
-    const object = await this.env.MES_DATA.get(`${PREFIX}/manifest.json`);
-    if (!object) throw new Error("MES replay manifest is unavailable in R2");
+    const prefix = this._getPrefix(product);
+    const object = await this.env.MES_DATA.get(`${prefix}/manifest.json`);
+    if (!object) throw new Error(`${product ?? this.session?.product ?? "MES"} replay manifest is unavailable in R2`);
     this.manifest = JSON.parse(await object.text());
     return this.manifest;
   }
@@ -60,7 +65,8 @@ export class ReplaySession extends DurableObject {
     const item = contract.shards[index];
     if (!item) return null;
     if (this.shardKey === item.key && this.shard) return this.shard;
-    const object = await this.env.MES_DATA.get(`${PREFIX}/${item.key}`);
+    const prefix = this._getPrefix();
+    const object = await this.env.MES_DATA.get(`${prefix}/${item.key}`);
     if (!object) throw new Error(`Missing R2 shard ${item.key}`);
     const stream = item.key.endsWith(".gz") ? object.body.pipeThrough(new DecompressionStream("gzip")) : object.body;
     this.shard = JSON.parse(await new Response(stream).text());
@@ -69,24 +75,26 @@ export class ReplaySession extends DurableObject {
   }
 
   async init(body) {
-    const manifest = await this._manifest();
+    const product = body.product || "MES";
+    const manifest = await this._manifest(product);
     const contract = manifest.contracts[String(body.contract ?? "")];
     if (!contract) throw new Error(`Unknown contract ${body.contract}`);
     const start = Math.floor(new Date(body.start).getTime() / 1000);
     if (!Number.isFinite(start)) throw new Error("Invalid start timestamp");
     const shardIndex = contract.shards.findIndex((x) => x.last_time >= start);
     if (shardIndex < 0) throw new Error("No bar exists at or after requested start");
-    const shard = await this._loadForInit(contract, shardIndex);
+    const shard = await this._loadShardForContract(contract, shardIndex, product);
     let barIndex = shard.findIndex((x) => x.t >= start);
     let resolvedShard = shardIndex;
     if (barIndex < 0) {
       resolvedShard += 1;
-      const next = await this._loadShardForContract(contract, resolvedShard);
+      const next = await this._loadShardForContract(contract, resolvedShard, product);
       if (!next) throw new Error("No bar exists at or after requested start");
       barIndex = 0;
     }
     this.session = {
       id: body.session_id,
+      product: product,
       contract: contract.contract,
       contractSelection: body.contract_selection ?? null,
       shardIndex: resolvedShard,
@@ -106,14 +114,11 @@ export class ReplaySession extends DurableObject {
     return { ...this.snapshot(), warmup, future_data_included: false };
   }
 
-  async _loadForInit(contract, index) {
-    return this._loadShardForContract(contract, index);
-  }
-
-  async _loadShardForContract(contract, index) {
+  async _loadShardForContract(contract, index, product = null) {
     const item = contract.shards[index];
     if (!item) return null;
-    const object = await this.env.MES_DATA.get(`${PREFIX}/${item.key}`);
+    const prefix = this._getPrefix(product);
+    const object = await this.env.MES_DATA.get(`${prefix}/${item.key}`);
     if (!object) throw new Error(`Missing R2 shard ${item.key}`);
     const stream = item.key.endsWith(".gz") ? object.body.pipeThrough(new DecompressionStream("gzip")) : object.body;
     return JSON.parse(await new Response(stream).text());

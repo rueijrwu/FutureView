@@ -15,7 +15,7 @@
       <div class="status"><b id="status-contract">Auto contract</b><span id="status-time">No session</span><span id="status-state" class="pill">STOPPED</span></div>
     </header>
     <section class="setup">
-      <label>Product<input id="product" value="MES" readonly></label>
+      <label>Product<select id="product"><option value="MES">MES</option><option value="ES">ES</option></select></label>
       <label>Start (ET)<input id="start" type="datetime-local" step="300"></label>
       <label>Warmup<input id="warmup" type="number" min="0" max="5000" value="300"></label>
       <button id="start-btn" class="primary">Start Replay</button>

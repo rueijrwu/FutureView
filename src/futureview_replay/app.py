@@ -23,33 +23,61 @@ class PlayRequest(BaseModel):
     speed: int | str
 
 
-def create_app(manifest: str | Path) -> FastAPI:
-    store = BarStore(manifest)
-    engine = ReplayEngine(store)
+def create_app(runtime_dir: str | Path = "runtime") -> FastAPI:
+    runtime_dir = Path(runtime_dir)
+    stores: dict[str, BarStore] = {}
+    
+    if runtime_dir.is_file():
+        # Fallback to older behavior: it's a manifest file
+        store = BarStore(runtime_dir)
+        stores[store.product.upper()] = store
+    else:
+        for p in runtime_dir.rglob("manifest.json"):
+            store = BarStore(p)
+            stores[store.product.upper()] = store
+
+    engine = ReplayEngine(stores)
     static = Path(__file__).with_name("static")
     app = FastAPI(title="FutureView Replay", version="0.3.0")
     app.state.engine = engine
     app.mount("/static", StaticFiles(directory=static), name="static")
+
+    def get_store(product: str | None = None) -> BarStore:
+        if not stores:
+            raise KeyError("No data available")
+        if product is None:
+            return next(iter(stores.values()))
+        prod = product.upper()
+        if prod not in stores:
+            raise KeyError(f"Unknown product {product}")
+        return stores[prod]
 
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(static / "index.html")
 
     @app.get("/api/health")
-    async def health() -> dict[str, Any]:
-        return {"ok": True, "contracts": len(store.contracts()), "product": store.manifest.get("product")}
+    async def health(product: str = "MES") -> dict[str, Any]:
+        try:
+            store = get_store(product)
+            return {"ok": True, "contracts": len(store.contracts()), "product": store.manifest.get("product")}
+        except KeyError:
+            return {"ok": False, "contracts": 0, "product": product}
 
     @app.get("/api/contracts")
-    async def contracts() -> dict[str, Any]:
+    async def contracts(product: str = "MES") -> dict[str, Any]:
+        store = get_store(product)
         return {"product": store.manifest.get("product"), "contracts": store.contracts()}
 
     @app.get("/api/replay/range")
-    async def replay_range() -> dict[str, object]:
+    async def replay_range(product: str = "MES") -> dict[str, object]:
+        store = get_store(product)
         return store.replay_range()
 
     @app.get("/api/contracts/{contract}")
-    async def info(contract: str) -> dict[str, object]:
+    async def info(contract: str, product: str = "MES") -> dict[str, object]:
         try:
+            store = get_store(product)
             return store.info(contract)
         except (KeyError, ValueError) as exc:
             raise HTTPException(404, str(exc)) from exc

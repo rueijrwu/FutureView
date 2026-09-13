@@ -13,10 +13,11 @@ SPEEDS = {1, 5, 10, 25, 50, 100}
 
 
 class ReplayEngine:
-    def __init__(self, store: BarStore) -> None:
-        self.store = store
+    def __init__(self, stores: dict[str, BarStore]) -> None:
+        self.stores = stores
         self.state = ReplayState.STOPPED
         self.speed: int | str = 1
+        self.product: str | None = None
         self.contract: str | None = None
         self.selection: dict[str, object] | None = None
         self._bars: list[Bar] = []
@@ -62,12 +63,17 @@ class ReplayEngine:
         async with self._lock:
             self._stop_task()
             self._generation += 1
-            selection = self.store.resolve_contract(product, start)
+            prod = product.upper()
+            if prod not in self.stores:
+                raise KeyError(f"Unknown product {product}")
+            store = self.stores[prod]
+            selection = store.resolve_contract(product, start)
             contract = str(selection["contract"])
-            self._bars = self.store.bars(contract)
+            self._bars = store.bars(contract)
             idx = bisect.bisect_left([b.timestamp for b in self._bars], start)
             if idx >= len(self._bars):
                 raise ValueError(f"No {contract} bar at or after {start.isoformat()}")
+            self.product = prod
             self.contract = contract
             self.selection = selection
             self._cursor = self._origin = idx
