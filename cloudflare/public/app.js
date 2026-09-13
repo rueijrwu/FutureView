@@ -41,23 +41,32 @@
   function connect(path){wsPath=path;clearTimeout(wsReconnectTimer);if(ws)ws.close();const proto=location.protocol==="https:"?"wss":"ws";ws=new WebSocket(`${proto}://${location.host}${path}`);ws.onopen=()=>{wsOpen=true;wsReconnectDelay=1000;error();update({state:lastState})};ws.onmessage=e=>{const x=JSON.parse(e.data);if(x.type==="bar")render(x.bar);else if(x.type==="bars_batch")renderMany(x.bars);else if(x.type==="reset"){reset(x.warmup||[]);update(x.snapshot)}else if(x.type==="error")error(x.error);else update(x)};ws.onerror=()=>{};ws.onclose=()=>{wsOpen=false;update({state:lastState});if(!sessionId||lastState==="FINISHED")return;error("Replay socket disconnected - reconnecting…");wsReconnectTimer=setTimeout(()=>connect(wsPath),wsReconnectDelay);wsReconnectDelay=Math.min(wsReconnectDelay*2,8000)}}
   let replayRangeInfo = null;
   async function loadRange(){replayRangeInfo=await api("/api/replay/range");$("product").value=replayRangeInfo.product;$("start").value=inputValueFromSeconds(replayRangeInfo.first_time);$("range").textContent=`${displaySeconds(replayRangeInfo.first_time)} → ${displaySeconds(replayRangeInfo.last_time)} · contract selected automatically`}
-  function pickRandomTradingSeconds(firstSec, lastSec){
+  const DEFAULT_REPLAY_TIME = "08:30";
+  function pickRandomTradingDate(firstSec, lastSec){
     const minSec = Number(firstSec);
     const maxSec = Number(lastSec);
-    if (!Number.isFinite(minSec) || !Number.isFinite(maxSec) || maxSec <= minSec) return minSec;
-    for (let i = 0; i < 30; i++){
-      const rawSec = minSec + Math.floor(Math.random() * (maxSec - minSec));
-      const candSec = Math.floor(rawSec / 300) * 300;
-      const p = partsAt(new Date(candSec * 1000));
-      const dt = new Date(Date.UTC(p.year, p.month - 1, p.day));
-      const dayOfWeek = dt.getUTCDay();
-      if (dayOfWeek === 6) continue;
-      if (dayOfWeek === 0 && p.hour < 18) continue;
-      if (dayOfWeek === 5 && p.hour >= 17) continue;
-      if (dayOfWeek >= 1 && dayOfWeek <= 4 && p.hour === 17) continue;
-      return candSec;
+    if (!Number.isFinite(minSec) || !Number.isFinite(maxSec) || maxSec <= minSec) return inputValueFromSeconds(minSec);
+    const pFirst = partsAt(new Date(minSec * 1000));
+    const pLast = partsAt(new Date(maxSec * 1000));
+    const startDayMs = Date.UTC(pFirst.year, pFirst.month - 1, pFirst.day);
+    const endDayMs = Date.UTC(pLast.year, pLast.month - 1, pLast.day);
+    const totalDays = Math.max(0, Math.floor((endDayMs - startDayMs) / 86400000));
+    const pad = n => String(n).padStart(2, "0");
+    for (let i = 0; i < 50; i++){
+      const randOffset = Math.floor(Math.random() * (totalDays + 1));
+      const candDate = new Date(startDayMs + randOffset * 86400000);
+      const dayOfWeek = candDate.getUTCDay();
+      if (dayOfWeek === 0 || dayOfWeek === 6) continue;
+      const y = candDate.getUTCFullYear();
+      const m = pad(candDate.getUTCMonth() + 1);
+      const d = pad(candDate.getUTCDate());
+      const val = `${y}-${m}-${d}T${DEFAULT_REPLAY_TIME}`;
+      const utcMs = Date.parse(wallTimeToUtcIso(val));
+      if (utcMs >= minSec * 1000 && utcMs <= maxSec * 1000) {
+        return val;
+      }
     }
-    return minSec;
+    return `${pFirst.year}-${pad(pFirst.month)}-${pad(pFirst.day)}T${DEFAULT_REPLAY_TIME}`;
   }
   let isStarting = false;
   async function startReplay(){if(isStarting)return;isStarting=true;$("start-btn").disabled=true;$("random-btn").disabled=true;try{error();const raw=$("start").value;if(!raw)throw new Error("Choose a start time");const x=await api("/api/replay/sessions",{method:"POST",body:JSON.stringify({product:$("product").value,start:wallTimeToUtcIso(raw),warmup:Number($("warmup").value||300)})});sessionId=x.session_id;reset(x.warmup||[]);update(x);const selected=x.contract_selection;if(selected)$("range").textContent=`Selected ${selected.contract} from ${selected.source_session||"the first available session"} (${selected.reason})`;connect(x.websocket)}catch(e){error(e.message)}finally{isStarting=false;$("start-btn").disabled=false;$("random-btn").disabled=false;}}
@@ -65,8 +74,7 @@
   $("random-btn").onclick=async()=>{
     if(isStarting)return;
     if(!replayRangeInfo){try{await loadRange()}catch(e){error(e.message);return}}
-    const randSec = pickRandomTradingSeconds(replayRangeInfo.first_time, replayRangeInfo.last_time);
-    $("start").value = inputValueFromSeconds(randSec);
+    $("start").value = pickRandomTradingDate(replayRangeInfo.first_time, replayRangeInfo.last_time);
     await startReplay();
   };
   $("play").onclick=()=>command("play",{speed});$("pause").onclick=()=>command("pause");$("next").onclick=()=>command("step");$("restart").onclick=()=>command("restart");$("speeds").onclick=e=>{const b=e.target.closest("button[data-speed]");if(!b)return;document.querySelectorAll("#speeds button").forEach(x=>x.classList.remove("active"));b.classList.add("active");speed=b.dataset.speed==="max"?"max":Number(b.dataset.speed);if(lastState==="PLAYING")command("play",{speed})};loadRange().catch(e=>error(e.message));update({state:"STOPPED"});

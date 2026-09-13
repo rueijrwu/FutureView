@@ -221,23 +221,35 @@
     }
   }
 
-  function pickRandomTradingSeconds(firstSec, lastSec) {
+  const DEFAULT_REPLAY_TIME = "08:30";
+  function pickRandomTradingDate(firstSec, lastSec) {
     const minSec = Number(firstSec);
     const maxSec = Number(lastSec);
-    if (!Number.isFinite(minSec) || !Number.isFinite(maxSec) || maxSec <= minSec) return minSec;
-    for (let i = 0; i < 30; i++) {
-      const rawSec = minSec + Math.floor(Math.random() * (maxSec - minSec));
-      const candSec = Math.floor(rawSec / 300) * 300;
-      const p = partsAt(new Date(candSec * 1000));
-      const dt = new Date(Date.UTC(p.year, p.month - 1, p.day));
-      const dayOfWeek = dt.getUTCDay();
-      if (dayOfWeek === 6) continue;
-      if (dayOfWeek === 0 && p.hour < 18) continue;
-      if (dayOfWeek === 5 && p.hour >= 17) continue;
-      if (dayOfWeek >= 1 && dayOfWeek <= 4 && p.hour === 17) continue;
-      return candSec;
+    const pad = (n) => String(n).padStart(2, "0");
+    if (!Number.isFinite(minSec) || !Number.isFinite(maxSec) || maxSec <= minSec) {
+      const p = partsAt(new Date(minSec * 1000));
+      return `${p.year}-${pad(p.month)}-${pad(p.day)}T${DEFAULT_REPLAY_TIME}`;
     }
-    return minSec;
+    const pFirst = partsAt(new Date(minSec * 1000));
+    const pLast = partsAt(new Date(maxSec * 1000));
+    const startDayMs = Date.UTC(pFirst.year, pFirst.month - 1, pFirst.day);
+    const endDayMs = Date.UTC(pLast.year, pLast.month - 1, pLast.day);
+    const totalDays = Math.max(0, Math.floor((endDayMs - startDayMs) / 86400000));
+    for (let i = 0; i < 50; i++) {
+      const randOffset = Math.floor(Math.random() * (totalDays + 1));
+      const candDate = new Date(startDayMs + randOffset * 86400000);
+      const dayOfWeek = candDate.getUTCDay();
+      if (dayOfWeek === 0 || dayOfWeek === 6) continue;
+      const y = candDate.getUTCFullYear();
+      const m = pad(candDate.getUTCMonth() + 1);
+      const d = pad(candDate.getUTCDate());
+      const val = `${y}-${m}-${d}T${DEFAULT_REPLAY_TIME}`;
+      const utcMs = Date.parse(wallTimeToUtcIso(val));
+      if (utcMs >= minSec * 1000 && utcMs <= maxSec * 1000) {
+        return val;
+      }
+    }
+    return `${pFirst.year}-${pad(pFirst.month)}-${pad(pFirst.day)}T${DEFAULT_REPLAY_TIME}`;
   }
 
   let isStarting = false;
@@ -287,8 +299,7 @@
     }
     const firstSec = replayRangeInfo.first_time ?? Math.floor(new Date(replayRangeInfo.first).getTime() / 1000);
     const lastSec = replayRangeInfo.last_time ?? Math.floor(new Date(replayRangeInfo.last).getTime() / 1000);
-    const randSec = pickRandomTradingSeconds(firstSec, lastSec);
-    $("start").value = inputValue(new Date(randSec * 1000).toISOString());
+    $("start").value = pickRandomTradingDate(firstSec, lastSec);
     await startReplay();
   };
   $("next").onclick = () => post("/api/replay/step");
