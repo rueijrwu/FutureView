@@ -49,6 +49,35 @@ def _contract_expiry(contract: str, reference_year: int) -> tuple[int, int]:
     return year, month
 
 
+QUARTERLY_MONTHS = ["H", "M", "U", "Z"]
+
+
+def next_quarterly_contract(contract: str) -> str:
+    match = CONTRACT_RE.fullmatch(contract)
+    if not match:
+        raise ValueError(f"Unsupported outright futures symbol {contract}")
+    prefix, month, digits = match.group(1), match.group(2), match.group(3)
+    if month not in QUARTERLY_MONTHS:
+        idx = "FGHJKMNQUVXZ".index(month)
+        next_q = next((q for q in QUARTERLY_MONTHS if "FGHJKMNQUVXZ".index(q) > idx), None)
+        if next_q:
+            return f"{prefix}{next_q}{digits}"
+        next_digits = str((int(digits) + 1) % 10) if len(digits) == 1 else f"{(int(digits) + 1) % 100:02d}"
+        return f"{prefix}H{next_digits}"
+
+    idx = QUARTERLY_MONTHS.index(month)
+    if idx < 3:
+        next_month = QUARTERLY_MONTHS[idx + 1]
+        next_digits = digits
+    else:
+        next_month = "H"
+        if len(digits) == 1:
+            next_digits = str((int(digits) + 1) % 10)
+        else:
+            next_digits = f"{(int(digits) + 1) % 100:02d}"
+    return f"{prefix}{next_month}{next_digits}"
+
+
 def build_selection_calendar(
     session_volumes: Mapping[date, Mapping[str, float]],
 ) -> list[dict[str, object]]:
@@ -62,12 +91,17 @@ def build_selection_calendar(
     sessions = sorted(session_volumes)
     if not sessions:
         return []
-    symbols = sorted(
-        {symbol for volumes in session_volumes.values() for symbol in volumes},
-        key=lambda symbol: _contract_expiry(symbol, sessions[0].year),
-    )
-    first_symbols = set(session_volumes[sessions[0]])
-    active_index = next((index for index, symbol in enumerate(symbols) if symbol in first_symbols), 0)
+
+    first_vols = session_volumes[sessions[0]]
+    if first_vols:
+        active_contract = max(
+            first_vols.keys(),
+            key=lambda k: (first_vols[k], -abs(_contract_expiry(k, sessions[0].year)[0] - sessions[0].year)),
+        )
+    else:
+        all_symbols = {symbol for vols in session_volumes.values() for symbol in vols}
+        active_contract = min(all_symbols, key=lambda s: _contract_expiry(s, sessions[0].year))
+
     calendar: list[dict[str, object]] = []
 
     for index, current_session in enumerate(sessions):
@@ -75,21 +109,35 @@ def build_selection_calendar(
             reason = "nearest_expiry_fallback"
             source_session = None
             incumbent_contract = None
-            candidate_contract = symbols[active_index]
+            candidate_contract = active_contract
             incumbent_volume = None
             candidate_volume = None
         else:
             source = sessions[index - 1]
             prior = session_volumes[source]
-            active = symbols[active_index]
-            next_symbol = symbols[active_index + 1] if active_index + 1 < len(symbols) else None
-            incumbent_contract = active
-            candidate_contract = next_symbol
-            incumbent_volume = float(prior.get(active, 0.0))
-            candidate_volume = float(prior.get(next_symbol, 0.0)) if next_symbol else None
-            if next_symbol is not None and float(candidate_volume) > incumbent_volume:
-                active_index += 1
+            candidate_contract = next_quarterly_contract(active_contract)
+            incumbent_contract = active_contract
+            incumbent_volume = float(prior.get(active_contract, 0.0))
+            candidate_volume = float(prior.get(candidate_contract, 0.0))
+
+            if candidate_volume > incumbent_volume:
+                active_contract = candidate_contract
                 reason = "prior_session_volume_roll"
+            elif incumbent_volume == 0.0:
+                rolled = False
+                curr = candidate_contract
+                for _ in range(3):
+                    curr_vol = float(prior.get(curr, 0.0))
+                    if curr_vol > 0.0:
+                        candidate_contract = curr
+                        candidate_volume = curr_vol
+                        active_contract = curr
+                        reason = "prior_session_volume_roll"
+                        rolled = True
+                        break
+                    curr = next_quarterly_contract(curr)
+                if not rolled:
+                    reason = "prior_session_volume_hold"
             else:
                 reason = "prior_session_volume_hold"
             source_session = source.isoformat()
@@ -97,7 +145,7 @@ def build_selection_calendar(
         calendar.append(
             {
                 "session": current_session.isoformat(),
-                "contract": symbols[active_index],
+                "contract": active_contract,
                 "reason": reason,
                 "source_session": source_session,
                 "incumbent_contract": incumbent_contract,

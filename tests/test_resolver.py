@@ -30,3 +30,16 @@ def test_resolve_weekend_uses_next_available_session() -> None:
     ]
     selection = resolve_from_calendar(calendar, datetime(2024, 6, 15, 12, tzinfo=timezone.utc))
     assert selection["contract"] == "MESU24"
+
+
+def test_calendar_rolls_across_decade_boundary_with_single_digit_years() -> None:
+    volumes = {
+        date(2019, 12, 10): {"ESZ9": 1000, "ESH0": 100},
+        date(2019, 12, 11): {"ESZ9": 200, "ESH0": 1500},
+        date(2020, 3, 10): {"ESH0": 1000, "ESM0": 100},
+        date(2020, 3, 11): {"ESH0": 100, "ESM0": 2000},
+        date(2020, 3, 12): {"ESH0": 50, "ESM0": 3000},
+    }
+    calendar = build_selection_calendar(volumes)
+    contracts = [item["contract"] for item in calendar]
+    assert contracts == ["ESZ9", "ESZ9", "ESH0", "ESH0", "ESM0"]

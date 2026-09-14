@@ -253,8 +253,10 @@
       const p = partsAt(new Date(minSec * 1000));
       return `${p.year}-${pad(p.month)}-${pad(p.day)}T${DEFAULT_REPLAY_TIME}`;
     }
-    const pFirst = partsAt(new Date(minSec * 1000));
-    const pLast = partsAt(new Date(maxSec * 1000));
+    const safeMinSec = minSec + 86400;
+    const safeMaxSec = Math.max(safeMinSec, maxSec - 86400 * 2);
+    const pFirst = partsAt(new Date(safeMinSec * 1000));
+    const pLast = partsAt(new Date(safeMaxSec * 1000));
     const startDayMs = Date.UTC(pFirst.year, pFirst.month - 1, pFirst.day);
     const endDayMs = Date.UTC(pLast.year, pLast.month - 1, pLast.day);
     const totalDays = Math.max(0, Math.floor((endDayMs - startDayMs) / 86400000));
