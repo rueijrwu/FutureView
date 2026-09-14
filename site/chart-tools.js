@@ -147,7 +147,7 @@
         else if (tool === "clear") this._clearDrawings();
         else if (tool === "zoom-in") this._zoom(0.72);
         else if (tool === "zoom-out") this._zoom(1.38);
-        else if (tool === "fit") this.chart.timeScale().fitContent();
+        else if (tool === "fit") this.fit();
         else if (tool === "latest") this.chart.timeScale().scrollToRealTime();
         else if (tool === "log") this._toggleLog(button);
       });
@@ -766,9 +766,54 @@
       button.textContent = this.logScale ? "Log" : "Linear";
     }
 
+    fit() {
+      this.chart.timeScale().fitContent();
+      const ps = this.candles.priceScale();
+      ps.applyOptions({ autoScale: true });
+      if (this.volume) {
+        try { this.volume.priceScale().applyOptions({ autoScale: true }); } catch {}
+      }
+      try {
+        const model = ps.hv?.Qt?.();
+        const pane = model?.dd?.[0];
+        const ki = ps.Ki?.();
+        if (model && pane && ki && typeof model.au === "function") {
+          model.au(pane, ki);
+          if (this.volume) {
+            const volKi = this.volume.priceScale()?.Ki?.();
+            if (volKi) model.au(pane, volKi);
+          }
+          return;
+        }
+      } catch {}
+
+      const range = this.chart.timeScale().getVisibleLogicalRange();
+      const bars = this.bars;
+      if (bars && bars.length) {
+        const fromIdx = range ? Math.max(0, Math.floor(range.from)) : 0;
+        const toIdx = range ? Math.min(bars.length, Math.ceil(range.to) + 1) : bars.length;
+        const targetBars = (fromIdx < toIdx) ? bars.slice(fromIdx, toIdx) : bars;
+        let min = Infinity, max = -Infinity;
+        for (const b of targetBars) {
+          const low = b.low ?? b.l ?? b.close;
+          const high = b.high ?? b.h ?? b.close;
+          if (low < min) min = low;
+          if (high > max) max = high;
+        }
+        if (Number.isFinite(min) && Number.isFinite(max)) {
+          const span = max - min || 1;
+          ps.setVisibleRange({
+            from: min - span * 0.1,
+            to: max + span * 0.2,
+          });
+          ps.applyOptions({ autoScale: true });
+        }
+      }
+    }
+
     _zoom(factor) {
       const range = this.chart.timeScale().getVisibleLogicalRange();
-      if (!range) return this.chart.timeScale().fitContent();
+      if (!range) return this.fit();
       const center = (range.from + range.to) / 2;
       const half = Math.max(5, ((range.to - range.from) * factor) / 2);
       this.chart.timeScale().setVisibleLogicalRange({ from: center - half, to: center + half });

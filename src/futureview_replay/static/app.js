@@ -170,7 +170,7 @@
     candles.setData(bars.map(candle));
     volume.setData(bars.map(volumeBar));
     chartTools.reset(bars);
-    chart.timeScale().fitContent();
+    chartTools.fit();
   }
 
   async function api(path, opts = {}) {
