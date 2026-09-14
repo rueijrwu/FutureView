@@ -167,16 +167,11 @@
     }
   }
   function setWarmup(bars) {
-    candles.priceScale().applyOptions({ autoScale: true });
     candles.setData(bars.map(candle));
     volume.setData(bars.map(volumeBar));
     chartTools.reset(bars);
     chart.timeScale().fitContent();
-    candles.priceScale().applyOptions({ autoScale: false });
   }
-
-
-
 
   async function api(path, opts = {}) {
     const response = await fetch(path, { headers: { "Content-Type": "application/json" }, ...opts });
