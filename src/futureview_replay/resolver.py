@@ -78,6 +78,19 @@ def next_quarterly_contract(contract: str) -> str:
     return f"{prefix}{next_month}{next_digits}"
 
 
+def third_friday(year: int, month: int) -> date:
+    """Return the 3rd Friday of a given year and month (CME equity index futures expiration day)."""
+    first_day = date(year, month, 1)
+    first_friday = 1 + (4 - first_day.weekday()) % 7
+    return date(year, month, first_friday + 14)
+
+
+def contract_expiry_date(contract: str, reference_year: int) -> date:
+    """Return the exact 3rd Friday expiration date for a quarterly futures contract."""
+    year, month = _contract_expiry(contract, reference_year)
+    return third_friday(year, month)
+
+
 def build_selection_calendar(
     session_volumes: Mapping[date, Mapping[str, float]],
 ) -> list[dict[str, object]]:
@@ -120,7 +133,16 @@ def build_selection_calendar(
             incumbent_volume = float(prior.get(active_contract, 0.0))
             candidate_volume = float(prior.get(candidate_contract, 0.0))
 
-            if candidate_volume > incumbent_volume:
+            expiry = contract_expiry_date(active_contract, current_session.year)
+            roll_window_start = expiry - timedelta(days=14)
+
+            if current_session >= expiry:
+                active_contract = candidate_contract
+                reason = "contract_expired_roll"
+            elif current_session >= roll_window_start and candidate_volume > incumbent_volume:
+                active_contract = candidate_contract
+                reason = "prior_session_volume_roll"
+            elif incumbent_volume == 0.0 and candidate_volume > 0.0:
                 active_contract = candidate_contract
                 reason = "prior_session_volume_roll"
             elif incumbent_volume == 0.0:
