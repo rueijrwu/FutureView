@@ -74,6 +74,7 @@
       this.formatTime = formatTime;
       this.bars = [];
       this.logScale = false;
+      this.autoScale = false;
       // lightweight-charts defaults crosshair.mode to Magnet (CrosshairMode.Magnet = 1),
       // so magnet snapping is already on before we touch it - this just makes the
       // toolbar button reflect that instead of showing off while it's actually on.
@@ -147,7 +148,8 @@
         else if (tool === "clear") this._clearDrawings();
         else if (tool === "zoom-in") this._zoom(0.72);
         else if (tool === "zoom-out") this._zoom(1.38);
-        else if (tool === "fit") this.chart.timeScale().fitContent();
+        else if (tool === "fit") this._fit();
+        else if (tool === "auto") this._toggleAuto(button);
         else if (tool === "latest") this.chart.timeScale().scrollToRealTime();
         else if (tool === "log") this._toggleLog(button);
       });
@@ -161,6 +163,12 @@
         magnetButton.classList.toggle("active", this.magnet);
         magnetButton.setAttribute("aria-pressed", String(this.magnet));
       }
+      const autoButton = this.toolbar.querySelector('[data-tool="auto"]');
+      if (autoButton) {
+        autoButton.classList.toggle("active", this.autoScale);
+        autoButton.setAttribute("aria-pressed", String(this.autoScale));
+      }
+
 
       this.chart.subscribeClick((param) => this._handleDrawClick(param));
       this.chart.subscribeCrosshairMove((param) => {
@@ -764,6 +772,21 @@
         mode: this.logScale ? TV.PriceScaleMode.Logarithmic : TV.PriceScaleMode.Normal,
       });
       button.textContent = this.logScale ? "Log" : "Linear";
+    }
+
+    _fit() {
+      this.candles.priceScale().applyOptions({ autoScale: true });
+      this.chart.timeScale().fitContent();
+      if (!this.autoScale) {
+        this.candles.priceScale().applyOptions({ autoScale: false });
+      }
+    }
+
+    _toggleAuto(button) {
+      this.autoScale = !this.autoScale;
+      button.classList.toggle("active", this.autoScale);
+      button.setAttribute("aria-pressed", String(this.autoScale));
+      this.candles.priceScale().applyOptions({ autoScale: this.autoScale });
     }
 
     _zoom(factor) {
