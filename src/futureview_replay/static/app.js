@@ -172,10 +172,9 @@
     volume.setData(bars.map(volumeBar));
     chartTools.reset(bars);
     chart.timeScale().fitContent();
-    if (!chartTools.autoScale) {
-      candles.priceScale().applyOptions({ autoScale: false });
-    }
+    candles.priceScale().applyOptions({ autoScale: false });
   }
+
 
 
 
