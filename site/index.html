@@ -13,10 +13,6 @@
 </head>
 <body>
   <main>
-    <header>
-      <div><p class="eyebrow">HISTORICAL MARKET SIMULATOR</p><p>Cloud replay · 5-minute bars · causal actual-contract selection · all displayed times are ET</p></div>
-      <button id="logout" type="button">Log out</button>
-    </header>
     <section class="setup">
       <label>Product<select id="product"><option value="MES">MES</option><option value="ES">ES</option></select></label>
       <label>Start (ET)<input id="start" type="datetime-local" step="300"></label>
@@ -28,6 +24,7 @@
         <b id="contract-status">Auto contract</b>
         <span id="time-status">No session</span>
         <span id="state-status" class="pill">STOPPED</span>
+        <button id="logout" type="button">Log out</button>
       </div>
     </section>
     <section class="chart-shell">
