@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from futureview_replay.models import Bar
-from futureview_replay.resolver import build_selection_calendar, resolve_from_calendar, session_date
+from futureview_replay.resolver import resolve_contract_at_time, session_date
 
 
 class BarStore:
@@ -18,7 +18,7 @@ class BarStore:
         self._paths: dict[str, list[Path]] = {}
         self._order: list[str] = []
         self._cache: dict[str, list[Bar]] = {}
-        self._selection_calendar: list[dict[str, object]] | None = None
+        self._session_volumes: dict[date, dict[str, float]] | None = None
         for entry in self.manifest["files"]:
             path = self.root / str(entry["five_minute"])
             for symbol in entry["symbols"]:
@@ -66,6 +66,20 @@ class BarStore:
         self._cache[contract] = result
         return result
 
+    def _volumes(self) -> dict[date, dict[str, float]]:
+        if self._session_volumes is not None:
+            return self._session_volumes
+        volumes: dict[date, dict[str, float]] = {}
+        for path in dict.fromkeys(path for paths in self._paths.values() for path in paths):
+            frame = pd.read_parquet(path, columns=["timestamp", "symbol", "volume"])
+            frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+            for row in frame.itertuples(index=False):
+                current = volumes.setdefault(session_date(row.timestamp.to_pydatetime()), {})
+                symbol = str(row.symbol)
+                current[symbol] = current.get(symbol, 0.0) + float(row.volume)
+        self._session_volumes = volumes
+        return volumes
+
     def replay_range(self) -> dict[str, object]:
         infos = [self.info(contract) for contract in self.contracts()]
         first_iso = min(str(info["first"]) for info in infos)
@@ -78,22 +92,13 @@ class BarStore:
             "last": last_iso,
             "first_time": int(first_dt.timestamp()),
             "last_time": int(last_dt.timestamp()),
+            "sessions": [current.isoformat() for current in sorted(self._volumes())],
         }
 
     def resolve_contract(self, product: str, start: datetime) -> dict[str, object]:
         if product.upper() != self.product.upper():
             raise ValueError(f"Unknown product {product}")
-        if self._selection_calendar is None:
-            volumes: dict[date, dict[str, float]] = {}
-            for path in dict.fromkeys(path for paths in self._paths.values() for path in paths):
-                frame = pd.read_parquet(path, columns=["timestamp", "symbol", "volume"])
-                frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
-                for row in frame.itertuples(index=False):
-                    current = volumes.setdefault(session_date(row.timestamp.to_pydatetime()), {})
-                    symbol = str(row.symbol)
-                    current[symbol] = current.get(symbol, 0.0) + float(row.volume)
-            self._selection_calendar = build_selection_calendar(volumes)
-        return resolve_from_calendar(self._selection_calendar, start)
+        return resolve_contract_at_time(self._volumes(), start, self.contracts())
 
     def info(self, contract: str) -> dict[str, object]:
         bars = self.bars(contract)
