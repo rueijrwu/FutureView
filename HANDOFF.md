@@ -1,65 +1,346 @@
 # FutureView Replay Handoff
 
-Last updated: 2026-09-11
+Last updated: 2026-09-15
 Primary branch: `master`
-Current head before this handoff update: `e0ac9300e4ad7c853876afa206eb0408e70283a4`
+Current application head before this handoff update: `2b7a423c87785aca19eeb3a460991abbda13eff2`
 
-FutureView is now a generic historical market replay/backtest platform. `MES` is the first configured product, not the engine identity.
+## 1. Current goal
 
-## 1. Current repository structure
+FutureView is a historical futures market replay/trading simulator. The current production focus is trustworthy causal replay plus manual simulated trading. `MES` and `ES` are supported by the trading engine; MES remains the primary replay product used during development.
+
+The browser must never receive future bars. The backend/Durable Object is authoritative for replay and trading state.
+
+## 2. Production architecture
+
+Public frontend:
 
 ```text
-src/futureview_replay/
-tests/
-cloudflare/
-site/
-data/raw_sources.json
-.github/workflows/
-pyproject.toml
-README.md
+https://futureview.pages.dev/
+```
+
+Backend Worker:
+
+```text
+https://futureview.rueijrwu.workers.dev/
+```
+
+Architecture:
+
+```text
+Cloudflare Pages (`site/`)
+        |
+        | HTTPS + WebSocket
+        v
+Cloudflare Worker `futureview`
+        |
+        +-- Durable Object ReplaySession
+        +-- R2 replay/raw data
+        +-- D1 auth/session/trade persistence
+```
+
+The workers.dev hostname is backend infrastructure, not the site name. Do not rename the public site to a rueijrwu hostname.
+
+## 3. Important files
+
+```text
+site/index.html                 current replay/trading page
+site/style.css                  page/chart/trading layout
+site/app.js                     replay + trading client behavior
+site/chart-tools.js             chart indicators/drawing/view tools
+site/chart-tools-fixes.js       drawing interaction patches
+site/login.html                 login/register page
+site/login.js                   auth client
+cloudflare/worker/replay-session.js
+cloudflare/worker/index.js
+cloudflare/migrations/
+.github/workflows/replay-pages-deploy.yml
+.github/workflows/replay-cloudflare-deploy.yml
+.github/workflows/replay-data-publish.yml
 HANDOFF.md
 ```
 
-Python package:
+## 4. Replay invariants
+
+Keep these unless explicitly changed:
+
+1. Browser never receives bars after the replay cursor.
+2. Durable Object owns authoritative replay state.
+3. Actual futures contract identity/prices are execution truth; no synthetic/back-adjusted execution prices.
+4. Main replay clock is currently 5-minute bars.
+5. User-facing time is `America/New_York`; storage/protocol timestamps are UTC.
+6. Replay input is product + date/time; user does not preselect the actual contract.
+7. Contract selection remains causal from prior completed CME-session information.
+8. High speed may batch network/rendering work but must not skip logical bars.
+9. Play/Pause/Next command semantics must remain deterministic.
+10. A trade requested at the current cursor fills only at the next released bar open.
+
+Current speed choices in the UI are exactly:
 
 ```text
-futureview_replay
+1  5  10  50  100  Max
 ```
 
-CLI:
+Default replay time is `08:30` ET. The random-date button is labeled `Random`.
+
+## 5. Chart viewport policy — important
+
+This was repeatedly regressed and is now an explicit product rule.
+
+Only these operations may automatically fit/scale the chart:
 
 ```text
-futureview-replay
+Start Replay
+Restart
+Fit
 ```
 
-The old `mes_replay` package name, `mes-replay/` wrapper directory, old `futureview` research package, Strategy1 workflows/docs, Docker path, and Git-LFS raw-data layout are obsolete.
-
-## 2. Product/data model
-
-Replay infrastructure is product-agnostic.
-
-Current first product:
+Normal actions must NOT move or auto-scale the user's viewport:
 
 ```text
-MES
+Play
+Pause
+Next
+speed changes
+Buy
+Sell
+Trades toggle
+Console toggle
+Clear trading
+incoming replay bars
+trade marker updates
+horizontal panning
 ```
 
-Current source configuration:
+`site/app.js` uses `timeScale.shiftVisibleRangeOnNewBar: false` and preserves the logical viewport around normal data/marker/layout updates.
+
+`site/chart-tools.js::fit()` performs the requested fit/autoscale and then freezes the price scale again. This is intentional: leaving `autoScale: true` caused horizontal panning to continuously rescale the Y axis.
+
+Explicit chart controls such as Fit/Latest/zoom remain user-driven operations.
+
+## 6. Chart/tooling state
+
+The page uses TradingView Lightweight Charts for visualization only. It is not the simulation engine.
+
+Current chart functionality includes:
 
 ```text
-provider: Databento
-dataset: GLBX.MDP3
-schema: ohlcv-1m
-product: MES
-primary replay resolution: 5m
-fill-resolution data retained: 1m
+candles
+volume
+OHLCV legend
+SMA 5/10/20/60
+VWAP
+magnet crosshair
+trend line
+ray
+horizontal/vertical line
+rectangle
+Fibonacci retracement
+text annotation
+undo / clear drawings
+zoom in/out
+Fit
+Latest
+linear/log scale
 ```
 
-Raw source of truth is Cloudflare R2 bucket:
+Drawing support uses `lightweight-charts-drawing` plus local interaction glue/fixes.
+
+The chart toolbar and OHLC legend remain above the plot. The right trade ledger must occupy only the plot row and must never cover Fit/Zoom/Latest or other chart tools.
+
+## 7. Bottom replay/trading controls
+
+The bottom control bar is one horizontal non-overlapping row.
+
+Left/replay group:
+
+```text
+Restart · Next · Play · Pause · Speed · 1 · 5 · 10 · 50 · 100 · Max
+```
+
+Right/trading group is pinned to the far right using the established `margin-left: auto` layout and left divider:
+
+```text
+Trade · Qty · Buy · Sell · Trades
+```
+
+`Trades` belongs immediately to the right of `Sell` in the trading group. Do not move it back into replay controls.
+
+## 8. Trading engine
+
+Manual trading V1 is implemented.
+
+Current execution model:
+
+```text
+market orders only
+Buy/Sell quantity 1..100
+request recorded at current replay cursor
+fill occurs at NEXT released 5m bar OPEN
+multiple pending orders are supported
+scaling in/out is supported
+position reversal is supported
+```
+
+Contract point values currently used:
+
+```text
+MES = $5 / point / contract
+ES  = $50 / point / contract
+```
+
+Trading accounting tracks:
+
+```text
+position quantity
+average price
+realized P&L
+unrealized P&L
+total P&L
+commission (currently zero)
+slippage (currently zero)
+pending orders
+fills
+```
+
+The Durable Object is authoritative. Do not move authoritative P&L/accounting into browser-only state.
+
+D1 persistence includes simulated account/fill records. Relevant schema additions include:
+
+```text
+simulation_accounts
+trade_fills
+```
+
+## 9. Restart vs Clear
+
+These are deliberately different.
+
+`Restart`:
+
+```text
+restart replay cursor/time
+reset replay state
+clear trading state
+fit chart
+```
+
+`Clear`:
+
+```text
+clear trading records only
+clear pending orders
+clear fills
+reset position / average price / P&L
+clear persisted current-session trading records
+DO NOT change replay cursor/time/state
+DO NOT fit/move chart
+```
+
+Backend command:
+
+```text
+clear_trading
+```
+
+Do not implement Clear by calling Restart.
+
+## 10. Trade ledger layout
+
+The right trade ledger is collapsible with the `Trades` button.
+
+Its internal structure is:
+
+```text
+fixed-height general trading summary at top
+flexible trade table in middle
+fixed-height footer toolbar at bottom
+```
+
+General summary is always visible when the ledger is open and contains:
+
+```text
+Position
+Avg
+Unrealized
+Realized
+Total P&L
+```
+
+The ledger footer toolbar is fixed at 44px and contains:
+
+```text
+Clear
+Console
+```
+
+The summary is fixed-height (currently 112px). It must not expand with the ledger.
+
+## 11. Console behavior
+
+`Console` does NOT control Buy/Sell/Qty. Buy/Sell/Qty remain always visible in the far-right main trading toolbar.
+
+Console toggles a separate trading activity/detail panel at the very bottom of the page, below the replay/trading control bar. It is hidden by default.
+
+The Console is now an activity log, not merely a selected-row detail placeholder.
+
+It records:
+
+```text
+ORDER — when Buy/Sell is accepted/queued
+FILL  — when the order actually executes
+```
+
+Example semantics:
+
+```text
+ORDER SELL 1 MES queued for next bar open
+FILL  SELL 1 MES @ <price> realized <PnL> -> resulting position
+```
+
+The temporary page status message:
+
+```text
+Order queued: SELL 1 · fills at next bar open
+```
+
+is allowed while the order is pending, but MUST clear once a new fill is observed. The permanent ORDER/FILL history remains in Console.
+
+`Clear` also clears Console history.
+
+## 12. Trade markers and ledger interaction
+
+Completed fills are shown as Buy/Sell arrow markers on the candle series using Lightweight Charts series markers.
+
+Normal fill/marker updates must preserve the current viewport.
+
+Clicking a trade ledger row is an intentional navigation action and currently jumps the chart to a range around that fill. This is separate from normal Buy/Sell behavior; Buy/Sell themselves must never refit or jump the chart.
+
+## 13. Authentication
+
+A login/register system is implemented for the Pages site.
+
+Current product intent:
+
+```text
+registration is currently open
+initially only a very small number of accounts are expected
+registration can be closed later
+login uses username/account + password
+```
+
+Auth is backed by the Worker/D1. The frontend stores the auth token and validates `/api/auth/me` before loading the replay UI.
+
+Do not reintroduce the earlier broken account state/password behavior without checking current auth code/migrations.
+
+## 14. Data/storage model
+
+Raw source of truth remains Cloudflare R2 bucket:
 
 ```text
 futureview-data
 ```
+
+Current raw data is Databento GLBX.MDP3 `ohlcv-1m`, with 5m replay bars prepared independently per actual contract. Never aggregate across futures contracts.
 
 Generic raw layout:
 
@@ -67,477 +348,157 @@ Generic raw layout:
 raw/databento/<DATASET>/<PRODUCT>/<SCHEMA>/
 ```
 
-Current MES raw prefix:
+Current MES prefix:
 
 ```text
 raw/databento/GLBX.MDP3/MES/ohlcv-1m/
 ```
 
-Verified migration snapshot:
-
-```text
-files: 89
-total bytes: 52,183,820
-R2 manifest SHA-256:
-a90b528a1f4d9da4b886bb46581d8b570f65e279108a97cf668708b873e1f47b
-```
-
 Do not re-add raw DBN files to Git/LFS.
 
-## 3. Local fetch / prepare
+Production replay storage still has legacy compatibility naming in places (`mes-replay/v1`). Migrate deliberately later rather than casually renaming it.
 
-Install:
+## 15. Deployment workflows
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e '.[test]'
-```
-
-`fetch-raw` no longer shells out to `npx wrangler`. It now downloads R2 objects directly from Python using the Cloudflare REST API.
-
-Required environment:
-
-```bash
-export CLOUDFLARE_API_TOKEN=...
-export CLOUDFLARE_ACCOUNT_ID=...
-```
-
-`R2_ACCOUNT_ID` is also accepted as the account-id fallback.
-
-Example:
-
-```bash
-futureview-replay fetch-raw \
-  --product MES \
-  --from 2019-05 \
-  --to 2019-06
-```
-
-Local raw cache:
+Important workflows:
 
 ```text
-.local-data/raw/MES/
+replay-python.yml
+replay-cloudflare-check.yml
+replay-cloudflare-deploy.yml
+replay-data-publish.yml
+replay-pages-deploy.yml
 ```
 
-Prepare:
+Worker deployment and replay-data publishing are intentionally separate. Do not make normal Worker/UI edits rebuild and upload the entire replay dataset.
 
-```bash
-futureview-replay prepare \
-  --product MES \
-  --raw .local-data/raw/MES \
-  --runtime runtime/MES
-```
+Pages production branch is `master`; `site/` is deployed to the `futureview` Pages project.
 
-Serve locally:
+## 16. CRITICAL editing warning: `site/app.js`
 
-```bash
-futureview-replay serve \
-  --manifest runtime/MES/manifest.json \
-  --host 127.0.0.1 \
-  --port 8787
-```
+Two recent GitHub connector edits accidentally truncated `site/app.js`, making the whole site unresponsive. This happened during seemingly small full-file replacements.
 
-Local cache/runtime directories must remain uncommitted.
-
-## 4. Data pipeline
-
-Current pipeline:
+Recovery commits included:
 
 ```text
-R2 raw Databento DBN.zst
-    -> local/CI fetch-raw cache
-    -> actual-contract 1m Parquet
-    -> independently aggregated actual-contract 5m Parquet
-    -> runtime manifest
-    -> compact gzip JSON replay shards
-    -> R2 replay storage
+c8a7defb  restore full app and trading console events
+2b7a423c  restore complete app after another truncated update
 ```
 
-Never aggregate bars across futures contracts.
+Before ANY future write to `site/app.js`:
 
-The 5m aggregation is:
+1. Fetch the complete current file/blob.
+2. Verify the source contains the end-of-file initialization and closing `})();`.
+3. Apply the smallest possible change locally/in-memory.
+4. Write the COMPLETE file, never a partial fetch range.
+5. Immediately fetch the resulting file tail and verify it still ends with the initialization block and `})();`.
+6. Check the Pages workflow/deployment.
+7. Prefer a patch/PR/local git workflow over repeated connector full-file replacement if available.
+
+A successful GitHub commit or Pages workflow does NOT prove JavaScript syntax/runtime correctness; Pages will happily deploy a truncated JS file.
+
+This warning is high priority for the next agent.
+
+## 17. Recent commits of interest
+
+Trading/UI work during the current session includes:
 
 ```text
-open   = first
-high   = max
-low    = min
-close  = last
-volume = sum
+641fda84  trading persistence schema
+1c8f50cb  causal trading engine
+57691fad  trading controls/sidebar structure
+6637a169  trading sidebar styling
+61c9e6e3  frontend trading behavior
+7b9fa0f3  dedicated clear_trading backend command
+2276db47  restore Buy/Sell controls; Console details-only phase
+c0dad287  trading control styling/layout
+16fd05a6  fixed-height ledger footer
+bef6adec  ledger grid sizing
+c4240e34  move Console below controls
+67b344cc  fixed summary/footer sizing
+28c53aae  viewport policy baseline
+c8a7defb  restore full app + ORDER/FILL console logging
+97906b37  freeze price autoscale after Fit
+5749e860  intended queued-status clearing change (subsequently found to truncate app.js)
+2b7a423c  restore complete app after truncated update
 ```
 
-A small candle with nonzero volume is valid when all trades in that 5m interval occur at the same or nearby tick prices. This was specifically observed/questioned for early low-liquidity periods of contracts such as `MESH1`; do not assume it is an aggregation bug without checking actual OHLC.
+There were several intermediate viewport/control experiments and reverts. Do not infer desired behavior from one intermediate commit; use the explicit viewport policy in this handoff.
 
-## 5. Replay semantics / invariants
+## 18. Known verification needed immediately after handoff
 
-Keep these unless explicitly changed:
-
-1. Browser never receives bars after the replay cursor.
-2. Backend/Durable Object owns authoritative replay state.
-3. Actual futures contract identity is preserved.
-4. No synthetic/back-adjusted price may become execution truth.
-5. 5m is the current main replay/strategy clock.
-6. 1m data is retained for later realistic fills.
-7. High replay speed may batch rendering but must never skip logical bars.
-8. `Next`, `Play`, `Pause`, `Restart` must remain deterministic.
-9. User-facing times are `America/New_York` (ET).
-10. Storage/protocol timestamps are UTC.
-11. A signal using a completed 5m bar must not be filled using unavailable information from that same bar.
-12. Replay start accepts product + time; users do not preselect an actual contract.
-13. Contract selection uses only the preceding completed CME session's volume.
-14. The resolver may hold the active contract or roll once to the next listed quarterly contract; it never rolls backward or skips a contract.
-
-Current speeds:
+Because `site/app.js` was just recovered from truncation, the next agent should first smoke-test production before adding features:
 
 ```text
-1x 5x 10x 25x 50x 100x Max
+1. Open the Pages site and confirm it responds.
+2. Login/register as appropriate.
+3. Start a replay at 08:30 ET.
+4. Verify Restart auto-fits.
+5. Pan/zoom manually.
+6. Verify Play/Pause/Next do not move or auto-scale the viewport.
+7. Verify horizontal pan does not auto-rescale Y.
+8. Buy 1; confirm queued status and Console ORDER.
+9. Release next bar; confirm fill, ledger row/marker, Console FILL, and queued status disappears.
+10. Verify Buy/Sell/fill do not move viewport.
+11. Open Trades; verify ledger does not cover chart toolbar.
+12. Verify summary and footer heights remain fixed.
+13. Toggle Console; verify it appears below the main control bar.
+14. Clear trading; verify replay time is unchanged and trading/account/Console reset.
+15. Restart; verify replay resets and chart fits.
 ```
 
-## 6. Production architecture
+## 19. Recommended next work
 
-The public frontend is Cloudflare Pages:
+Do not add more execution complexity until the above smoke test is stable.
+
+After stability:
 
 ```text
-https://futureview.pages.dev/
+1. Add automated frontend smoke/regression tests for app.js load and core controls.
+2. Add a CI syntax check for site JavaScript so truncated files cannot deploy.
+3. Add browser-level tests for the viewport invariants.
+4. Improve order lifecycle/status representation instead of using the generic error/status field.
+5. Add configurable commission/slippage.
+6. Later use retained 1m data for a more realistic fill model.
+7. Later add Limit/Stop/Flatten and conservative intrabar ambiguity rules.
+8. Persist/report complete session trade/equity history for backtest analysis.
 ```
 
-The backend is the Cloudflare Worker:
+The highest-value engineering improvement is currently regression protection, not more features.
+
+## 20. Short handoff summary
 
 ```text
-https://futureview.rueijrwu.workers.dev/
-```
+MASTER = FutureView historical futures replay + manual trading simulator.
 
-The Worker URL is backend infrastructure, not the intended user-facing site.
-
-Architecture:
-
-```text
-Cloudflare Pages (`site/`)
-        |
-        | HTTPS / WebSocket
-        v
-Cloudflare Worker `futureview`
-        |
-        +-- Durable Object ReplaySession
-        +-- R2
-        +-- D1
-```
-
-Responsibilities:
-
-```text
-Pages/site/
-  current Replay UI only
-  no requirement to preserve the old static dashboard
-
-Worker
-  /api/health
-  /api/contracts
-  /api/replay/range
-  replay-session creation
-  causal actual-contract resolution
-  WebSocket routing
-  CORS for https://futureview.pages.dev
-
-R2
-  raw source archive
-  replay shards
-
-Durable Object
-  active replay session
-  cursor
-  speed
-  play/pause state
-  WebSocket fanout
-
-D1
-  replay session/history persistence
-```
-
-Do not attempt to migrate to `futureview.rueijrwu.dev`; `rueijrwu.dev` is not currently a Cloudflare-managed/active zone. Custom-domain experiments were reverted.
-
-## 7. Deployment workflows
-
-Production Worker deployment is intentionally separated from replay-data publishing.
-
-Current workflows:
-
-```text
-.github/workflows/replay-python.yml
-.github/workflows/replay-cloudflare-check.yml
-.github/workflows/replay-cloudflare-deploy.yml
-.github/workflows/replay-data-publish.yml
-.github/workflows/replay-pages-deploy.yml
-```
-
-### Worker deploy
-
-`.github/workflows/replay-cloudflare-deploy.yml`
-
-Normal Worker deploy no longer does:
-
-```text
-fetch all MES raw
-prepare full dataset
-cloud-export full dataset
-upload all replay shards
-```
-
-It now only handles Worker/D1 deployment. This reduced a normal deploy from >10 minutes to about 35 seconds in the first verified run.
-
-Verified successful Worker deploy after decoupling:
-
-```text
-run: 34647997566
-commit: 581b936755c4b5dba23724b868e6d23c309b92ae
-status: SUCCESS
-```
-
-Latest Worker deploy adding Pages CORS:
-
-```text
-run: 34650853125
-commit: 746132ed9caf28c5abf13a764ee2c95943812406
-status: SUCCESS
-```
-
-### Replay data publish
-
-`.github/workflows/replay-data-publish.yml`
-
-Full replay-data rebuild/publish is separate from application deployment. Cloud manifest version 3 includes a causal contract-selection calendar generated from the actual 5m bars.
-
-`cloudflare/publish-r2.sh` now uses bounded parallel uploads (default 12 concurrent) and uploads `manifest.json` last so readers do not observe a manifest before all shards are present.
-
-A future improvement is deterministic gzip + shard SHA-256 manifest + true incremental publish. Do not implement hash-based skipping until export determinism/content identity is explicit.
-
-### Pages deploy
-
-`.github/workflows/replay-pages-deploy.yml`
-
-This explicitly deploys `site/` to Cloudflare Pages project:
-
-```text
-project: futureview
-production branch: master
-public URL: https://futureview.pages.dev/
-```
-
-First explicit Pages deploy:
-
-```text
-run: 34651057136
-commit: 8c3b29b8b45c79d2fa52e5b486a1131502957123
-status: SUCCESS
-```
-
-The workflow successfully completed both:
-
-```text
-Ensure FutureView Pages project exists   PASS
-Deploy replay frontend to Pages          PASS
-```
-
-The public URL still needs a browser-level smoke verification after this handoff update; do not infer UI/WebSocket correctness solely from workflow success.
-
-## 8. Frontend state
-
-The active Pages frontend is in:
-
-```text
-site/index.html
-site/style.css
-site/app.js
-site/chart-tools.js
-```
-
-It is the new Replay UI, not the old dashboard.
-
-Current browser feature set:
-
-```text
-product (currently MES)
-ET replay start time
-warmup bar count
-automatic actual-contract selection
-candlestick chart
-volume histogram
-OHLCV crosshair legend
-SMA 20 / SMA 50
-CME-session VWAP
-magnet crosshair
-horizontal price lines with undo/clear
-zoom in/out, fit, latest
-linear/log price scale
-Restart
-Next
-Play
-Pause
-1x / 5x / 10x / 25x / 50x / 100x / Max
-current contract
-current cursor
-current replay state
-```
-
-The browser sends `product`, `start`, and `warmup`; it does not send a contract. The Worker resolves the contract from the version-3 selection calendar and returns the contract plus the causal selection reason.
-
-`site/app.js` currently calls the backend Worker origin directly:
-
-```text
-https://futureview.rueijrwu.workers.dev
-```
-
-Worker responses include CORS for:
-
-```text
-https://futureview.pages.dev
-```
-
-WebSocket sessions also connect to the Worker origin.
-
-TradingView Lightweight Charts is visualization only. It is not the simulation engine.
-
-Rich chart tools (SMA5/10/20/60, VWAP, and drawing tools — trend line, ray, horizontal/vertical line, rectangle, fibonacci retracement, text annotation) are implemented in `chart-tools.js`. Indicator lines use Lightweight Charts' own LineSeries API directly; drawing tools use the `lightweight-charts-drawing` plugin (github.com/deepentropy/lightweight-charts-drawing) for rendering/hit-testing/drag-editing, with a small custom click-to-place glue layer in `chart-tools.js` since the plugin's `setActiveTool()` only gates its own click-to-select behavior and does not itself wire up interactive placement. Both indicator lines and new drawings read their default color from CSS custom properties on `:root` in `style.css` and can be recolored per-instance from the toolbar's color pickers. Indicators consume only the warmup and bars already released to the browser, preserving the no-lookahead boundary.
-
-The project briefly (within one session) evaluated switching away from Lightweight Charts to KLineCharts, then TradeX-chart, then fcsapi/chart-js, before returning to Lightweight Charts + lightweight-charts-drawing as the final choice. TradeX-chart's drawing tools are unimplemented in the shipped library despite its docs describing an API; fcsapi/chart-js ships obfuscated source and requires a third-party API key/service. Do not consider either of those a live option without addressing those blockers.
-
-## 9. Replay cloud namespace
-
-The Python/platform identity is generic now, but production replay storage still uses the legacy compatibility prefix:
-
-```text
-mes-replay/v1
-```
-
-This is intentionally temporary.
-
-Recommended later migration:
-
-```text
-replay/v1/<PRODUCT>/...
-```
-
-Do the namespace migration deliberately with compatibility handling.
-
-## 10. Not implemented yet
-
-Do not assume any of the following exist:
-
-```text
-multi-product catalog UI
-continuous futures visualization
-roll execution
-manual Buy/Sell/Flatten
-Market/Limit/Stop execution engine
-Position / Account / PnL model
-commission model
-slippage model
-1m fill simulator
-intrabar ambiguity policy
-saved replay-session UI
-automated Strategy adapter
-batch backtest metrics
-```
-
-## 11. Recommended next actions
-
-First verify the automatic-contract deployment:
-
-```text
-1. Open https://futureview.pages.dev/ and confirm the new Replay UI is served.
-2. Verify the UI asks for product + ET start time, with no contract selector.
-3. Start replays before and after a historical rollover and verify the returned actual contract and `contract_selection` reason.
-4. Test WebSocket Next/Play/Pause.
-5. Re-check ET start time, 18:00 ET session boundary, and chart time.
-6. Verify direct Worker /api/health still returns healthy state.
-```
-
-Then improve contract UX:
-
-```text
-7. Consider a clearly defined `liquid_start` / recommended replay start, while preserving full actual-contract history.
-```
-
-Then generalize product handling:
-
-```text
-8. Add product catalog/selector.
-9. Make replay cloud storage product-aware.
-10. Migrate legacy mes-replay/v1 namespace safely.
-```
-
-Then add trading/execution:
-
-```text
-11. Order / Fill / Position / Account primitives.
-12. Manual Market Buy / Sell / Flatten.
-13. 1m fill model + tick rounding + configurable commission/slippage.
-14. Limit / Stop orders and conservative intrabar ambiguity handling.
-15. Apply the resolved calendar during long-running replay and implement real rollover fills.
-16. Session/trade/equity persistence.
-17. Automated Strategy adapter using the exact same execution engine.
-```
-
-Do not start ML/CNN strategy research before replay and execution semantics are trustworthy.
-
-## 12. Recent commits of interest
-
-```text
-8cd8516  ci: decouple replay data publish from production deploy
-cb140e4  ci: parallelize replay shard publishing
-3f92d1a  ci: add dedicated replay data publish workflow
-581b936  ci: narrow production deploy triggers
-15fc13e  fix: fetch R2 raw data without npx wrangler
-d0edf47  test: cover direct R2 raw fetch helpers
-0ca1b7f  ci: remove Node dependency from replay Python checks
-8239bcf  revert: keep existing workers.dev deployment
-fa7bfee  deploy: restore FutureView Pages frontend
-26d5bbf  deploy: restore FutureView Pages styling
-81cad04  deploy: use Pages frontend for replay UI
-746132e  deploy: allow Pages frontend to call replay API
-8c3b29b  deploy: publish replay frontend to FutureView Pages
-```
-
-## 13. Short summary
-
-```text
-MASTER = generic FutureView Replay platform.
-
-Frontend/public URL:
+Public site:
 https://futureview.pages.dev/
 
-Backend Worker:
+Backend:
 https://futureview.rueijrwu.workers.dev/
-
-Package:
-futureview_replay
-
-CLI:
-futureview-replay
-
-MES:
-first configured product only.
-
-Raw source of truth:
-Cloudflare R2, not Git/LFS.
-
-fetch-raw:
-Python direct Cloudflare R2 REST; no npx/wrangler subprocess.
 
 Replay:
-5m authoritative cursor, 1m retained for future fills,
-no-lookahead, actual-contract prices, ET display / UTC storage.
+causal 5m actual-contract bars; ET display; UTC storage.
 
-Contract selection:
-product + ET time input; prior completed CME-session volume;
-hold or roll once to the next quarterly contract; no manual preselection.
+Trading:
+market Buy/Sell; fills at next released bar open; authoritative DO accounting; D1 fill persistence.
 
-Deploy:
-Worker deploy, replay-data publish, and Pages deploy are separate workflows.
+UI:
+replay controls left; Qty/Buy/Sell/Trades far right; collapsible right ledger; Console below main controls.
 
-Latest Pages deployment:
-run 34651057136 = SUCCESS.
+Viewport rule:
+ONLY Start Replay, Restart, and Fit auto-fit/scale.
+All normal replay/trading/pan actions preserve the user's view.
 
-Next immediate task:
-verify https://futureview.pages.dev/ end-to-end, including automatic contract resolution, API, and WebSocket replay.
+Clear:
+trading only; never replay cursor.
+
+Console:
+ORDER + FILL activity history; hidden by default.
+
+Critical risk:
+Do not truncate site/app.js during connector edits. Fetch/write/verify the COMPLETE file.
+
+Immediate next task:
+production smoke-test all replay/trading/viewport behavior before adding features.
 ```
