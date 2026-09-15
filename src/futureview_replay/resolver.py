@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Iterable, Mapping
 from zoneinfo import ZoneInfo
 
@@ -10,6 +10,8 @@ from futureview_replay.models import Bar
 DISPLAY_TIME_ZONE = ZoneInfo("America/New_York")
 SESSION_ROLL_HOUR_ET = 18
 SESSION_END_HOUR_ET = 17
+EXPIRY_HOUR_ET = 9
+EXPIRY_MINUTE_ET = 30
 MONTH_NUMBER = {code: month for month, code in enumerate("FGHJKMNQUVXZ", start=1)}
 CONTRACT_RE = re.compile(r"^(.+?)([FGHJKMNQUVXZ])(\d{1,2})$")
 
@@ -49,134 +51,20 @@ def _contract_expiry(contract: str, reference_year: int) -> tuple[int, int]:
     return year, month
 
 
-QUARTERLY_MONTHS = ["H", "M", "U", "Z"]
-
-
-def next_quarterly_contract(contract: str) -> str:
-    match = CONTRACT_RE.fullmatch(contract)
-    if not match:
-        raise ValueError(f"Unsupported outright futures symbol {contract}")
-    prefix, month, digits = match.group(1), match.group(2), match.group(3)
-    if month not in QUARTERLY_MONTHS:
-        idx = "FGHJKMNQUVXZ".index(month)
-        next_q = next((q for q in QUARTERLY_MONTHS if "FGHJKMNQUVXZ".index(q) > idx), None)
-        if next_q:
-            return f"{prefix}{next_q}{digits}"
-        next_digits = str((int(digits) + 1) % 10) if len(digits) == 1 else f"{(int(digits) + 1) % 100:02d}"
-        return f"{prefix}H{next_digits}"
-
-    idx = QUARTERLY_MONTHS.index(month)
-    if idx < 3:
-        next_month = QUARTERLY_MONTHS[idx + 1]
-        next_digits = digits
-    else:
-        next_month = "H"
-        if len(digits) == 1:
-            next_digits = str((int(digits) + 1) % 10)
-        else:
-            next_digits = f"{(int(digits) + 1) % 100:02d}"
-    return f"{prefix}{next_month}{next_digits}"
-
-
 def third_friday(year: int, month: int) -> date:
-    """Return the 3rd Friday of a given year and month (CME equity index futures expiration day)."""
     first_day = date(year, month, 1)
     first_friday = 1 + (4 - first_day.weekday()) % 7
     return date(year, month, first_friday + 14)
 
 
 def contract_expiry_date(contract: str, reference_year: int) -> date:
-    """Return the exact 3rd Friday expiration date for a quarterly futures contract."""
     year, month = _contract_expiry(contract, reference_year)
     return third_friday(year, month)
 
 
-def build_selection_calendar(
-    session_volumes: Mapping[date, Mapping[str, float]],
-) -> list[dict[str, object]]:
-    """Build a causal, monotonic quarterly-contract calendar.
-
-    The first observed session uses the nearest listed expiry as a metadata-only
-    fallback. Every later session uses only the immediately preceding completed
-    session's volume and may hold the current contract or roll once to the next
-    listed quarterly contract. It never rolls backward or skips a contract.
-    """
-    sessions = sorted(session_volumes)
-    if not sessions:
-        return []
-
-    first_vols = session_volumes[sessions[0]]
-    if first_vols:
-        active_contract = max(
-            first_vols.keys(),
-            key=lambda k: (first_vols[k], -abs(_contract_expiry(k, sessions[0].year)[0] - sessions[0].year)),
-        )
-    else:
-        all_symbols = {symbol for vols in session_volumes.values() for symbol in vols}
-        active_contract = min(all_symbols, key=lambda s: _contract_expiry(s, sessions[0].year))
-
-    calendar: list[dict[str, object]] = []
-
-    for index, current_session in enumerate(sessions):
-        if index == 0:
-            reason = "nearest_expiry_fallback"
-            source_session = None
-            incumbent_contract = None
-            candidate_contract = active_contract
-            incumbent_volume = None
-            candidate_volume = None
-        else:
-            source = sessions[index - 1]
-            prior = session_volumes[source]
-            candidate_contract = next_quarterly_contract(active_contract)
-            incumbent_contract = active_contract
-            incumbent_volume = float(prior.get(active_contract, 0.0))
-            candidate_volume = float(prior.get(candidate_contract, 0.0))
-
-            expiry = contract_expiry_date(active_contract, current_session.year)
-            roll_window_start = expiry - timedelta(days=14)
-
-            if current_session >= expiry:
-                active_contract = candidate_contract
-                reason = "contract_expired_roll"
-            elif current_session >= roll_window_start and candidate_volume > incumbent_volume:
-                active_contract = candidate_contract
-                reason = "prior_session_volume_roll"
-            elif incumbent_volume == 0.0 and candidate_volume > 0.0:
-                active_contract = candidate_contract
-                reason = "prior_session_volume_roll"
-            elif incumbent_volume == 0.0:
-                rolled = False
-                curr = candidate_contract
-                for _ in range(3):
-                    curr_vol = float(prior.get(curr, 0.0))
-                    if curr_vol > 0.0:
-                        candidate_contract = curr
-                        candidate_volume = curr_vol
-                        active_contract = curr
-                        reason = "prior_session_volume_roll"
-                        rolled = True
-                        break
-                    curr = next_quarterly_contract(curr)
-                if not rolled:
-                    reason = "prior_session_volume_hold"
-            else:
-                reason = "prior_session_volume_hold"
-            source_session = source.isoformat()
-
-        calendar.append(
-            {
-                "session": current_session.isoformat(),
-                "contract": active_contract,
-                "reason": reason,
-                "source_session": source_session,
-                "incumbent_contract": incumbent_contract,
-                "candidate_contract": candidate_contract,
-                "incumbent_volume": incumbent_volume,
-                "candidate_volume": candidate_volume,
-            }
-        )
-    return calendar
+def contract_expiry_datetime(contract: str, reference_year: int) -> datetime:
+    expiry = contract_expiry_date(contract, reference_year)
+    return datetime.combine(expiry, time(EXPIRY_HOUR_ET, EXPIRY_MINUTE_ET), tzinfo=DISPLAY_TIME_ZONE)
 
 
 def session_volumes_from_bars(bars_by_contract: Mapping[str, Iterable[Bar]]) -> dict[date, dict[str, float]]:
@@ -188,7 +76,101 @@ def session_volumes_from_bars(bars_by_contract: Mapping[str, Iterable[Bar]]) -> 
     return result
 
 
+def resolve_contract_at_time(
+    session_volumes: Mapping[date, Mapping[str, float]],
+    start: datetime,
+    available_contracts: Iterable[str] | None = None,
+) -> dict[str, object]:
+    """Resolve the replay contract at request time using only completed-session data.
+
+    The requested timestamp is the input and the contract is the result. For any normal
+    session, selection uses the immediately preceding *available completed* session and
+    chooses the highest-volume non-expired contract. The expiring quarterly contract
+    remains eligible until 09:30 ET on its third-Friday expiration day. No future/same-
+    session volume is consulted.
+    """
+    start = start.replace(tzinfo=timezone.utc) if start.tzinfo is None else start.astimezone(timezone.utc)
+    sessions = sorted(session_volumes)
+    if not sessions:
+        raise ValueError("No replay sessions are available")
+
+    target = requested_session_date(start)
+    session_index = next((i for i, current in enumerate(sessions) if current >= target), None)
+    if session_index is None:
+        raise ValueError(f"No replay session at or after {start.isoformat()}")
+
+    resolved_session = sessions[session_index]
+    all_contracts = set(available_contracts or ())
+    for volumes in session_volumes.values():
+        all_contracts.update(volumes)
+    if not all_contracts:
+        raise ValueError("No replay contracts are available")
+
+    local_start = start.astimezone(DISPLAY_TIME_ZONE)
+    reference_year = resolved_session.year
+
+    def eligible(contract: str) -> bool:
+        try:
+            return local_start < contract_expiry_datetime(contract, reference_year)
+        except ValueError:
+            return False
+
+    source_session = sessions[session_index - 1] if session_index > 0 else None
+    if source_session is not None:
+        prior = session_volumes[source_session]
+        candidates = [
+            (contract, float(volume))
+            for contract, volume in prior.items()
+            if contract in all_contracts and eligible(contract) and float(volume) > 0.0
+        ]
+        if candidates:
+            candidates.sort(
+                key=lambda item: (
+                    item[1],
+                    -contract_expiry_datetime(item[0], reference_year).timestamp(),
+                ),
+                reverse=True,
+            )
+            contract, volume = candidates[0]
+            return {
+                "session": resolved_session.isoformat(),
+                "contract": contract,
+                "reason": "prior_session_max_volume",
+                "source_session": source_session.isoformat(),
+                "source_volume": volume,
+                "candidate_volumes": {name: value for name, value in sorted(candidates, key=lambda x: x[1], reverse=True)},
+                "expiry_cutoff_et": contract_expiry_datetime(contract, reference_year).isoformat(),
+            }
+
+    valid = [contract for contract in all_contracts if eligible(contract)]
+    if not valid:
+        raise ValueError(f"No non-expired replay contract at or after {start.isoformat()}")
+    contract = min(valid, key=lambda value: contract_expiry_datetime(value, reference_year))
+    return {
+        "session": resolved_session.isoformat(),
+        "contract": contract,
+        "reason": "nearest_expiry_fallback",
+        "source_session": source_session.isoformat() if source_session else None,
+        "source_volume": None,
+        "candidate_volumes": {},
+        "expiry_cutoff_et": contract_expiry_datetime(contract, reference_year).isoformat(),
+    }
+
+
+def build_selection_calendar(session_volumes: Mapping[date, Mapping[str, float]]) -> list[dict[str, object]]:
+    """Compatibility/diagnostic view only; runtime code must call resolve_contract_at_time."""
+    sessions = sorted(session_volumes)
+    if not sessions:
+        return []
+    result: list[dict[str, object]] = []
+    for current in sessions:
+        local = datetime.combine(current, time(8, 30), tzinfo=DISPLAY_TIME_ZONE)
+        result.append(resolve_contract_at_time(session_volumes, local.astimezone(timezone.utc)))
+    return result
+
+
 def resolve_from_calendar(calendar: list[dict[str, object]], start: datetime) -> dict[str, object]:
+    """Backward-compatible reader for old manifests. New manifests resolve at runtime."""
     target = requested_session_date(start).isoformat()
     for selection in calendar:
         if str(selection["session"]) >= target:
