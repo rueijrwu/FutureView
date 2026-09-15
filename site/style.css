@@ -102,7 +102,7 @@ button:disabled { opacity: .4; cursor: default; }
   overflow: hidden;
   border-left: 1px solid #253247;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr) auto 44px;
   opacity: 0;
   pointer-events: none;
   transition: opacity .15s ease;
@@ -127,7 +127,19 @@ button:disabled { opacity: .4; cursor: default; }
 .trade-summary span { color: #748297; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
 .trade-summary strong { font-size: 13px; font-variant-numeric: tabular-nums; }
 .trade-detail { min-height: 72px; max-height: 150px; overflow: auto; padding: 10px 12px; color: #9cacbd; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-line; }
-.trade-ledger-toolbar { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 10px; border-top: 1px solid #253247; }
+.trade-ledger-toolbar {
+  height: 44px;
+  min-height: 44px;
+  max-height: 44px;
+  display: flex;
+  flex: 0 0 44px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 0 10px;
+  overflow: hidden;
+  border-top: 1px solid #253247;
+}
 .trade-ledger-toolbar button { padding: 6px 10px; font-size: 11px; }
 .controls {
   border-top: 1px solid #253247;
@@ -151,7 +163,6 @@ button:disabled { opacity: .4; cursor: default; }
 .replay-controls { flex: 0 0 auto; min-width: max-content; }
 .transport, .speeds { flex: 0 0 auto; }
 .speeds { margin-left: 6px; }
-#trades-toggle { margin-left: 8px; }
 .trade-entry { margin-left: auto; flex: 0 0 auto; min-width: max-content; padding-left: 14px; border-left: 1px solid #253247; }
 .speeds span, .trade-entry span { font-size: 11px; color: #8190a4; margin-right: 4px; }
 .trade-entry span:first-child { text-transform: uppercase; letter-spacing: .06em; color: #6f7f95; }
