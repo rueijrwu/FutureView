@@ -19,6 +19,19 @@ function parseCookies(header) {
   return out;
 }
 
+function requestToken(request) {
+  const auth = request.headers.get("authorization") || "";
+  const match = /^Bearer\s+(.+)$/i.exec(auth);
+  if (match) return match[1].trim();
+  const cookie = parseCookies(request.headers.get("cookie"))[SESSION_COOKIE];
+  if (cookie) return cookie;
+  try {
+    const url = new URL(request.url);
+    if (/\/ws$/i.test(url.pathname)) return url.searchParams.get("access_token") || null;
+  } catch {}
+  return null;
+}
+
 async function sha256(value) {
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
   return base64url(new Uint8Array(digest));
@@ -116,7 +129,7 @@ export async function createSession(env, userId) {
 }
 
 export async function currentUser(request, env) {
-  const token = parseCookies(request.headers.get("cookie"))[SESSION_COOKIE];
+  const token = requestToken(request);
   if (!token) return null;
   const tokenHash = await sha256(token);
   const now = Date.now();
@@ -132,7 +145,7 @@ export async function currentUser(request, env) {
 }
 
 export async function destroySession(request, env) {
-  const token = parseCookies(request.headers.get("cookie"))[SESSION_COOKIE];
+  const token = requestToken(request);
   if (token) {
     const tokenHash = await sha256(token);
     await env.DB.prepare("DELETE FROM auth_sessions WHERE token_hash = ?").bind(tokenHash).run();
