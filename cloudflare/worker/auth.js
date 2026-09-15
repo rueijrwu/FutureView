@@ -1,6 +1,6 @@
 const SESSION_COOKIE = "fv_session";
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
-const PBKDF2_ITERATIONS = 210000;
+const PBKDF2_ITERATIONS = 100000;
 const encoder = new TextEncoder();
 
 function base64url(bytes) {
