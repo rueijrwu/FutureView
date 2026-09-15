@@ -152,7 +152,7 @@
       const x=JSON.parse(e.data);
       if(x.type==="bar")render(x.bar);
       else if(x.type==="bars_batch")renderMany(x.bars);
-      else if(x.type==="fills")setTrading(x.trading);
+      else if(x.type==="fills"){setTrading(x.trading);error()}
       else if(x.type==="order_accepted"){recordAcceptedOrder(x.order);setTrading(x.trading);error(`Order queued: ${x.order.side.toUpperCase()} ${x.order.quantity} · fills at next bar open`)}
       else if(x.type==="trading_cleared"){clearConsole();setTrading(x.trading);error("Trading record cleared")}
       else if(x.type==="reset"){reset(x.warmup||[]);update(x.snapshot,true)}
