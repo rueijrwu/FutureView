@@ -2,18 +2,20 @@ import { ReplaySession } from "./replay-session.js";
 
 export { ReplaySession };
 
-// Existing production shard namespace is retained for compatibility during the
-// raw-data migration. It is data layout, not the platform/package identity.
-
 const PAGES_ORIGIN = "https://futureview.pages.dev";
 const DISPLAY_TIME_ZONE = "America/New_York";
 const SESSION_END_HOUR_ET = 17;
+const EXPIRY_HOUR_ET = 9;
+const EXPIRY_MINUTE_ET = 30;
+const MONTH_NUMBER = Object.fromEntries([..."FGHJKMNQUVXZ"].map((code, index) => [code, index + 1]));
+const CONTRACT_RE = /^(.+?)([FGHJKMNQUVXZ])(\d{1,2})$/;
 const sessionFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: DISPLAY_TIME_ZONE,
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
   hour: "2-digit",
+  minute: "2-digit",
   hourCycle: "h23",
 });
 
@@ -26,30 +28,123 @@ async function readManifest(env, product = "MES") {
   return manifest;
 }
 
-function tradingSessionDate(value) {
+function localParts(value) {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) throw new Error("Invalid start timestamp");
   const parts = Object.fromEntries(
     sessionFormatter.formatToParts(date).filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
   );
-  const localDate = new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
-  if (Number(parts.hour) >= SESSION_END_HOUR_ET) localDate.setUTCDate(localDate.getUTCDate() + 1);
+  return {
+    year: Number(parts.year), month: Number(parts.month), day: Number(parts.day),
+    hour: Number(parts.hour), minute: Number(parts.minute),
+  };
+}
+
+function tradingSessionDate(value) {
+  const parts = localParts(value);
+  const localDate = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  if (parts.hour >= SESSION_END_HOUR_ET) localDate.setUTCDate(localDate.getUTCDate() + 1);
   return localDate.toISOString().slice(0, 10);
+}
+
+function contractExpiry(contract, referenceYear) {
+  const match = CONTRACT_RE.exec(contract);
+  if (!match) throw new Error(`Unsupported outright futures symbol ${contract}`);
+  const month = MONTH_NUMBER[match[2]];
+  const digits = match[3];
+  let year;
+  if (digits.length === 2) year = 2000 + Number(digits);
+  else {
+    const digit = Number(digits);
+    const candidates = [];
+    for (let y = referenceYear - 1; y < referenceYear + 10; y += 1) if (y % 10 === digit) candidates.push(y);
+    year = candidates.sort((a, b) => Math.abs(a - referenceYear) - Math.abs(b - referenceYear))[0];
+  }
+  const first = new Date(Date.UTC(year, month - 1, 1));
+  const firstFriday = 1 + (5 - first.getUTCDay() + 7) % 7;
+  return { year, month, day: firstFriday + 14, hour: EXPIRY_HOUR_ET, minute: EXPIRY_MINUTE_ET };
+}
+
+function compareLocal(a, b) {
+  for (const key of ["year", "month", "day", "hour", "minute"]) {
+    if (a[key] !== b[key]) return a[key] - b[key];
+  }
+  return 0;
+}
+
+function isExpiredAt(contract, start) {
+  const local = localParts(start);
+  return compareLocal(local, contractExpiry(contract, local.year)) >= 0;
+}
+
+function expiryLabel(contract, referenceYear) {
+  const x = contractExpiry(contract, referenceYear);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${x.year}-${pad(x.month)}-${pad(x.day)}T${pad(x.hour)}:${pad(x.minute)} America/New_York`;
 }
 
 function resolveContract(manifest, product, start) {
   if (String(product ?? "").toUpperCase() !== String(manifest.product ?? "").toUpperCase()) {
     throw new Error(`Unknown product ${product}`);
   }
-  const sessions = manifest.contract_selection?.sessions;
-  if (!Array.isArray(sessions) || !sessions.length) {
-    throw new Error("Replay contract-selection metadata is unavailable; publish replay data version 3");
-  }
+  const meta = manifest.contract_selection ?? {};
+  const sessionVolumes = meta.session_volumes;
+  const sessions = Array.isArray(meta.sessions)
+    ? meta.sessions.map((x) => typeof x === "string" ? x : x?.session).filter(Boolean).sort()
+    : Object.keys(sessionVolumes ?? {}).sort();
+  if (!sessions.length) throw new Error("Replay session metadata is unavailable");
+
   const target = tradingSessionDate(start);
-  const selection = sessions.find((item) => String(item.session) >= target);
-  if (!selection) throw new Error("No replay session exists at or after requested start");
-  if (!manifest.contracts?.[selection.contract]) throw new Error(`Resolved contract ${selection.contract} is unavailable`);
-  return selection;
+  const sessionIndex = sessions.findIndex((session) => String(session) >= target);
+  if (sessionIndex < 0) throw new Error("No replay session exists at or after requested start");
+  const resolvedSession = sessions[sessionIndex];
+
+  if (sessionVolumes && typeof sessionVolumes === "object") {
+    const sourceSession = sessionIndex > 0 ? sessions[sessionIndex - 1] : null;
+    const allContracts = Object.keys(manifest.contracts ?? {});
+    if (sourceSession) {
+      const prior = sessionVolumes[sourceSession] ?? {};
+      const candidates = Object.entries(prior)
+        .map(([contract, volume]) => [contract, Number(volume)])
+        .filter(([contract, volume]) => manifest.contracts?.[contract] && Number.isFinite(volume) && volume > 0 && !isExpiredAt(contract, start))
+        .sort((a, b) => b[1] - a[1]);
+      if (candidates.length) {
+        const [contract, sourceVolume] = candidates[0];
+        return {
+          session: resolvedSession,
+          contract,
+          reason: "prior_session_max_volume",
+          source_session: sourceSession,
+          source_volume: sourceVolume,
+          candidate_volumes: Object.fromEntries(candidates),
+          expiry_cutoff_et: expiryLabel(contract, Number(resolvedSession.slice(0, 4))),
+        };
+      }
+    }
+    const valid = allContracts.filter((contract) => !isExpiredAt(contract, start));
+    if (!valid.length) throw new Error("No non-expired replay contract is available");
+    valid.sort((a, b) => {
+      const ea = contractExpiry(a, Number(resolvedSession.slice(0, 4)));
+      const eb = contractExpiry(b, Number(resolvedSession.slice(0, 4)));
+      return compareLocal(ea, eb);
+    });
+    const contract = valid[0];
+    return {
+      session: resolvedSession,
+      contract,
+      reason: "nearest_expiry_fallback",
+      source_session: sessionIndex > 0 ? sessions[sessionIndex - 1] : null,
+      source_volume: null,
+      candidate_volumes: {},
+      expiry_cutoff_et: expiryLabel(contract, Number(resolvedSession.slice(0, 4))),
+    };
+  }
+
+  // Backward-compatible read of version-3 manifests while version-4 data is republished.
+  const legacy = (meta.sessions ?? []).find((item) => String(item.session) >= target);
+  if (!legacy) throw new Error("Replay contract-selection metadata is unavailable; republish replay data version 4");
+  if (!manifest.contracts?.[legacy.contract]) throw new Error(`Resolved contract ${legacy.contract} is unavailable`);
+  return { ...legacy, reason: `legacy_${legacy.reason ?? "precomputed"}` };
 }
 
 function corsHeaders(request) {
@@ -65,16 +160,12 @@ function corsHeaders(request) {
 }
 
 function json(request, payload, status = 200) {
-  return Response.json(payload, {
-    status,
-    headers: { "cache-control": "no-store", ...corsHeaders(request) },
-  });
+  return Response.json(payload, { status, headers: { "cache-control": "no-store", ...corsHeaders(request) } });
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-
     if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
       return new Response(null, { status: 204, headers: corsHeaders(request) });
     }
@@ -90,6 +181,7 @@ export default {
         sessions: "durable-objects",
         history: "d1",
         contracts: manifest ? Object.keys(manifest.contracts ?? {}).length : 0,
+        manifest_version: manifest?.version ?? null,
       }, manifest ? 200 : 503);
     }
 
@@ -106,10 +198,13 @@ export default {
       if (!manifest) return json(request, { error: "Replay manifest not published" }, 503);
       const contracts = Object.values(manifest.contracts ?? {});
       if (!contracts.length) return json(request, { error: "No replay contracts published" }, 503);
+      const rawSessions = manifest.contract_selection?.sessions ?? [];
+      const sessions = rawSessions.map((x) => typeof x === "string" ? x : x?.session).filter(Boolean).sort();
       return json(request, {
         product: manifest.product ?? null,
         first_time: Math.min(...contracts.map((item) => Number(item.first_time))),
         last_time: Math.max(...contracts.map((item) => Number(item.last_time))),
+        sessions,
         selection_rule: manifest.contract_selection?.rule ?? null,
       });
     }
@@ -137,7 +232,7 @@ export default {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             session_id: id,
-            product: product,
+            product,
             contract: selection.contract,
             contract_selection: selection,
             start: body.start,
@@ -158,7 +253,6 @@ export default {
       const stub = env.REPLAY_SESSION.get(env.REPLAY_SESSION.idFromName(id));
       return stub.fetch(request);
     }
-
     return env.ASSETS.fetch(request);
   },
 };
