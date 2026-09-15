@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FutureView Login</title>
+  <link rel="stylesheet" href="/auth.css">
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="auth-card">
+      <p class="eyebrow">FUTUREVIEW</p>
+      <h1 id="title">Sign in</h1>
+      <p id="subtitle">Sign in to access the replay workspace.</p>
+      <form id="auth-form">
+        <label>Username<input id="username" name="username" autocomplete="username" required minlength="3" maxlength="32"></label>
+        <label>Password<input id="password" name="password" type="password" autocomplete="current-password" required minlength="10" maxlength="256"></label>
+        <button id="submit" class="primary" type="submit">Sign in</button>
+      </form>
+      <button id="mode" class="link-button" type="button" hidden>Create the first account</button>
+      <p id="message" class="message" aria-live="polite"></p>
+    </section>
+  </main>
+  <script src="/auth.js"></script>
+</body>
+</html>
