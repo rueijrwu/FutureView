@@ -141,4 +141,42 @@
 
   function syncControls(){const ready=!!sessionId&&wsOpen&&wsSynced;const busy=!!pendingCommand;const finished=lastState==="FINISHED";$("play").disabled=!ready||busy||lastState==="PLAYING"||finished;$("pause").disabled=!ready||busy||lastState!=="PLAYING";$("next").disabled=!ready||busy||lastState==="PLAYING"||finished;$("restart").disabled=!ready||busy;$("buy-btn").disabled=!ready||finished;$("sell-btn").disabled=!ready||finished;$("trade-qty").disabled=!ready||finished;$("trade-clear").disabled=!ready}
   function update(s,authoritative=false){if(!s)return;if(s.state)lastState=s.state;if(authoritative){wsSynced=true;pendingCommand=null;clearTimeout(commandAckTimer);commandAckTimer=null;}$("state-status").textContent=lastState;if(s.contract)$("contract-status").textContent=s.contract;if(s.cursor!=null)$("time-status").textContent=displaySeconds(s.cursor);else if(!sessionId)$("time-status").textContent="No session";if(s.trading)setTrading(s.trading);syncControls()}
-  function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized - reconnecting…
+  function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized - reconnecting…");if(wsPath)connect(wsPath);return}pendingCommand=type;if(type==="play")lastState="PLAYING";else if(type==="pause"||type==="restart")lastState="PAUSED";update({state:lastState});ws.send(JSON.stringify({type,...extra}));clearTimeout(commandAckTimer);commandAckTimer=setTimeout(()=>{if(pendingCommand===type){pendingCommand=null;wsSynced=false;error("Replay command acknowledgement timed out - resynchronizing…");syncControls();if(wsPath)connect(wsPath)}},2000)}
+  function placeOrder(side){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized");return}const quantity=Number($("trade-qty").value);if(!Number.isInteger(quantity)||quantity<1||quantity>100){error("Quantity must be an integer from 1 to 100");return}error();ws.send(JSON.stringify({type:"order",side,quantity}))}
+  function clearTrading(){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized");return}selectedFillId=null;error();ws.send(JSON.stringify({type:"clear_trading"}))}
+  function connect(path){
+    wsPath=path;clearTimeout(wsReconnectTimer);clearTimeout(commandAckTimer);pendingCommand=null;wsSynced=false;syncControls();if(ws)ws.close();const authToken=token();if(!authToken)return goLogin();const wsOrigin=API_ORIGIN.replace(/^http/,"ws");const sep=path.includes("?")?"&":"?";const thisWs=ws=new WebSocket(`${wsOrigin}${path}${sep}access_token=${encodeURIComponent(authToken)}`);
+    thisWs.onopen=()=>{if(ws!==thisWs)return;wsOpen=true;wsReconnectDelay=1000;error();syncControls()};
+    thisWs.onmessage=e=>{
+      if(ws!==thisWs)return;
+      const x=JSON.parse(e.data);
+      if(x.type==="bar")render(x.bar);
+      else if(x.type==="bars_batch")renderMany(x.bars);
+      else if(x.type==="fills")setTrading(x.trading);
+      else if(x.type==="order_accepted"){recordAcceptedOrder(x.order);setTrading(x.trading);error(`Order queued: ${x.order.side.toUpperCase()} ${x.order.quantity} · fills at next bar open`)}
+      else if(x.type==="trading_cleared"){clearConsole();setTrading(x.trading);error("Trading record cleared")}
+      else if(x.type==="reset"){reset(x.warmup||[]);update(x.snapshot,true)}
+      else if(x.type==="error"){pendingCommand=null;clearTimeout(commandAckTimer);error(x.error);syncControls()}
+      else update(x,true);
+    };
+    thisWs.onerror=()=>{};
+    thisWs.onclose=()=>{if(ws!==thisWs)return;wsOpen=false;wsSynced=false;pendingCommand=null;clearTimeout(commandAckTimer);syncControls();if(!sessionId||lastState==="FINISHED")return;error("Replay socket disconnected - reconnecting…");wsReconnectTimer=setTimeout(()=>connect(wsPath),wsReconnectDelay);wsReconnectDelay=Math.min(wsReconnectDelay*2,8000)};
+  }
+
+  let replayRangeInfo=null;
+  async function loadRange(explicit=false){error();const p=$("product")?.value||"MES";try{replayRangeInfo=await api(`/api/replay/range?product=${encodeURIComponent(p)}`);if(!replayRangeInfo)return;$("start").value=sessionAtDefaultTime(replayRangeInfo);$("range").textContent=`${displaySeconds(replayRangeInfo.first_time)} → ${displaySeconds(replayRangeInfo.last_time)} · ${replayRangeInfo.sessions?.length||0} actual sessions`}catch(err){if(!explicit){try{replayRangeInfo=await api("/api/replay/range");if(!replayRangeInfo)return;if(replayRangeInfo.product&&$("product"))$("product").value=replayRangeInfo.product;$("start").value=sessionAtDefaultTime(replayRangeInfo);return}catch{}}error(err.message)}}
+  function pickRandomTradingDate(info){const sessions=Array.isArray(info?.sessions)?info.sessions.filter(x=>/^\d{4}-\d{2}-\d{2}$/.test(x)):[];if(!sessions.length)throw new Error("No actual replay sessions are available for random selection");const valid=sessions.filter(day=>{try{const ms=Date.parse(wallTimeToUtcIso(`${day}T${DEFAULT_REPLAY_TIME}`));return ms>=Number(info.first_time)*1000&&ms<=Number(info.last_time)*1000}catch{return false}});const pool=valid.length?valid:sessions;return `${pool[Math.floor(Math.random()*pool.length)]}T${DEFAULT_REPLAY_TIME}`}
+  let isStarting=false;
+  async function startReplay(){if(isStarting)return;isStarting=true;$("start-btn").disabled=true;$("random-btn").disabled=true;try{error();const raw=$("start").value;if(!raw)throw new Error("Choose a start time");const x=await api("/api/replay/sessions",{method:"POST",body:JSON.stringify({product:$("product").value,start:wallTimeToUtcIso(raw),warmup:Number($("warmup").value||300)})});if(!x)return;sessionId=x.session_id;wsSynced=false;lastTrading=x.trading||null;reset(x.warmup||[]);update(x,true);renderTrading();const selected=x.contract_selection;if(selected)$("range").textContent=`Selected ${selected.contract} using ${selected.source_session||"fallback"} (${selected.reason})`;connect(x.websocket)}catch(e){error(e.message)}finally{isStarting=false;$("start-btn").disabled=false;$("random-btn").disabled=false}}
+  $("product").onchange=()=>loadRange(true);$("start-btn").onclick=()=>startReplay();$("random-btn").onclick=async()=>{if(isStarting)return;if(!replayRangeInfo)await loadRange();try{$("start").value=pickRandomTradingDate(replayRangeInfo);await startReplay()}catch(e){error(e.message)}};
+  $("play").onclick=()=>command("play",{speed});$("pause").onclick=()=>command("pause");$("next").onclick=()=>command("step");$("restart").onclick=()=>command("restart");
+  $("speeds").onclick=e=>{const b=e.target.closest("button[data-speed]");if(!b)return;document.querySelectorAll("#speeds button").forEach(x=>x.classList.remove("active"));b.classList.add("active");speed=b.dataset.speed==="max"?"max":Number(b.dataset.speed);if(lastState==="PLAYING"&&!pendingCommand)command("play",{speed})};
+  $("buy-btn").onclick=()=>placeOrder("buy");$("sell-btn").onclick=()=>placeOrder("sell");
+  $("trades-toggle").onclick=()=>{preserveChartViewport(()=>{const open=!$("workspace").classList.contains("trades-open");$("workspace").classList.toggle("trades-open",open);$("trades-toggle").setAttribute("aria-pressed",String(open));requestAnimationFrame(()=>chart.resize($("chart").clientWidth,$("chart").clientHeight))})};
+  $("console-toggle").onclick=()=>{preserveChartViewport(()=>{const consoleEl=$("trading-console");const show=consoleEl.hidden;consoleEl.hidden=!show;$("console-toggle").setAttribute("aria-pressed",String(show));requestAnimationFrame(()=>chart.resize($("chart").clientWidth,$("chart").clientHeight))})};
+  $("trade-clear").onclick=()=>clearTrading();
+  $("trade-rows").onclick=e=>{const row=e.target.closest("tr[data-fill-id]");if(row)inspectFill(row.dataset.fillId)};
+  $("logout").onclick=()=>logout();
+
+  (async()=>{if(!(await validateAuth()))return;await loadRange();update({state:"STOPPED"});renderTrading();syncControls()})().catch(e=>error(e.message));
+})();
