@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>FutureView Replay</title>
+  <script>
+    if (!localStorage.getItem("futureview_auth_token")) location.replace("/login.html");
+  </script>
   <link rel="stylesheet" href="/style.css">
   <script src="https://unpkg.com/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>
   <script src="https://unpkg.com/lightweight-charts-drawing@0.1.1/dist/lightweight-charts-drawing.umd.js"></script>
@@ -12,7 +15,7 @@
   <main>
     <header>
       <div><p class="eyebrow">HISTORICAL MARKET SIMULATOR</p><h1>FutureView Replay</h1><p>Cloud replay · 5-minute bars · causal actual-contract selection · all displayed times are ET</p></div>
-      <div class="status"><b id="contract-status">Auto contract</b><span id="time-status">No session</span><span id="state-status" class="pill">STOPPED</span></div>
+      <div class="status"><b id="contract-status">Auto contract</b><span id="time-status">No session</span><span id="state-status" class="pill">STOPPED</span><button id="logout" type="button">Log out</button></div>
     </header>
     <section class="setup">
       <label>Product<select id="product"><option value="MES">MES</option><option value="ES">ES</option></select></label>
