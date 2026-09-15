@@ -84,10 +84,20 @@ export function validatePassword(password) {
   return typeof password === "string" && password.length >= 10 && password.length <= 256;
 }
 
+async function passwordMatches(password, salt, expectedHash) {
+  if (!validatePassword(password)) return false;
+  const candidate = await derivePassword(password, salt);
+  if (candidate.length !== expectedHash.length) return false;
+  let diff = 0;
+  for (let i = 0; i < candidate.length; i += 1) diff |= candidate.charCodeAt(i) ^ expectedHash.charCodeAt(i);
+  return diff === 0;
+}
+
 export async function register(env, username, password) {
   username = String(username || "").trim();
   if (!validateUsername(username)) throw new Error("Username must be 3-32 characters using letters, numbers, ., _, or -");
   if (!validatePassword(password)) throw new Error("Password must be 10-256 characters");
+  if (password !== password.trim()) throw new Error("Password cannot begin or end with spaces");
   if (!(await registrationOpen(env))) throw new Error("Registration is closed");
 
   const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -109,12 +119,16 @@ export async function authenticate(env, username, password) {
   const row = await env.DB.prepare(
     "SELECT id, username, password_salt, password_hash FROM auth_users WHERE username = ? COLLATE NOCASE LIMIT 1",
   ).bind(username).first();
-  if (!row || !validatePassword(password)) return null;
-  const candidate = await derivePassword(password, decodeBase64url(row.password_salt));
-  if (candidate.length !== row.password_hash.length) return null;
-  let diff = 0;
-  for (let i = 0; i < candidate.length; i += 1) diff |= candidate.charCodeAt(i) ^ row.password_hash.charCodeAt(i);
-  return diff === 0 ? { id: Number(row.id), username: row.username } : null;
+  if (!row || typeof password !== "string") return null;
+  const salt = decodeBase64url(row.password_salt);
+  if (await passwordMatches(password, salt, row.password_hash)) {
+    return { id: Number(row.id), username: row.username };
+  }
+  const trimmed = password.trim();
+  if (trimmed !== password && await passwordMatches(trimmed, salt, row.password_hash)) {
+    return { id: Number(row.id), username: row.username };
+  }
+  return null;
 }
 
 export async function createSession(env, userId) {
