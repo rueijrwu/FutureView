@@ -163,7 +163,7 @@ function corsHeaders(request) {
   return {
     "access-control-allow-origin": PAGES_ORIGIN,
     "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type",
+    "access-control-allow-headers": "content-type,authorization",
     "access-control-allow-credentials": "true",
     "access-control-max-age": "86400",
     "vary": "Origin",
@@ -181,10 +181,10 @@ function redirect(location, headers = {}) {
   return new Response(null, { status: 303, headers: { location, "cache-control": "no-store", ...headers } });
 }
 
-function sameOriginRequest(request) {
+function trustedAuthOrigin(request) {
   const origin = request.headers.get("origin");
   if (!origin) return true;
-  return origin === new URL(request.url).origin;
+  return origin === new URL(request.url).origin || origin === PAGES_ORIGIN;
 }
 
 async function authRoutes(request, env, url) {
@@ -192,29 +192,29 @@ async function authRoutes(request, env, url) {
     return json(request, { registration_open: await registrationOpen(env) });
   }
   if (url.pathname === "/api/auth/register" && request.method === "POST") {
-    if (!sameOriginRequest(request)) return json(request, { error: "Cross-origin registration is not allowed" }, 403);
+    if (!trustedAuthOrigin(request)) return json(request, { error: "Origin is not allowed" }, 403);
     try {
       const body = await request.json();
       const user = await register(env, body.username, body.password);
       const session = await createAuthSession(env, user.id);
-      return json(request, { ok: true, user: { username: user.username } }, 201, { "set-cookie": session.cookie });
+      return json(request, { ok: true, user: { username: user.username }, token: session.token, expires_at: session.expiresAt }, 201, { "set-cookie": session.cookie });
     } catch (error) {
       return json(request, { error: String(error?.message ?? error) }, 400);
     }
   }
   if (url.pathname === "/api/auth/login" && request.method === "POST") {
-    if (!sameOriginRequest(request)) return json(request, { error: "Cross-origin login is not allowed" }, 403);
+    if (!trustedAuthOrigin(request)) return json(request, { error: "Origin is not allowed" }, 403);
     const body = await request.json().catch(() => ({}));
     const user = await authenticate(env, body.username, body.password);
     if (!user) return json(request, { error: "Invalid username or password" }, 401);
     await purgeExpiredSessions(env);
     const session = await createAuthSession(env, user.id);
-    return json(request, { ok: true, user: { username: user.username } }, 200, { "set-cookie": session.cookie });
+    return json(request, { ok: true, user: { username: user.username }, token: session.token, expires_at: session.expiresAt }, 200, { "set-cookie": session.cookie });
   }
   if (url.pathname === "/api/auth/logout" && request.method === "POST") {
-    if (!sameOriginRequest(request)) return json(request, { error: "Cross-origin logout is not allowed" }, 403);
+    if (!trustedAuthOrigin(request)) return json(request, { error: "Origin is not allowed" }, 403);
     const cookie = await destroySession(request, env);
-    return redirect("/login", { "set-cookie": cookie });
+    return json(request, { ok: true }, 200, { "set-cookie": cookie });
   }
   if (url.pathname === "/api/auth/me" && request.method === "GET") {
     const user = await currentUser(request, env);
