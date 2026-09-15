@@ -78,14 +78,12 @@
     appendConsole(`${displaySeconds(order.requested_at_ts)}  ORDER  ${String(order.side).toUpperCase()} ${order.quantity} ${lastTrading?.contract||""}  queued for next bar open`);
   }
   function syncFillConsole(trading){
-    let added=false;
     for(const f of trading?.fills||[]){
       if(consoleFillIds.has(f.id))continue;
-      consoleFillIds.add(f.id);added=true;
+      consoleFillIds.add(f.id);
       const after=Number(f.position_after)===0?"Flat":`${Number(f.position_after)>0?"Long":"Short"} ${Math.abs(Number(f.position_after))} @ ${number(f.avg_price_after)}`;
       appendConsole(`${displaySeconds(f.filled_at_ts)}  FILL   ${String(f.side).toUpperCase()} ${f.quantity} ${trading?.contract||""} @ ${number(f.fill_price)}  realized ${money(f.realized_delta)}  → ${after}`);
     }
-    if(added)error();
   }
 
   function applyPnlClass(el,value){el.classList.toggle("pnl-positive",Number(value)>0);el.classList.toggle("pnl-negative",Number(value)<0)}
@@ -143,4 +141,4 @@
 
   function syncControls(){const ready=!!sessionId&&wsOpen&&wsSynced;const busy=!!pendingCommand;const finished=lastState==="FINISHED";$("play").disabled=!ready||busy||lastState==="PLAYING"||finished;$("pause").disabled=!ready||busy||lastState!=="PLAYING";$("next").disabled=!ready||busy||lastState==="PLAYING"||finished;$("restart").disabled=!ready||busy;$("buy-btn").disabled=!ready||finished;$("sell-btn").disabled=!ready||finished;$("trade-qty").disabled=!ready||finished;$("trade-clear").disabled=!ready}
   function update(s,authoritative=false){if(!s)return;if(s.state)lastState=s.state;if(authoritative){wsSynced=true;pendingCommand=null;clearTimeout(commandAckTimer);commandAckTimer=null;}$("state-status").textContent=lastState;if(s.contract)$("contract-status").textContent=s.contract;if(s.cursor!=null)$("time-status").textContent=displaySeconds(s.cursor);else if(!sessionId)$("time-status").textContent="No session";if(s.trading)setTrading(s.trading);syncControls()}
-  function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN||
+  function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized - reconnecting…
