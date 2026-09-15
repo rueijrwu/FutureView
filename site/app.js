@@ -19,6 +19,7 @@
   let lastTrading = null;
   let lastMarkPrice = null;
   let selectedFillId = null;
+  let lastMarkerSignature = null;
 
   function token(){return localStorage.getItem(TOKEN_KEY)||""}
   function clearAuth(){localStorage.removeItem(TOKEN_KEY);localStorage.removeItem(USER_KEY)}
@@ -50,6 +51,21 @@
   const chartTools=new window.FutureViewChartTools({chart,candles,volume,toolbar:$("chart-toolbar"),legend:$("chart-legend"),container:$("chart"),formatTime:displaySeconds});
   const candle=b=>({time:b.t,open:b.o,high:b.h,low:b.l,close:b.c}),vol=b=>({time:b.t,value:b.v,color:b.c>=b.o?"rgba(38,166,154,.46)":"rgba(239,83,80,.46)"});
 
+  function preserveChartViewport(mutator){
+    const ts=chart.timeScale();
+    const logical=ts.getVisibleLogicalRange?.()||null;
+    const time=logical?null:(ts.getVisibleRange?.()||null);
+    mutator();
+    const restore=()=>{
+      try{
+        if(logical&&typeof ts.setVisibleLogicalRange==="function")ts.setVisibleLogicalRange(logical);
+        else if(time)ts.setVisibleRange(time);
+      }catch{}
+    };
+    restore();
+    requestAnimationFrame(restore);
+  }
+
   function applyPnlClass(el,value){el.classList.toggle("pnl-positive",Number(value)>0);el.classList.toggle("pnl-negative",Number(value)<0)}
   function derivedTrading(){
     if(!lastTrading)return null;
@@ -59,10 +75,13 @@
   }
   function renderTradeMarkers(){
     if(!tradeMarkers)return;
-    const range=chart.timeScale().getVisibleRange?.()||null;
     const fills=lastTrading?.fills||[];
-    tradeMarkers.setMarkers(fills.map(f=>({time:Number(f.filled_at_ts),position:f.side==="buy"?"belowBar":"aboveBar",color:f.side==="buy"?cssVar("--chart-up","#26a69a"):cssVar("--chart-down","#ef5350"),shape:f.side==="buy"?"arrowUp":"arrowDown",text:`${f.side==="buy"?"B":"S"}${f.quantity}`,id:f.id,size:1})));
-    if(range){try{chart.timeScale().setVisibleRange(range)}catch{}}
+    const signature=fills.map(f=>`${f.id}:${f.filled_at_ts}:${f.side}:${f.quantity}`).join("|");
+    if(signature===lastMarkerSignature)return;
+    lastMarkerSignature=signature;
+    preserveChartViewport(()=>{
+      tradeMarkers.setMarkers(fills.map(f=>({time:Number(f.filled_at_ts),position:f.side==="buy"?"belowBar":"aboveBar",color:f.side==="buy"?cssVar("--chart-up","#26a69a"):cssVar("--chart-down","#ef5350"),shape:f.side==="buy"?"arrowUp":"arrowDown",text:`${f.side==="buy"?"B":"S"}${f.quantity}`,id:f.id,size:1})));
+    });
   }
   function renderTrading(){
     const t=derivedTrading();
@@ -88,9 +107,22 @@
     $("trade-detail").textContent=`${fill.side.toUpperCase()} ${fill.quantity} ${lastTrading.contract||""}\nRequested  ${displaySeconds(fill.requested_at_ts)}\nFilled     ${displaySeconds(fill.filled_at_ts)}\nPrice      ${number(fill.fill_price)}\nRealized   ${money(fill.realized_delta)}\nPosition   ${fill.position_after===0?"Flat":`${fill.position_after>0?"Long":"Short"} ${Math.abs(fill.position_after)}`}\nAvg after  ${fill.position_after===0?"—":number(fill.avg_price_after)}`;
   }
 
-  function render(b){candles.update(candle(b));volume.update(vol(b));chartTools.append(b);lastMarkPrice=Number(b.c);$("time-status").textContent=displaySeconds(b.t);renderTrading()}
-  function renderMany(bs){bs.forEach(b=>{candles.update(candle(b));volume.update(vol(b))});chartTools.appendMany(bs);if(bs.length){lastMarkPrice=Number(bs[bs.length-1].c);$("time-status").textContent=displaySeconds(bs[bs.length-1].t);renderTrading()}}
-  function reset(bs){chartTools._cancelDrawing?.();candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chartTools.fit();lastMarkPrice=bs.length?Number(bs[bs.length-1].c):null;selectedFillId=null;renderTradeMarkers()}
+  function render(b){
+    preserveChartViewport(()=>{
+      candles.update(candle(b));
+      volume.update(vol(b));
+      chartTools.append(b);
+    });
+    lastMarkPrice=Number(b.c);$("time-status").textContent=displaySeconds(b.t);renderTrading();
+  }
+  function renderMany(bs){
+    preserveChartViewport(()=>{
+      bs.forEach(b=>{candles.update(candle(b));volume.update(vol(b))});
+      chartTools.appendMany(bs);
+    });
+    if(bs.length){lastMarkPrice=Number(bs[bs.length-1].c);$("time-status").textContent=displaySeconds(bs[bs.length-1].t);renderTrading()}
+  }
+  function reset(bs){chartTools._cancelDrawing?.();candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chartTools.fit();lastMarkPrice=bs.length?Number(bs[bs.length-1].c):null;selectedFillId=null;lastMarkerSignature=null;renderTradeMarkers()}
   function error(m=""){$("error").textContent=m}
   async function api(path,opts={}){const authToken=token();if(!authToken)return goLogin();const r=await fetch(`${API_ORIGIN}${path}`,{headers:{"Content-Type":"application/json","Authorization":`Bearer ${authToken}`,...(opts.headers||{})},...opts});if(r.status===401)return goLogin();if(!r.ok){let m=`HTTP ${r.status}`;try{m=(await r.json()).error||m}catch{}throw new Error(m)}return r.json()}
   async function validateAuth(){const authToken=token();if(!authToken){goLogin();return false}const r=await fetch(`${API_ORIGIN}/api/auth/me`,{cache:"no-store",headers:{"Authorization":`Bearer ${authToken}`}});if(!r.ok){goLogin();return false}return true}
