@@ -102,12 +102,17 @@ button:disabled { opacity: .4; cursor: default; }
   overflow: hidden;
   border-left: 1px solid #253247;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto 44px;
+  grid-template-rows: auto minmax(0, 1fr) auto 44px;
   opacity: 0;
   pointer-events: none;
   transition: opacity .15s ease;
 }
 .workspace.trades-open .trade-sidebar { opacity: 1; pointer-events: auto; }
+.trade-summary { padding: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; border-bottom: 1px solid #253247; }
+.trade-summary div { display: grid; gap: 2px; }
+.trade-summary div:last-child { grid-column: 1 / -1; padding-top: 5px; border-top: 1px solid #253247; }
+.trade-summary span { color: #748297; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.trade-summary strong { font-size: 13px; font-variant-numeric: tabular-nums; }
 .trade-table-wrap { min-height: 0; overflow: auto; }
 .trade-table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
 .trade-table th { position: sticky; top: 0; z-index: 1; background: #101722; color: #748297; text-align: right; padding: 7px 8px; border-bottom: 1px solid #253247; }
@@ -119,13 +124,8 @@ button:disabled { opacity: .4; cursor: default; }
 .trade-table .buy-text { color: #6fd6b5; }
 .trade-table .sell-text { color: #ff8f9e; }
 .trade-empty td { color: #748297; text-align: center !important; padding: 18px; }
-.trading-console-details { border-top: 1px solid #253247; min-height: 0; max-height: 300px; overflow: auto; }
+.trading-console-details { border-top: 1px solid #253247; min-height: 0; max-height: 160px; overflow: auto; }
 .trading-console-details[hidden] { display: none; }
-.trade-summary { padding: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; border-bottom: 1px solid #253247; }
-.trade-summary div { display: grid; gap: 2px; }
-.trade-summary div:last-child { grid-column: 1 / -1; padding-top: 5px; border-top: 1px solid #253247; }
-.trade-summary span { color: #748297; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
-.trade-summary strong { font-size: 13px; font-variant-numeric: tabular-nums; }
 .trade-detail { min-height: 72px; max-height: 150px; overflow: auto; padding: 10px 12px; color: #9cacbd; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-line; }
 .trade-ledger-toolbar {
   height: 44px;
