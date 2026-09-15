@@ -44,20 +44,22 @@
       <div id="chart-legend" class="chart-legend">O — H — L — C — V —</div>
       <div class="plot-area"><div id="chart"></div></div>
       <aside id="trade-sidebar" class="trade-sidebar" aria-label="Trading record">
-        <div class="trade-summary">
-          <div><span>Position</span><strong id="trade-position">Flat</strong></div>
-          <div><span>Avg</span><strong id="trade-avg">—</strong></div>
-          <div><span>Unrealized</span><strong id="trade-unrealized">$0.00</strong></div>
-          <div><span>Realized</span><strong id="trade-realized">$0.00</strong></div>
-          <div><span>Total P&amp;L</span><strong id="trade-total">$0.00</strong></div>
-        </div>
         <div class="trade-table-wrap">
           <table class="trade-table">
             <thead><tr><th>#</th><th>Side</th><th>Qty</th><th>Fill</th><th>P&amp;L</th></tr></thead>
             <tbody id="trade-rows"><tr class="trade-empty"><td colspan="5">No trades yet</td></tr></tbody>
           </table>
         </div>
-        <div id="trade-detail" class="trade-detail">Click a fill to inspect it.</div>
+        <div id="trading-console" class="trading-console-details" hidden>
+          <div class="trade-summary">
+            <div><span>Position</span><strong id="trade-position">Flat</strong></div>
+            <div><span>Avg</span><strong id="trade-avg">—</strong></div>
+            <div><span>Unrealized</span><strong id="trade-unrealized">$0.00</strong></div>
+            <div><span>Realized</span><strong id="trade-realized">$0.00</strong></div>
+            <div><span>Total P&amp;L</span><strong id="trade-total">$0.00</strong></div>
+          </div>
+          <div id="trade-detail" class="trade-detail">Click a fill to inspect it.</div>
+        </div>
         <div class="trade-ledger-toolbar">
           <button id="trade-clear" type="button">Clear</button>
           <button id="console-toggle" type="button" aria-pressed="false">Console</button>
@@ -71,13 +73,11 @@
         <div id="speeds" class="speeds"><span>Speed</span><button data-speed="1" class="active">1</button><button data-speed="5">5</button><button data-speed="10">10</button><button data-speed="50">50</button><button data-speed="100">100</button><button data-speed="max">Max</button></div>
         <button id="trades-toggle" type="button" aria-pressed="false">Trades</button>
       </div>
-    </section>
-
-    <section id="trading-console" class="trading-console" hidden>
-      <span class="console-label">Trade</span>
-      <span>Qty</span><input id="trade-qty" type="number" min="1" max="100" value="1" inputmode="numeric">
-      <button id="buy-btn" class="buy" type="button">Buy</button>
-      <button id="sell-btn" class="sell" type="button">Sell</button>
+      <div class="trade-entry">
+        <span>Trade</span><span>Qty</span><input id="trade-qty" type="number" min="1" max="100" value="1" inputmode="numeric">
+        <button id="buy-btn" class="buy" type="button">Buy</button>
+        <button id="sell-btn" class="sell" type="button">Sell</button>
+      </div>
     </section>
 
     <div id="error"></div>
