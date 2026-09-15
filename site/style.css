@@ -23,15 +23,15 @@ main {
   height: 100dvh;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   overflow: hidden;
 }
-.setup, .controls, .trading-console, .chart-toolbar, .chart-legend, .trade-sidebar { background: #101722; border-color: #253247; }
-.setup, .controls, .trading-console { padding: 12px 18px; display: flex; align-items: center; gap: 12px; }
+.setup, .controls, .chart-toolbar, .chart-legend, .trade-sidebar { background: #101722; border-color: #253247; }
+.setup, .controls { padding: 12px 18px; display: flex; align-items: center; gap: 12px; }
 .pill { border: 1px solid #3a4960; padding: 4px 8px; border-radius: 999px; font-size: 11px; }
 .setup { border-bottom: 1px solid #253247; min-width: 0; }
 .setup label { display: grid; gap: 4px; font-size: 11px; color: #8796aa; flex: 0 0 auto; }
-.setup input, .setup select, .trading-console input { background: #0a111b; color: #edf2fa; border: 1px solid #35455d; border-radius: 6px; padding: 7px; }
+.setup input, .setup select, .trade-entry input { background: #0a111b; color: #edf2fa; border: 1px solid #35455d; border-radius: 6px; padding: 7px; }
 .setup > span { font-size: 11px; color: #748297; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session-status { margin-left: auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: 0 0 auto; padding-left: 14px; border-left: 1px solid #253247; }
 .session-status b { font-size: 12px; }
@@ -102,17 +102,12 @@ button:disabled { opacity: .4; cursor: default; }
   overflow: hidden;
   border-left: 1px solid #253247;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   opacity: 0;
   pointer-events: none;
   transition: opacity .15s ease;
 }
 .workspace.trades-open .trade-sidebar { opacity: 1; pointer-events: auto; }
-.trade-summary { padding: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; border-bottom: 1px solid #253247; }
-.trade-summary div { display: grid; gap: 2px; }
-.trade-summary div:last-child { grid-column: 1 / -1; padding-top: 5px; border-top: 1px solid #253247; }
-.trade-summary span { color: #748297; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
-.trade-summary strong { font-size: 13px; font-variant-numeric: tabular-nums; }
 .trade-table-wrap { min-height: 0; overflow: auto; }
 .trade-table { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
 .trade-table th { position: sticky; top: 0; z-index: 1; background: #101722; color: #748297; text-align: right; padding: 7px 8px; border-bottom: 1px solid #253247; }
@@ -124,7 +119,14 @@ button:disabled { opacity: .4; cursor: default; }
 .trade-table .buy-text { color: #6fd6b5; }
 .trade-table .sell-text { color: #ff8f9e; }
 .trade-empty td { color: #748297; text-align: center !important; padding: 18px; }
-.trade-detail { min-height: 86px; max-height: 150px; overflow: auto; border-top: 1px solid #253247; padding: 10px 12px; color: #9cacbd; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-line; }
+.trading-console-details { border-top: 1px solid #253247; min-height: 0; max-height: 300px; overflow: auto; }
+.trading-console-details[hidden] { display: none; }
+.trade-summary { padding: 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; border-bottom: 1px solid #253247; }
+.trade-summary div { display: grid; gap: 2px; }
+.trade-summary div:last-child { grid-column: 1 / -1; padding-top: 5px; border-top: 1px solid #253247; }
+.trade-summary span { color: #748297; font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+.trade-summary strong { font-size: 13px; font-variant-numeric: tabular-nums; }
+.trade-detail { min-height: 72px; max-height: 150px; overflow: auto; padding: 10px 12px; color: #9cacbd; font: 11px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-line; }
 .trade-ledger-toolbar { display: flex; justify-content: flex-end; gap: 6px; padding: 8px 10px; border-top: 1px solid #253247; }
 .trade-ledger-toolbar button { padding: 6px 10px; font-size: 11px; }
 .controls {
@@ -136,9 +138,10 @@ button:disabled { opacity: .4; cursor: default; }
   flex-wrap: nowrap;
   white-space: nowrap;
   scrollbar-width: none;
+  justify-content: space-between;
 }
 .controls::-webkit-scrollbar { display: none; }
-.replay-controls, .transport, .speeds {
+.replay-controls, .transport, .speeds, .trade-entry {
   display: flex;
   flex-wrap: nowrap;
   gap: 6px;
@@ -149,12 +152,11 @@ button:disabled { opacity: .4; cursor: default; }
 .transport, .speeds { flex: 0 0 auto; }
 .speeds { margin-left: 6px; }
 #trades-toggle { margin-left: 8px; }
+.trade-entry { margin-left: auto; flex: 0 0 auto; min-width: max-content; padding-left: 14px; border-left: 1px solid #253247; }
+.speeds span, .trade-entry span { font-size: 11px; color: #8190a4; margin-right: 4px; }
+.trade-entry span:first-child { text-transform: uppercase; letter-spacing: .06em; color: #6f7f95; }
+.trade-entry input { width: 58px; padding: 7px 6px; }
 #trades-toggle[aria-pressed="true"], #console-toggle[aria-pressed="true"] { border-color: #668fe8; color: #b8cbff; }
-.speeds span, .trading-console span { font-size: 11px; color: #8190a4; margin-right: 4px; }
-.trading-console { border-top: 1px solid #253247; justify-content: flex-end; min-width: 0; overflow-x: auto; white-space: nowrap; }
-.trading-console[hidden] { display: none; }
-.trading-console .console-label { text-transform: uppercase; letter-spacing: .06em; color: #6f7f95; }
-.trading-console input { width: 58px; padding: 7px 6px; }
 #error { min-height: 24px; flex: 0 0 auto; background: #101722; color: #ff7e7e; padding: 4px 18px; font-size: 12px; }
 .pnl-positive { color: #6fd6b5 !important; }
 .pnl-negative { color: #ff8f9e !important; }
@@ -162,6 +164,7 @@ button:disabled { opacity: .4; cursor: default; }
   .setup { flex-wrap: wrap; }
   .session-status { margin-left: 0; border-left: 0; padding-left: 0; width: 100%; justify-content: flex-start; }
   .workspace.trades-open { grid-template-columns: minmax(0, 1fr) minmax(300px, 340px); }
+  .controls { gap: 8px; }
 }
 @media (max-width: 850px) {
   .setup { align-items: flex-start; overflow-x: auto; }
@@ -175,4 +178,6 @@ button:disabled { opacity: .4; cursor: default; }
       "sidebar";
   }
   .workspace.trades-open .trade-sidebar { border-left: 0; border-top: 1px solid #253247; }
+  .controls { overflow-x: auto; }
+  .replay-controls, .trade-entry { flex: 0 0 auto; }
 }
