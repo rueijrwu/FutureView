@@ -3,11 +3,50 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta http-equiv="refresh" content="0;url=https://futureview.rueijrwu.workers.dev/">
-  <title>FutureView</title>
-  <script>location.replace("https://futureview.rueijrwu.workers.dev/");</script>
+  <title>FutureView Replay</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://unpkg.com/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://unpkg.com/lightweight-charts-drawing@0.1.1/dist/lightweight-charts-drawing.umd.js"></script>
 </head>
 <body>
-  <p>Opening <a href="https://futureview.rueijrwu.workers.dev/">FutureView</a>…</p>
+  <main>
+    <header>
+      <div><p class="eyebrow">HISTORICAL MARKET SIMULATOR</p><h1>FutureView Replay</h1><p>Cloud replay · 5-minute bars · causal actual-contract selection · all displayed times are ET</p></div>
+      <div class="status"><b id="contract-status">Auto contract</b><span id="time-status">No session</span><span id="state-status" class="pill">STOPPED</span></div>
+    </header>
+    <section class="setup">
+      <label>Product<select id="product"><option value="MES">MES</option><option value="ES">ES</option></select></label>
+      <label>Start (ET)<input id="start" type="datetime-local" step="300"></label>
+      <label>Warmup<input id="warmup" type="number" min="0" max="5000" value="300"></label>
+      <button id="start-btn" class="primary">Start Replay</button>
+      <button id="random-btn" type="button">🎲 Random Date</button>
+      <span id="range">The actual contract is selected automatically from prior-session volume.</span>
+    </section>
+    <section class="chart-shell">
+      <div id="chart-toolbar" class="chart-toolbar" role="toolbar" aria-label="Chart tools">
+        <div class="tool-group">
+          <span>Indicators</span>
+          <span class="indicator-pick"><button data-tool="sma5" aria-pressed="false">SMA5</button><button type="button" class="fv-color-swatch" data-indicator-color="sma5" title="SMA5 color"></button></span>
+          <span class="indicator-pick"><button data-tool="sma10" aria-pressed="false">SMA10</button><button type="button" class="fv-color-swatch" data-indicator-color="sma10" title="SMA10 color"></button></span>
+          <span class="indicator-pick"><button data-tool="sma20" aria-pressed="false">SMA20</button><button type="button" class="fv-color-swatch" data-indicator-color="sma20" title="SMA20 color"></button></span>
+          <span class="indicator-pick"><button data-tool="sma60" aria-pressed="false">SMA60</button><button type="button" class="fv-color-swatch" data-indicator-color="sma60" title="SMA60 color"></button></span>
+          <span class="indicator-pick"><button data-tool="vwap" aria-pressed="false">VWAP</button><button type="button" class="fv-color-swatch" data-indicator-color="vwap" title="VWAP color"></button></span>
+        </div>
+        <div class="tool-group"><span>Draw</span><button data-tool="trend" aria-pressed="false">Trend</button><button data-tool="ray" aria-pressed="false">Ray</button><button data-tool="hline" aria-pressed="false">H-Line</button><button data-tool="vline" aria-pressed="false">V-Line</button><button data-tool="rect" aria-pressed="false">Rect</button><button data-tool="fib" aria-pressed="false">Fib</button><button data-tool="text" aria-pressed="false">Text</button><button type="button" class="fv-color-swatch" id="draw-color" title="Annotation color"></button><button data-tool="undo">Undo</button><button data-tool="clear">Clear</button></div>
+        <div class="tool-group"><span>View</span><button data-tool="crosshair" aria-pressed="false">Magnet</button><button data-tool="zoom-in">Zoom +</button><button data-tool="zoom-out">Zoom −</button><button data-tool="fit">Fit</button><button data-tool="latest">Latest</button><button data-tool="log" aria-pressed="false">Linear</button></div>
+      </div>
+      <div id="chart-legend" class="chart-legend">O — H — L — C — V —</div>
+      <div id="chart"></div>
+    </section>
+    <section class="controls">
+      <div class="transport"><button id="restart">↺ Restart</button><button id="next">▶| Next</button><button id="play" class="primary">▶ Play</button><button id="pause">⏸ Pause</button></div>
+      <div id="speeds" class="speeds"><span>Speed</span><button data-speed="1" class="active">1x</button><button data-speed="5">5x</button><button data-speed="10">10x</button><button data-speed="25">25x</button><button data-speed="50">50x</button><button data-speed="100">100x</button><button data-speed="max">Max</button></div>
+    </section>
+    <div id="error"></div>
+    <footer>TradingView Lightweight Charts™ · Copyright © 2025 TradingView, Inc. · <a href="https://www.tradingview.com/" target="_blank" rel="noreferrer">TradingView</a></footer>
+  </main>
+  <script src="/chart-tools.js"></script>
+  <script src="/chart-tools-fixes.js"></script>
+  <script src="/app.js"></script>
 </body>
 </html>
