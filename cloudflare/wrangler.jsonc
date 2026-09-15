@@ -3,10 +3,13 @@
   "name": "futureview",
   "main": "./worker/main.js",
   "compatibility_date": "2026-09-11",
+  "vars": {
+    "REGISTRATION_OPEN": "true"
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*"]
+    "run_worker_first": ["/*"]
   },
   "r2_buckets": [
     {
