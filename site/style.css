@@ -3,9 +3,6 @@
   font-family: Inter, system-ui, sans-serif;
   background: #090e15;
   color: #edf2fa;
-
-  /* Chart palette - single source of truth, read at runtime by app.js / chart-tools.js
-     via getComputedStyle so JS never hardcodes a hex value. Edit here to retheme the chart. */
   --chart-bg: #090e15;
   --chart-grid: #17202d;
   --chart-text: #aab5c5;
@@ -24,16 +21,16 @@ main { min-height: 100vh; display: grid; grid-template-rows: auto auto minmax(56
 header, .setup, .controls, .chart-toolbar, .chart-legend { background: #101722; border-color: #253247; }
 header, .setup, .controls { padding: 12px 18px; display: flex; align-items: center; gap: 12px; }
 header { justify-content: space-between; border-bottom: 1px solid #253247; }
-h1 { margin: 0; font-size: 20px; }
 .eyebrow { margin: 0; color: #668fe8; font-size: 10px; letter-spacing: .14em; font-weight: 700; }
 header p:not(.eyebrow) { margin: 3px 0 0; color: #7f8da1; font-size: 12px; }
-header small { color: #7f8da1; }
-.status { display: flex; gap: 14px; align-items: center; }
 .pill { border: 1px solid #3a4960; padding: 4px 8px; border-radius: 999px; font-size: 11px; }
-.setup { border-bottom: 1px solid #253247; }
-.setup label { display: grid; gap: 4px; font-size: 11px; color: #8796aa; }
+.setup { border-bottom: 1px solid #253247; min-width: 0; }
+.setup label { display: grid; gap: 4px; font-size: 11px; color: #8796aa; flex: 0 0 auto; }
 .setup input, .setup select { background: #0a111b; color: #edf2fa; border: 1px solid #35455d; border-radius: 6px; padding: 7px; }
-.setup span { font-size: 11px; color: #748297; }
+.setup > span { font-size: 11px; color: #748297; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-status { margin-left: auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: 0 0 auto; padding-left: 14px; border-left: 1px solid #253247; }
+.session-status b { font-size: 12px; }
+.session-status span:not(.pill) { color: #8d9bad; font-size: 11px; }
 button { background: #172233; color: #edf2fa; border: 1px solid #35455d; border-radius: 7px; padding: 8px 12px; cursor: pointer; }
 button.primary, button.active { background: #255ddd; border-color: #4879e8; }
 button.armed { color: #f0b90b; border-color: #f0b90b; box-shadow: 0 0 0 1px rgba(240,185,11,.2) inset; }
@@ -67,6 +64,10 @@ button:disabled { opacity: .4; cursor: default; }
 #error { min-height: 24px; background: #101722; color: #ff7e7e; padding: 4px 18px; font-size: 12px; }
 footer { background: #101722; color: #5f6d80; font-size: 10px; text-align: right; padding: 4px 18px 8px; }
 footer a { color: #8399bc; }
+@media (max-width: 1100px) {
+  .setup { flex-wrap: wrap; }
+  .session-status { margin-left: 0; border-left: 0; padding-left: 0; width: 100%; justify-content: flex-start; }
+}
 @media (max-width: 850px) {
   main { grid-template-rows: auto auto minmax(460px, 1fr) auto auto auto; }
   header, .controls { align-items: flex-start; flex-direction: column; }
