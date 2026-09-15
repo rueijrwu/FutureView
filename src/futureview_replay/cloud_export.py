@@ -7,12 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from futureview_replay.resolver import (
-    DISPLAY_TIME_ZONE,
-    SESSION_ROLL_HOUR_ET,
-    build_selection_calendar,
-    session_date,
-)
+from futureview_replay.resolver import DISPLAY_TIME_ZONE, SESSION_ROLL_HOUR_ET, session_date
 
 
 def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
@@ -72,19 +67,24 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
         info["shards"] = sorted(info["shards"], key=lambda x: (x["first_time"], x["key"]))
         ordered[contract] = info
 
-    selection_calendar = build_selection_calendar(session_volumes)
+    sessions = sorted(session_volumes)
     cloud_manifest = {
-        "version": 3,
+        "version": 4,
         "dataset": manifest.get("dataset"),
         "product": manifest.get("product"),
         "resolution": "5m",
         "continuous_series": False,
-        "roll_rule": "prior_session_volume",
+        "roll_rule": "runtime_prior_session_max_volume",
         "contract_selection": {
-            "rule": "prior_session_volume",
+            "rule": "runtime_prior_session_max_volume",
             "time_zone": str(DISPLAY_TIME_ZONE),
             "session_roll_hour_et": SESSION_ROLL_HOUR_ET,
-            "sessions": selection_calendar,
+            "expiry_cutoff_et": "09:30",
+            "sessions": [current.isoformat() for current in sessions],
+            "session_volumes": {
+                current.isoformat(): {contract: float(volume) for contract, volume in volumes.items()}
+                for current, volumes in sorted(session_volumes.items())
+            },
         },
         "contracts": ordered,
     }
