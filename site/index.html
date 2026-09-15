@@ -42,9 +42,7 @@
         <div class="tool-group"><span>View</span><button data-tool="crosshair" aria-pressed="false">Magnet</button><button data-tool="zoom-in">Zoom +</button><button data-tool="zoom-out">Zoom −</button><button data-tool="fit">Fit</button><button data-tool="latest">Latest</button><button data-tool="log" aria-pressed="false">Linear</button></div>
       </div>
       <div id="chart-legend" class="chart-legend">O — H — L — C — V —</div>
-      <div class="plot-area">
-        <div id="chart"></div>
-      </div>
+      <div class="plot-area"><div id="chart"></div></div>
       <aside id="trade-sidebar" class="trade-sidebar" aria-label="Trading record">
         <div class="trade-summary">
           <div><span>Position</span><strong id="trade-position">Flat</strong></div>
@@ -60,6 +58,10 @@
           </table>
         </div>
         <div id="trade-detail" class="trade-detail">Click a fill to inspect it.</div>
+        <div class="trade-ledger-toolbar">
+          <button id="trade-clear" type="button">Clear</button>
+          <button id="console-toggle" type="button" aria-pressed="false">Console</button>
+        </div>
       </aside>
     </section>
 
@@ -67,14 +69,17 @@
       <div class="replay-controls">
         <div class="transport"><button id="restart">↺ Restart</button><button id="next">▶| Next</button><button id="play" class="primary">▶ Play</button><button id="pause">⏸ Pause</button></div>
         <div id="speeds" class="speeds"><span>Speed</span><button data-speed="1" class="active">1</button><button data-speed="5">5</button><button data-speed="10">10</button><button data-speed="50">50</button><button data-speed="100">100</button><button data-speed="max">Max</button></div>
-      </div>
-      <div class="trade-entry">
-        <span>Trade</span><span>Qty</span><input id="trade-qty" type="number" min="1" max="100" value="1" inputmode="numeric">
-        <button id="buy-btn" class="buy" type="button">Buy</button>
-        <button id="sell-btn" class="sell" type="button">Sell</button>
         <button id="trades-toggle" type="button" aria-pressed="false">Trades</button>
       </div>
     </section>
+
+    <section id="trading-console" class="trading-console" hidden>
+      <span class="console-label">Trade</span>
+      <span>Qty</span><input id="trade-qty" type="number" min="1" max="100" value="1" inputmode="numeric">
+      <button id="buy-btn" class="buy" type="button">Buy</button>
+      <button id="sell-btn" class="sell" type="button">Sell</button>
+    </section>
+
     <div id="error"></div>
   </main>
   <script src="/chart-tools.js"></script>
