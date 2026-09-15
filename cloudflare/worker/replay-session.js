@@ -59,20 +59,22 @@ export class ReplaySession extends DurableObject {
     return PRODUCT_SPECS[this.session?.product] ?? PRODUCT_SPECS.MES;
   }
 
+  _blankTrading(lastPrice = null) {
+    return {
+      positionQty: 0,
+      avgPrice: 0,
+      realizedPnl: 0,
+      commission: 0,
+      slippage: 0,
+      pendingOrders: [],
+      fills: [],
+      nextSequence: 1,
+      lastPrice,
+    };
+  }
+
   _trading() {
-    if (!this.session.trading) {
-      this.session.trading = {
-        positionQty: 0,
-        avgPrice: 0,
-        realizedPnl: 0,
-        commission: 0,
-        slippage: 0,
-        pendingOrders: [],
-        fills: [],
-        nextSequence: 1,
-        lastPrice: null,
-      };
-    }
+    if (!this.session.trading) this.session.trading = this._blankTrading();
     return this.session.trading;
   }
 
@@ -131,17 +133,7 @@ export class ReplaySession extends DurableObject {
       speed: 1,
       warmup: Math.max(0, Math.min(5000, Number(body.warmup ?? 300))),
       startTs: start,
-      trading: {
-        positionQty: 0,
-        avgPrice: 0,
-        realizedPnl: 0,
-        commission: 0,
-        slippage: 0,
-        pendingOrders: [],
-        fills: [],
-        nextSequence: 1,
-        lastPrice: null,
-      },
+      trading: this._blankTrading(),
     };
     this.shard = null;
     this.shardKey = null;
@@ -232,6 +224,7 @@ export class ReplaySession extends DurableObject {
       else if (command.type === "step") await this.step();
       else if (command.type === "restart") await this.restart();
       else if (command.type === "order") await this.placeOrder(command.side, command.quantity);
+      else if (command.type === "clear_trading") await this.clearTrading();
       else ws.send(JSON.stringify({ type: "error", error: `Unknown command ${command.type}` }));
     } catch (error) {
       ws.send(JSON.stringify({ type: "error", error: String(error?.message ?? error) }));
@@ -268,6 +261,16 @@ export class ReplaySession extends DurableObject {
     t.pendingOrders.push(order);
     await this.ctx.storage.put("session", this.session);
     this._broadcast({ type: "order_accepted", order, trading: this._accountSnapshot() });
+  }
+
+  async clearTrading() {
+    if (!this.session) throw new Error("Session not initialized");
+    const current = this.shard?.[this.session.barIndex];
+    this.session.trading = this._blankTrading(current?.c ?? current?.o ?? null);
+    await this._clearPersistedTrading();
+    await this.ctx.storage.put("session", this.session);
+    await this._persistTradingSummary();
+    this._broadcast({ type: "trading_cleared", trading: this._accountSnapshot() });
   }
 
   async play(value) {
@@ -313,17 +316,7 @@ export class ReplaySession extends DurableObject {
     this.session.barIndex = this.session.originBarIndex;
     this.session.state = "PAUSED";
     this.session.speed = 1;
-    this.session.trading = {
-      positionQty: 0,
-      avgPrice: 0,
-      realizedPnl: 0,
-      commission: 0,
-      slippage: 0,
-      pendingOrders: [],
-      fills: [],
-      nextSequence: 1,
-      lastPrice: null,
-    };
+    this.session.trading = this._blankTrading();
     this.shard = null;
     this.shardKey = null;
     await this._loadShard(this.session.shardIndex);
@@ -429,7 +422,7 @@ export class ReplaySession extends DurableObject {
       else if (Math.sign(newQty) !== Math.sign(oldQty)) t.avgPrice = price;
     }
 
-    const fill = {
+    return {
       id: crypto.randomUUID(),
       sequence: t.nextSequence++,
       side: order.side,
@@ -443,7 +436,6 @@ export class ReplaySession extends DurableObject {
       commission: 0,
       slippage: 0,
     };
-    return fill;
   }
 
   async _persistFill(fill) {
