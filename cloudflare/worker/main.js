@@ -1,4 +1,13 @@
 import { ReplaySession } from "./replay-session.js";
+import {
+  authenticate,
+  createSession as createAuthSession,
+  currentUser,
+  destroySession,
+  purgeExpiredSessions,
+  register,
+  registrationOpen,
+} from "./auth.js";
 
 export { ReplaySession };
 
@@ -9,6 +18,8 @@ const EXPIRY_HOUR_ET = 9;
 const EXPIRY_MINUTE_ET = 30;
 const MONTH_NUMBER = Object.fromEntries([..."FGHJKMNQUVXZ"].map((code, index) => [code, index + 1]));
 const CONTRACT_RE = /^(.+?)([FGHJKMNQUVXZ])(\d{1,2})$/;
+const PUBLIC_ASSETS = new Set(["/login", "/login.html", "/auth.js", "/auth.css"]);
+
 const sessionFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: DISPLAY_TIME_ZONE,
   year: "numeric",
@@ -140,7 +151,6 @@ function resolveContract(manifest, product, start) {
     };
   }
 
-  // Backward-compatible read of version-3 manifests while version-4 data is republished.
   const legacy = (meta.sessions ?? []).find((item) => String(item.session) >= target);
   if (!legacy) throw new Error("Replay contract-selection metadata is unavailable; republish replay data version 4");
   if (!manifest.contracts?.[legacy.contract]) throw new Error(`Resolved contract ${legacy.contract} is unavailable`);
@@ -154,20 +164,87 @@ function corsHeaders(request) {
     "access-control-allow-origin": PAGES_ORIGIN,
     "access-control-allow-methods": "GET,POST,OPTIONS",
     "access-control-allow-headers": "content-type",
+    "access-control-allow-credentials": "true",
     "access-control-max-age": "86400",
     "vary": "Origin",
   };
 }
 
-function json(request, payload, status = 200) {
-  return Response.json(payload, { status, headers: { "cache-control": "no-store", ...corsHeaders(request) } });
+function json(request, payload, status = 200, headers = {}) {
+  return Response.json(payload, {
+    status,
+    headers: { "cache-control": "no-store", ...corsHeaders(request), ...headers },
+  });
+}
+
+function redirect(location, headers = {}) {
+  return new Response(null, { status: 303, headers: { location, "cache-control": "no-store", ...headers } });
+}
+
+function sameOriginRequest(request) {
+  const origin = request.headers.get("origin");
+  if (!origin) return true;
+  return origin === new URL(request.url).origin;
+}
+
+async function authRoutes(request, env, url) {
+  if (url.pathname === "/api/auth/status" && request.method === "GET") {
+    return json(request, { registration_open: await registrationOpen(env) });
+  }
+  if (url.pathname === "/api/auth/register" && request.method === "POST") {
+    if (!sameOriginRequest(request)) return json(request, { error: "Cross-origin registration is not allowed" }, 403);
+    try {
+      const body = await request.json();
+      const user = await register(env, body.username, body.password);
+      const session = await createAuthSession(env, user.id);
+      return json(request, { ok: true, user: { username: user.username } }, 201, { "set-cookie": session.cookie });
+    } catch (error) {
+      return json(request, { error: String(error?.message ?? error) }, 400);
+    }
+  }
+  if (url.pathname === "/api/auth/login" && request.method === "POST") {
+    if (!sameOriginRequest(request)) return json(request, { error: "Cross-origin login is not allowed" }, 403);
+    const body = await request.json().catch(() => ({}));
+    const user = await authenticate(env, body.username, body.password);
+    if (!user) return json(request, { error: "Invalid username or password" }, 401);
+    await purgeExpiredSessions(env);
+    const session = await createAuthSession(env, user.id);
+    return json(request, { ok: true, user: { username: user.username } }, 200, { "set-cookie": session.cookie });
+  }
+  if (url.pathname === "/api/auth/logout" && request.method === "POST") {
+    if (!sameOriginRequest(request)) return json(request, { error: "Cross-origin logout is not allowed" }, 403);
+    const cookie = await destroySession(request, env);
+    return redirect("/login", { "set-cookie": cookie });
+  }
+  if (url.pathname === "/api/auth/me" && request.method === "GET") {
+    const user = await currentUser(request, env);
+    return user ? json(request, { user: { username: user.username } }) : json(request, { error: "Unauthorized" }, 401);
+  }
+  return null;
 }
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
     if (request.method === "OPTIONS" && url.pathname.startsWith("/api/")) {
       return new Response(null, { status: 204, headers: corsHeaders(request) });
+    }
+
+    const publicAuthResponse = await authRoutes(request, env, url);
+    if (publicAuthResponse) return publicAuthResponse;
+
+    if (PUBLIC_ASSETS.has(url.pathname)) {
+      if (url.pathname === "/login") return env.ASSETS.fetch(new Request(new URL("/login.html", url), request));
+      const user = await currentUser(request, env);
+      if (user && (url.pathname === "/login" || url.pathname === "/login.html")) return redirect("/");
+      return env.ASSETS.fetch(request);
+    }
+
+    const user = await currentUser(request, env);
+    if (!user) {
+      if (url.pathname.startsWith("/api/")) return json(request, { error: "Unauthorized" }, 401);
+      return redirect("/login");
     }
 
     if (url.pathname === "/api/health") {
@@ -253,6 +330,7 @@ export default {
       const stub = env.REPLAY_SESSION.get(env.REPLAY_SESSION.idFromName(id));
       return stub.fetch(request);
     }
+
     return env.ASSETS.fetch(request);
   },
 };
