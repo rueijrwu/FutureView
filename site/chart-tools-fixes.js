@@ -12,9 +12,10 @@
   p._handlePreviewMove = function (event) { if (this.activeDrawTool && this.activeDrawTool !== "text") { const anchors = this.pendingAnchors || []; if (anchors.length) { const preview = this._anchorAtPoint(this._containerPoint(event)); if (preview) this._renderPreview(DRAW_TOOLS[this.activeDrawTool], anchors, preview); } return; } return originalPreviewMove.call(this, event); };
   p._clearDrawings = function () { this._cancelDrawing(); originalClear.call(this); this.previewId = null; };
 
-  // Fit is an explicit one-shot operation: fit X, auto-fit Y, then freeze Y again.
-  // The freeze is delayed until after rendering so Lightweight Charts can finish the
-  // autoscale calculation before horizontal panning/replay updates are locked out.
+  // Explicit one-shot fit for both independent visible scales.
+  // Price uses the right Y-axis; volume uses the left Y-axis. After the browser has
+  // rendered the autoscaled ranges, both scales are frozen again so horizontal pan and
+  // replay/trading updates cannot change either Y range automatically.
   p.fit = function () {
     const priceScale = this.candles.priceScale();
     const volumeScale = this.volume ? this.volume.priceScale() : null;
@@ -31,5 +32,28 @@
 
   document.addEventListener("keydown", (event) => { if (event.key !== "Escape") return; queueMicrotask(() => { const instance = window.__futureViewChartTools; if (instance?.activeDrawTool) instance._cancelDrawing(); }); }, true);
   const Original = Ctor;
-  window.FutureViewChartTools = class FutureViewChartToolsPatched extends Original { constructor(options) { super(options); this.pendingAnchors = []; this._syncDrawToolUi(); window.__futureViewChartTools = this; } };
+  window.FutureViewChartTools = class FutureViewChartToolsPatched extends Original {
+    constructor(options) {
+      super(options);
+      this.pendingAnchors = [];
+
+      // Overlay price scales are intentionally hidden by Lightweight Charts. Move volume
+      // to the built-in left scale so it has a visible, independently draggable Y-axis;
+      // candles remain on the default right scale.
+      try {
+        this.chart.applyOptions({
+          leftPriceScale: { visible: true, borderVisible: true },
+          rightPriceScale: { visible: true, borderVisible: true },
+        });
+        this.volume?.applyOptions({ priceScaleId: "left" });
+        this.volume?.priceScale().applyOptions({
+          autoScale: false,
+          scaleMargins: { top: 0.8, bottom: 0 },
+        });
+      } catch {}
+
+      this._syncDrawToolUi();
+      window.__futureViewChartTools = this;
+    }
+  };
 })();
