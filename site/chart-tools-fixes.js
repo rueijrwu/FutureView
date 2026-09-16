@@ -31,6 +31,17 @@
   };
 
   document.addEventListener("keydown", (event) => { if (event.key !== "Escape") return; queueMicrotask(() => { const instance = window.__futureViewChartTools; if (instance?.activeDrawTool) instance._cancelDrawing(); }); }, true);
+
+  // A new replay session starts with a clean annotation canvas. Use a capture-phase
+  // listener so drawings are removed before app.js starts either the chosen-time replay
+  // or the Random replay. Restart is intentionally left unchanged.
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest?.("#start-btn, #random-btn");
+    if (!button) return;
+    const instance = window.__futureViewChartTools;
+    if (instance) instance._clearDrawings();
+  }, true);
+
   const Original = Ctor;
   window.FutureViewChartTools = class FutureViewChartToolsPatched extends Original {
     constructor(options) {
