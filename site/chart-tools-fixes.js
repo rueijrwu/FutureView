@@ -8,7 +8,7 @@
   p._syncDrawToolUi = function () { this.toolbar.querySelectorAll("button[data-tool]").forEach((button) => { const tool = button.dataset.tool; if (!(tool in DRAW_TOOLS)) return; const armed = this.activeDrawTool === tool; button.classList.toggle("armed", armed); button.setAttribute("aria-pressed", String(armed)); }); };
   p._armDrawTool = function (tool) { const wasArmed = this.activeDrawTool === tool; this._cancelDrawing(); if (wasArmed) return; this.activeDrawTool = tool; this.pendingAnchors = []; this.interactionHandler = null; this.chart.applyOptions({ handleScroll: false, handleScale: false }); this._syncDrawToolUi(); };
   p._cancelDrawing = function () { this.activeDrawTool = null; this.pendingAnchors = []; this.interactionHandler = null; this.chart.applyOptions({ handleScroll: true, handleScale: true }); this._clearPreview(); this._closeEditor(); this.container.style.cursor = ""; this._syncDrawToolUi(); };
-  p._handleDrawClick = function (param) { if (this.editorEl || !this.activeDrawTool || !param?.point) return; const tool = this.activeDrawTool; const registryType = DRAW_TOOLS[tool]; if (!registryType) return; const anchor = this._anchorAtPoint(param.point); if (!anchor) return; if (tool === "text") { this._openTextEditor(param.point, "", (text) => { if (text) this._finalizeDrawing("text-annotation", [anchor], { text, backgroundColor: "transparent" }); this._cancelDrawing(); }); return; } const def = this.registry.get(registryType); if (!def || def.requiredAnchors <= 1) { this._finalizeDrawing(registryType, [anchor], {}); this._cancelDrawing(); return; } this.pendingAnchors = this.pendingAnchors || []; this.pendingAnchors.push(anchor); if (this.pendingAnchors.length >= def.requiredAnchors) { const anchors = this.pendingAnchors.slice(0, def.requiredAnchors); this._finalizeDrawing(registryType, anchors, {}); this._cancelDrawing(); } };
+  p._handleDrawClick = function (param) { if (this.editorEl || !this.activeDrawTool || !param?.point) return; const tool = this.activeDrawTool; const registryType = DRAW_TOOLS[tool]; if (!registryType) { this._cancelDrawing(); return; } const anchor = this._anchorAtPoint(param.point); if (!anchor) { this._syncDrawToolUi(); return; } if (tool === "text") { this._openTextEditor(param.point, "", (text) => { if (text) this._finalizeDrawing("text-annotation", [anchor], { text, backgroundColor: "transparent" }); this._cancelDrawing(); }); return; } const def = this.registry.get(registryType); if (!def || def.requiredAnchors <= 1) { this._finalizeDrawing(registryType, [anchor], {}); this._cancelDrawing(); return; } this.pendingAnchors = this.pendingAnchors || []; this.pendingAnchors.push(anchor); if (this.pendingAnchors.length >= def.requiredAnchors) { const anchors = this.pendingAnchors.slice(0, def.requiredAnchors); this._finalizeDrawing(registryType, anchors, {}); this._cancelDrawing(); } else { this._syncDrawToolUi(); } };
   p._handlePreviewMove = function (event) { if (this.activeDrawTool && this.activeDrawTool !== "text") { const anchors = this.pendingAnchors || []; if (anchors.length) { const preview = this._anchorAtPoint(this._containerPoint(event)); if (preview) this._renderPreview(DRAW_TOOLS[this.activeDrawTool], anchors, preview); } return; } return originalPreviewMove.call(this, event); };
   p._clearDrawings = function () { this._cancelDrawing(); originalClear.call(this); this.previewId = null; };
 
@@ -47,6 +47,20 @@
     constructor(options) {
       super(options);
       this.pendingAnchors = [];
+
+      // Use one authoritative handler for draw-tool buttons. The base toolbar handler
+      // also knows about these buttons, so intercept them in capture phase before that
+      // handler can mutate a second copy of the UI state. This keeps `activeDrawTool`,
+      // the `armed` class, and aria-pressed synchronized even after cancel/complete.
+      this.toolbar.addEventListener("click", (event) => {
+        const button = event.target.closest?.("button[data-tool]");
+        if (!button) return;
+        const tool = button.dataset.tool;
+        if (!(tool in DRAW_TOOLS)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this._armDrawTool(tool);
+      }, true);
 
       // Overlay price scales are intentionally hidden by Lightweight Charts. Move volume
       // to the built-in left scale so it has a visible, independently draggable Y-axis;
