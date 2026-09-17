@@ -59,6 +59,11 @@
   }
 
   document.addEventListener("click", (event) => {
+    const timeframeButton = event.target.closest?.("button[data-timeframe]");
+    if (timeframeButton && replaySocket?.readyState === NativeWebSocket.OPEN) {
+      replaySocket.send(JSON.stringify({ type: "set_timeframe", timeframe: timeframeButton.dataset.timeframe }));
+    }
+
     const historyButton = event.target.closest?.("button[data-history-range]");
     if (historyButton) {
       event.preventDefault();
