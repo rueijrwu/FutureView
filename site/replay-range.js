@@ -87,9 +87,12 @@
             if (payload.future_data_included !== false) return;
             if (String(payload.resolution) !== timeframe()) return;
             if (payload.history_range && payload.history_range !== selectedRange) return;
+            const cachedBars = payload.bars?.length
+              ? payload.bars
+              : (payload.active_bar ? [payload.active_bar] : []);
             const accepted = window.__futureViewChartTools?._fvLoadCachedWindow?.(
               payload.resolution,
-              payload.bars || [],
+              cachedBars,
               payload.active_bar || null,
             );
             if (accepted && applyRangeOnNextWindow) {
