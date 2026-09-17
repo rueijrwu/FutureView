@@ -21,7 +21,7 @@ test("5m and 30m buckets use Eastern session alignment", () => {
 test("overnight bars stay in the 18:00 ET futures session", () => {
   const value = ts("2024-06-11T01:15:00Z"); // 21:15 EDT on June 10
   assert.equal(sessionStart(value), ts("2024-06-10T22:00:00Z"));
-  assert.equal(displayStamp(value, "240"), ts("2024-06-11T02:00:00Z")); // 22:00 EDT bucket
+  assert.equal(displayStamp(value, "240"), ts("2024-06-10T22:00:00Z")); // 18:00 ET bucket
   assert.equal(tradingDayKey(value), 20240611);
 });
 
