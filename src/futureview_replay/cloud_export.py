@@ -11,6 +11,7 @@ from futureview_replay.resolver import DISPLAY_TIME_ZONE, SESSION_ROLL_HOUR_ET, 
 
 
 INTRADAY_DISPLAY_RESOLUTIONS: dict[str, int] = {"5": 5, "30": 30, "240": 240}
+DISPLAY_WINDOW_BARS = 512
 
 
 def _session_start_epoch(value: pd.Timestamp) -> int:
@@ -47,10 +48,7 @@ def _intraday_bars(frames: list[pd.DataFrame], minutes: int) -> list[dict[str, f
     frame["session_start"] = frame["timestamp"].map(_session_start_epoch)
     seconds = frame["timestamp"].astype("int64") // 1_000_000_000
     frame["bucket"] = frame["session_start"] + ((seconds - frame["session_start"]) // (minutes * 60)) * (minutes * 60)
-    return [
-        _aggregate_ohlcv(group, int(bucket))
-        for bucket, group in frame.groupby("bucket", sort=True)
-    ]
+    return [_aggregate_ohlcv(group, int(bucket)) for bucket, group in frame.groupby("bucket", sort=True)]
 
 
 def _daily_bars(frames: list[pd.DataFrame]) -> list[dict[str, float | int]]:
@@ -68,25 +66,32 @@ def _daily_bars(frames: list[pd.DataFrame]) -> list[dict[str, float | int]]:
     return out
 
 
-def _write_display_bars(
+def _write_display_windows(
     output_dir: Path,
     contract: str,
     resolution_dir: str,
     bars: list[dict[str, float | int]],
-) -> dict[str, object] | None:
+) -> list[dict[str, object]]:
     if not bars:
-        return None
-    relative = Path("contracts") / contract / resolution_dir / "all.json.gz"
-    target = output_dir / relative
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(target, "wt", encoding="utf-8", compresslevel=6) as f:
-        json.dump(bars, f, separators=(",", ":"))
-    return {
-        "key": relative.as_posix(),
-        "count": len(bars),
-        "first_time": bars[0]["t"],
-        "last_time": bars[-1]["t"],
-    }
+        return []
+    windows: list[dict[str, object]] = []
+    for offset in range(0, len(bars), DISPLAY_WINDOW_BARS):
+        chunk = bars[offset : offset + DISPLAY_WINDOW_BARS]
+        window_index = offset // DISPLAY_WINDOW_BARS
+        relative = Path("contracts") / contract / resolution_dir / f"window-{window_index:06d}.json.gz"
+        target = output_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(target, "wt", encoding="utf-8", compresslevel=6) as f:
+            json.dump(chunk, f, separators=(",", ":"))
+        windows.append({
+            "key": relative.as_posix(),
+            "window": window_index,
+            "offset": offset,
+            "count": len(chunk),
+            "first_time": chunk[0]["t"],
+            "last_time": chunk[-1]["t"],
+        })
+    return windows
 
 
 def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
@@ -155,17 +160,20 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
     for contract, frames in display_source.items():
         info = contracts[contract]
         for resolution, minutes in INTRADAY_DISPLAY_RESOLUTIONS.items():
-            meta = _write_display_bars(output_dir, contract, f"{minutes}m", _intraday_bars(frames, minutes))
-            info["display_shards"][resolution] = [meta] if meta else []
-        meta = _write_display_bars(output_dir, contract, "1D", _daily_bars(frames))
-        info["display_shards"]["1D"] = [meta] if meta else []
+            info["display_shards"][resolution] = _write_display_windows(
+                output_dir, contract, f"{minutes}m", _intraday_bars(frames, minutes)
+            )
+        info["display_shards"]["1D"] = _write_display_windows(
+            output_dir, contract, "1D", _daily_bars(frames)
+        )
 
     ordered: dict[str, dict[str, object]] = {}
     for contract, info in contracts.items():
         info["shards"] = sorted(info["shards"], key=lambda x: (x["first_time"], x["key"]))
-        info["display_shards"]["1"] = sorted(
-            info["display_shards"]["1"], key=lambda x: (x["first_time"], x["key"])
-        )
+        for resolution in info["display_shards"]:
+            info["display_shards"][resolution] = sorted(
+                info["display_shards"][resolution], key=lambda x: (x["first_time"], x["key"])
+            )
         ordered[contract] = info
 
     sessions = sorted(session_volumes)
@@ -179,8 +187,8 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
         "intraday_multipliers": ["1", "5", "30", "240"],
         "daily_multipliers": ["1"],
         "display_cache": {
-            "strategy": "precomputed_completed_bars",
-            "window_bars": 512,
+            "strategy": "rolling_precomputed_windows",
+            "window_bars": DISPLAY_WINDOW_BARS,
             "prefetch_threshold": 0.75,
             "partial_bar_source": "released_1m_only",
         },
@@ -203,7 +211,7 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
     out.write_text(json.dumps(cloud_manifest, indent=2), encoding="utf-8")
     print(
         f"CLOUD_EXPORT_OK product={cloud_manifest['product']} native=1m,5m,30m,4h,1D "
-        f"contracts={len(ordered)} manifest={out}",
+        f"window={DISPLAY_WINDOW_BARS} contracts={len(ordered)} manifest={out}",
         flush=True,
     )
     return out
