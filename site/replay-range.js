@@ -138,6 +138,7 @@
     constructor(options) {
       super(options);
       this._fvHistoryRange = selectedRange;
+      this._fvRefitAfterCacheUntil = 0;
       const seconds = HISTORY_RANGES[selectedRange]?.seconds;
       if (seconds) this._fvSetTimeDomain?.(seconds);
       syncUi();
@@ -156,7 +157,45 @@
       try { this.chart.timeScale().setVisibleRange({ from, to }); } catch {}
     }
 
+    // Fit only real market bars. The calendar-time whitespace series exists solely to
+    // make the date axis continuous and must not participate in auto-fit.
+    fit() {
+      const bars = this.bars || [];
+      if (!bars.length) return;
+
+      const first = Number(bars[0]?.time);
+      const last = Number(bars.at(-1)?.time);
+      if (Number.isFinite(first) && Number.isFinite(last)) {
+        const step = Number(this._fvTimeStepSeconds?.() || 60);
+        const span = Math.max(step, last - first);
+        const pad = Math.max(step, span * 0.02);
+        try { this.chart.timeScale().setVisibleRange({ from: first - pad, to: last + pad }); } catch {}
+      }
+
+      const priceScale = this.candles.priceScale();
+      const volumeScale = this.volume ? this.volume.priceScale() : null;
+      try { priceScale.applyOptions({ autoScale: true }); } catch {}
+      if (volumeScale) { try { volumeScale.applyOptions({ autoScale: true }); } catch {} }
+
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        try { priceScale.applyOptions({ autoScale: false }); } catch {}
+        if (volumeScale) { try { volumeScale.applyOptions({ autoScale: false }); } catch {} }
+      }));
+    }
+
+    _fvLoadCachedWindow(resolution, bars) {
+      super._fvLoadCachedWindow(resolution, bars);
+      if (performance.now() <= this._fvRefitAfterCacheUntil) {
+        this._fvRefitAfterCacheUntil = 0;
+        requestAnimationFrame(() => this.fit());
+      }
+    }
+
     reset(rawBars) {
+      // Start/Random fit immediately in app.js, but a causal cached-history replacement
+      // can arrive just afterward. Re-fit that replacement once so Y scale cannot remain
+      // frozen to the temporary warmup series.
+      this._fvRefitAfterCacheUntil = performance.now() + 5000;
       super.reset(rawBars);
       const seconds = HISTORY_RANGES[this._fvHistoryRange || selectedRange]?.seconds;
       if (seconds) this._fvSetTimeDomain?.(seconds);
