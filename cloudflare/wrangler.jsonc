@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "futureview",
-  "main": "./worker/main.js",
+  "main": "./worker/main-frame.js",
   "compatibility_date": "2026-09-11",
   "vars": {
     "REGISTRATION_OPEN": "true"

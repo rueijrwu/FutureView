@@ -7,6 +7,16 @@
   };
   const STORAGE_KEY = "futureview_history_range";
   let selectedRange = HISTORY_RANGES[localStorage.getItem(STORAGE_KEY)] ? localStorage.getItem(STORAGE_KEY) : "5D";
+  let replaySocket = null;
+
+  // Track the replay websocket without changing app.js. This script loads before app.js.
+  const NativeWebSocket = window.WebSocket;
+  window.WebSocket = class FutureViewTrackedWebSocket extends NativeWebSocket {
+    constructor(...args) {
+      super(...args);
+      replaySocket = this;
+    }
+  };
 
   function syncUi() {
     const warmup = document.getElementById("warmup");
@@ -27,16 +37,27 @@
   }
 
   document.addEventListener("click", (event) => {
-    const button = event.target.closest?.("button[data-history-range]");
-    if (!button) return;
+    const historyButton = event.target.closest?.("button[data-history-range]");
+    if (historyButton) {
+      event.preventDefault();
+      setRange(historyButton.dataset.historyRange, true);
+      return;
+    }
+
+    const nextButton = event.target.closest?.("#next");
+    if (!nextButton) return;
+    const timeframe = window.__futureViewChartTools?._fvTimeframe || "1";
+    if (!replaySocket || replaySocket.readyState !== NativeWebSocket.OPEN) return;
+
+    // Replace app.js's 1m step with a frame-aware step. The backend still advances
+    // through authoritative 1m bars, but stops exactly when the next visible frame begins.
     event.preventDefault();
-    setRange(button.dataset.historyRange, true);
+    event.stopImmediatePropagation();
+    replaySocket.send(JSON.stringify({ type: "step_frame", timeframe }));
   }, true);
 
   document.addEventListener("DOMContentLoaded", syncUi);
 
-  // Keep app.js unchanged: it already reads #warmup when starting a replay.
-  // The hidden input is populated from the TradingView-style duration buttons.
   const Ctor = window.FutureViewChartTools;
   if (!Ctor) return;
   window.FutureViewChartTools = class FutureViewChartToolsWithHistoryRange extends Ctor {
