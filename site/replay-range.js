@@ -75,7 +75,12 @@
           if (payload?.type === "session_snapshot" && payload.speed != null) syncSpeedUi(payload.speed);
           if (payload?.snapshot?.speed != null) syncSpeedUi(payload.snapshot.speed);
 
-          if (payload?.type === "display_window" && payload.future_data_included === false) {
+          if (payload?.type === "display_window") {
+            // display_window is a cache/data-plane extension, not a replay command ACK.
+            // Consume it here so legacy app.js cannot clear pendingCommand/wsSynced by
+            // treating an unknown message as an authoritative session snapshot.
+            event.stopImmediatePropagation();
+            if (payload.future_data_included !== false) return;
             if (String(payload.resolution) !== timeframe()) return;
             if (payload.history_range && payload.history_range !== selectedRange) return;
             const accepted = window.__futureViewChartTools?._fvLoadCachedWindow?.(
@@ -146,8 +151,6 @@
     }
   }, true);
 
-  // Restart resets Worker speed to 1x. Intercept Play so the authoritative highlighted
-  // speed, rather than app.js's older closure value, is always used.
   document.addEventListener("click", (event) => {
     const play = event.target.closest?.("#play");
     if (!play || !replaySocket || replaySocket.readyState !== NativeWebSocket.OPEN) return;
