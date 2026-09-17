@@ -51,12 +51,31 @@ function sessionStart(seconds) {
   });
 }
 
+function frameStart(seconds, resolution) {
+  const start = sessionStart(seconds);
+  if (resolution === "1D") return start;
+  if (resolution === "1") return Number(seconds);
+  const minutes = Number(resolution);
+  return start + Math.floor(Math.max(0, Number(seconds) - start) / (minutes * 60)) * minutes * 60;
+}
+
 function frameKey(seconds, resolution) {
   const start = sessionStart(seconds);
   if (resolution === "1D") return `D:${start}`;
   const minutes = Number(resolution);
   const bucket = Math.floor(Math.max(0, Number(seconds) - start) / (minutes * 60));
   return `${start}:${minutes}:${bucket}`;
+}
+
+function dailyTradingStamp(seconds) {
+  const parts = etParts(seconds);
+  const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  if (parts.hour >= 18) day.setUTCDate(day.getUTCDate() + 1);
+  return Math.floor(day.getTime() / 1000);
+}
+
+function displayCutoff(seconds, resolution) {
+  return resolution === "1D" ? dailyTradingStamp(seconds) : frameStart(seconds, resolution);
 }
 
 export class ReplaySession extends BaseReplaySession {
@@ -117,7 +136,6 @@ export class ReplaySession extends BaseReplaySession {
     for (const key of [...this.displayWindows.keys()]) {
       if (key.startsWith(`${resolution}:`) && !keep.has(key)) this.displayWindows.delete(key);
     }
-    // Keep at most one old-resolution window for quick switch-back.
     const foreign = [...this.displayWindows.keys()].filter((key) => !key.startsWith(`${resolution}:`));
     for (let i = 1; i < foreign.length; i += 1) this.displayWindows.delete(foreign[i]);
   }
@@ -149,13 +167,40 @@ export class ReplaySession extends BaseReplaySession {
     this._trimDisplayWindows(index, resolution);
   }
 
+  async _causalDisplayWindow(cursor, resolution = this.displayResolution) {
+    if (resolution === "1" || !Number.isFinite(Number(cursor))) return [];
+    await this._ensureDisplayWindows(cursor);
+    const center = this.displayWindowIndex;
+    if (center < 0) return [];
+    const cutoff = displayCutoff(cursor, resolution);
+    const out = [];
+    for (const index of [center - 1, center]) {
+      const window = await this._loadDisplayWindow(index, resolution);
+      if (!window) continue;
+      for (const bar of window.bars || []) {
+        if (Number(bar.t) < cutoff) out.push(bar);
+      }
+    }
+    out.sort((a, b) => Number(a.t) - Number(b.t));
+    return out;
+  }
+
   async setTimeframe(value) {
     const timeframe = String(value || "5");
     if (!FRAME_RESOLUTIONS.has(timeframe)) throw new Error(`Unsupported chart timeframe ${timeframe}`);
     this.displayResolution = timeframe;
     this.displayWindowIndex = -1;
     const cursor = this.shard?.[this.session?.barIndex]?.t;
-    await this._ensureDisplayWindows(cursor);
+    const bars = await this._causalDisplayWindow(cursor, timeframe);
+    if (bars.length) {
+      this._broadcast({
+        type: "display_window",
+        resolution: timeframe,
+        bars,
+        cursor,
+        future_data_included: false,
+      });
+    }
     this._broadcast({
       ...this.snapshot(),
       display_resolution: this.displayResolution,
