@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -30,8 +30,24 @@ def _session_start_epoch(value: pd.Timestamp) -> int:
     return int(start.tz_convert("UTC").timestamp())
 
 
+def _prepare_display_frame(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Normalize/sort a contract once, then reuse it for every display resolution."""
+    frame = pd.concat(frames, ignore_index=True)
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    frame = frame.sort_values("timestamp", kind="stable").reset_index(drop=True)
+    frame["session_start"] = frame["timestamp"].map(_session_start_epoch)
+    # Do not depend on pandas' internal datetime unit (ns/us/ms). Explicit timestamp()
+    # remains correct across pandas versions and is paid only once per contract.
+    frame["epoch_seconds"] = frame["timestamp"].map(lambda value: int(pd.Timestamp(value).timestamp()))
+    frame["trading_day"] = frame["timestamp"].map(
+        lambda value: session_date(pd.Timestamp(value).to_pydatetime()).isoformat()
+    )
+    return frame
+
+
 def _aggregate_ohlcv(group: pd.DataFrame, stamp: int) -> dict[str, float | int]:
-    group = group.sort_values("timestamp", kind="stable")
+    # `group` comes from an already timestamp-sorted prepared frame, so sorting again
+    # for every output candle is unnecessary.
     return {
         "t": int(stamp),
         "o": float(group.iloc[0]["open"]),
@@ -42,31 +58,29 @@ def _aggregate_ohlcv(group: pd.DataFrame, stamp: int) -> dict[str, float | int]:
     }
 
 
-def _intraday_bars(frames: list[pd.DataFrame], minutes: int) -> list[dict[str, float | int]]:
-    frame = pd.concat(frames, ignore_index=True)
-    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
-    frame = frame.sort_values("timestamp", kind="stable")
-    frame["session_start"] = frame["timestamp"].map(_session_start_epoch)
-    # Do not depend on pandas' internal datetime unit (ns/us/ms). Explicit
-    # Timestamp.timestamp() keeps bucketing correct across pandas versions.
-    frame["epoch_seconds"] = frame["timestamp"].map(lambda value: int(pd.Timestamp(value).timestamp()))
-    frame["bucket"] = frame["session_start"] + (
+def _intraday_bars(frame: pd.DataFrame, minutes: int) -> list[dict[str, float | int]]:
+    buckets = frame["session_start"] + (
         (frame["epoch_seconds"] - frame["session_start"]) // (minutes * 60)
     ) * (minutes * 60)
-    return [_aggregate_ohlcv(group, int(bucket)) for bucket, group in frame.groupby("bucket", sort=True)]
+    return [_aggregate_ohlcv(group, int(bucket)) for bucket, group in frame.groupby(buckets, sort=True)]
 
 
-def _daily_bars(frames: list[pd.DataFrame]) -> list[dict[str, float | int]]:
-    frame = pd.concat(frames, ignore_index=True)
-    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
-    frame = frame.sort_values("timestamp", kind="stable")
-    frame["trading_day"] = frame["timestamp"].map(
-        lambda value: session_date(pd.Timestamp(value).to_pydatetime()).isoformat()
-    )
+def _daily_bars(frame: pd.DataFrame) -> list[dict[str, float | int]]:
     out: list[dict[str, float | int]] = []
     for trading_day, group in frame.groupby("trading_day", sort=True):
         day = date.fromisoformat(str(trading_day))
-        stamp = int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp())
+        # Display timestamps use one convention everywhere: the UTC epoch that
+        # corresponds to 00:00 America/New_York on the trading day. This preserves
+        # the intended ET calendar date through EST/EDT instead of showing the prior
+        # evening when the chart formats a 00:00-UTC stamp in Eastern time.
+        local_midnight = pd.Timestamp(
+            year=day.year,
+            month=day.month,
+            day=day.day,
+            hour=0,
+            tz=DISPLAY_TIME_ZONE,
+        )
+        stamp = int(local_midnight.tz_convert("UTC").timestamp())
         out.append(_aggregate_ohlcv(group, stamp))
     return out
 
@@ -164,12 +178,13 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
 
     for contract, frames in display_source.items():
         info = contracts[contract]
+        prepared = _prepare_display_frame(frames)
         for resolution, minutes in INTRADAY_DISPLAY_RESOLUTIONS.items():
             info["display_shards"][resolution] = _write_display_windows(
-                output_dir, contract, f"{minutes}m", _intraday_bars(frames, minutes)
+                output_dir, contract, f"{minutes}m", _intraday_bars(prepared, minutes)
             )
         info["display_shards"]["1D"] = _write_display_windows(
-            output_dir, contract, "1D", _daily_bars(frames)
+            output_dir, contract, "1D", _daily_bars(prepared)
         )
 
     ordered: dict[str, dict[str, object]] = {}

@@ -78,6 +78,28 @@ function displayCutoff(seconds, resolution) {
   return resolution === "1D" ? dailyTradingStamp(seconds) : frameStart(seconds, resolution);
 }
 
+function lowerBoundLastTime(items, target) {
+  let lo = 0;
+  let hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (Number(items[mid].last_time) >= Number(target)) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo < items.length ? lo : items.length - 1;
+}
+
+function lowerBoundBarTime(items, target) {
+  let lo = 0;
+  let hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (Number(items[mid].t) >= Number(target)) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo < items.length ? lo : items.length - 1;
+}
+
 export class ReplaySession extends BaseReplaySession {
   constructor(ctx, env) {
     super(ctx, env);
@@ -85,6 +107,10 @@ export class ReplaySession extends BaseReplaySession {
     this.historyRange = "5D";
     this.displayWindowIndex = -1;
     this.displayWindows = new Map();
+    this.displayShardMeta = new Map();
+    this.displayPrefetchAt = -Infinity;
+    this.displayPrefetchedIndex = -1;
+    this.displayNextCheckAt = -Infinity;
   }
 
   async webSocketMessage(ws, message) {
@@ -107,12 +133,19 @@ export class ReplaySession extends BaseReplaySession {
   }
 
   async _displayShardMeta(resolution = this.displayResolution) {
+    const key = `${this.session?.contract || ""}:${resolution}`;
+    if (this.displayShardMeta.has(key)) return this.displayShardMeta.get(key);
     const manifest = await this._manifest();
-    return manifest.contracts?.[this.session.contract]?.display_shards?.[resolution] ?? [];
+    const contract = manifest.contracts?.[this.session.contract];
+    let value = contract?.display_shards?.[resolution] ?? [];
+    // Manifest v6 used "1m" while v7 uses TradingView's canonical "1" resolution.
+    if (!value.length && resolution === "1") value = contract?.display_shards?.["1m"] ?? contract?.shards ?? [];
+    this.displayShardMeta.set(key, value);
+    return value;
   }
 
   async _loadDisplayWindow(index, resolution = this.displayResolution) {
-    if (resolution === "1" || index < 0) return null;
+    if (index < 0) return null;
     const key = `${resolution}:${index}`;
     if (this.displayWindows.has(key)) return this.displayWindows.get(key);
     const shards = await this._displayShardMeta(resolution);
@@ -128,13 +161,18 @@ export class ReplaySession extends BaseReplaySession {
     return value;
   }
 
+  _resetDisplayCursor() {
+    this.displayWindowIndex = -1;
+    this.displayPrefetchAt = -Infinity;
+    this.displayPrefetchedIndex = -1;
+    this.displayNextCheckAt = -Infinity;
+  }
+
   _trimDisplayWindows(centerIndex, resolution = this.displayResolution) {
-    const keep = new Set([
-      `${resolution}:${centerIndex - 1}`,
-      `${resolution}:${centerIndex}`,
-      `${resolution}:${centerIndex + 1}`,
-      `${resolution}:${centerIndex + 2}`,
-    ]);
+    const keepIndices = resolution === "1"
+      ? [centerIndex - 1, centerIndex]
+      : [centerIndex - 1, centerIndex, centerIndex + 1, centerIndex + 2];
+    const keep = new Set(keepIndices.map((index) => `${resolution}:${index}`));
     for (const key of [...this.displayWindows.keys()]) {
       if (key.startsWith(`${resolution}:`) && !keep.has(key)) this.displayWindows.delete(key);
     }
@@ -144,55 +182,78 @@ export class ReplaySession extends BaseReplaySession {
 
   async _ensureDisplayWindows(cursor) {
     const resolution = this.displayResolution;
-    if (resolution === "1" || !Number.isFinite(Number(cursor))) return;
+    cursor = Number(cursor);
+    if (!Number.isFinite(cursor)) return;
+    if (cursor < this.displayNextCheckAt && this.displayWindowIndex >= 0) return;
+
     const shards = await this._displayShardMeta(resolution);
     if (!shards.length) return;
 
     let index = this.displayWindowIndex;
-    if (index < 0 || !shards[index] || Number(cursor) > Number(shards[index].last_time)) {
-      index = shards.findIndex((meta) => Number(meta.last_time) >= Number(cursor));
-      if (index < 0) index = shards.length - 1;
+    const meta = shards[index];
+    if (index < 0 || !meta || cursor < Number(meta.first_time) || cursor > Number(meta.last_time)) {
+      index = lowerBoundLastTime(shards, cursor);
+      if (index < 0) return;
       this.displayWindowIndex = index;
+      this.displayPrefetchedIndex = -1;
+      this.displayPrefetchAt = -Infinity;
     }
 
     const current = await this._loadDisplayWindow(index, resolution);
     if (!current) return;
-    await this._loadDisplayWindow(index + 1, resolution);
-
     const bars = current.bars || [];
-    if (bars.length) {
-      let localIndex = bars.findIndex((bar) => Number(bar.t) >= Number(cursor));
-      if (localIndex < 0) localIndex = bars.length - 1;
-      const progress = bars.length > 1 ? localIndex / (bars.length - 1) : 1;
-      if (progress >= PREFETCH_THRESHOLD) await this._loadDisplayWindow(index + 2, resolution);
+    if (resolution !== "1") await this._loadDisplayWindow(index + 1, resolution);
+
+    if (bars.length && !Number.isFinite(this.displayPrefetchAt)) {
+      const thresholdIndex = Math.min(bars.length - 1, Math.floor((bars.length - 1) * PREFETCH_THRESHOLD));
+      this.displayPrefetchAt = Number(bars[thresholdIndex].t);
     }
+
+    if (
+      resolution !== "1" &&
+      cursor >= this.displayPrefetchAt &&
+      this.displayPrefetchedIndex !== index + 2
+    ) {
+      await this._loadDisplayWindow(index + 2, resolution);
+      this.displayPrefetchedIndex = index + 2;
+    }
+
+    const edge = Number(current.meta.last_time) + 1;
+    this.displayNextCheckAt = resolution === "1" || this.displayPrefetchedIndex === index + 2
+      ? edge
+      : Math.min(edge, this.displayPrefetchAt);
     this._trimDisplayWindows(index, resolution);
   }
 
   async _causalDisplayWindow(cursor, resolution = this.displayResolution, historyRange = this.historyRange) {
-    if (resolution === "1" || !Number.isFinite(Number(cursor))) return [];
+    cursor = Number(cursor);
+    if (!Number.isFinite(cursor)) return [];
     await this._ensureDisplayWindows(cursor);
     const center = this.displayWindowIndex;
     if (center < 0) return [];
 
     const cutoff = displayCutoff(cursor, resolution);
     const seconds = HISTORY_SECONDS[historyRange] ?? HISTORY_SECONDS["5D"];
-    const historyFrom = Number(cursor) - seconds;
+    const historyFrom = cursor - seconds;
     const shards = await this._displayShardMeta(resolution);
-    const firstNeeded = Math.max(0, shards.findIndex((meta, index) => index <= center && Number(meta.last_time) >= historyFrom));
+    if (!shards.length) return [];
+    const firstNeeded = Math.max(0, Math.min(center, lowerBoundLastTime(shards, historyFrom)));
     const out = [];
 
     for (let index = firstNeeded; index <= center; index += 1) {
       const window = await this._loadDisplayWindow(index, resolution);
       if (!window) continue;
-      for (const bar of window.bars || []) {
+      const bars = window.bars || [];
+      let start = lowerBoundBarTime(bars, historyFrom);
+      if (start < 0) start = 0;
+      for (let i = start; i < bars.length; i += 1) {
+        const bar = bars[i];
         const t = Number(bar.t);
-        if (t >= historyFrom && t < cutoff) out.push(bar);
+        if (t >= cutoff) break;
+        if (t >= historyFrom) out.push(bar);
       }
     }
-    out.sort((a, b) => Number(a.t) - Number(b.t));
 
-    // Historical windows are response-only. Keep the forward rolling cache bounded.
     this._trimDisplayWindows(center, resolution);
     return out;
   }
@@ -218,7 +279,7 @@ export class ReplaySession extends BaseReplaySession {
     if (historyRange != null && !HISTORY_SECONDS[String(historyRange)]) throw new Error(`Unsupported history range ${historyRange}`);
     this.displayResolution = timeframe;
     if (historyRange != null) this.historyRange = String(historyRange);
-    this.displayWindowIndex = -1;
+    this._resetDisplayCursor();
     await this._broadcastDisplayWindow();
     this._broadcast({
       ...this.snapshot(),
@@ -238,6 +299,12 @@ export class ReplaySession extends BaseReplaySession {
     await this._broadcastDisplayWindow();
   }
 
+  async restart() {
+    this._resetDisplayCursor();
+    await super.restart();
+    await this._broadcastDisplayWindow();
+  }
+
   async setSpeed(value) {
     if (!this.session) throw new Error("Session not initialized");
     let speed = value;
@@ -247,19 +314,44 @@ export class ReplaySession extends BaseReplaySession {
       if (!SPEEDS.has(speed)) throw new Error("Invalid replay speed");
     }
 
-    this.session.speed = speed;
     if (this.session.state === "PLAYING") {
-      this.credit = 0;
-      this.lastTick = Date.now();
+      const now = Date.now();
+      const oldSpeed = this.session.speed;
+      if (oldSpeed !== "max" && speed !== "max") {
+        this.credit += Math.max(0, (now - this.lastTick) / 1000) * Number(oldSpeed);
+      } else {
+        this.credit = 0;
+      }
+      this.lastTick = now;
     }
+    this.session.speed = speed;
     await this.ctx.storage.put("session", this.session);
     this._broadcast(this.snapshot());
   }
 
   async _release(count) {
     const bars = await super._release(count);
-    if (bars.length) await this._ensureDisplayWindows(bars.at(-1).t);
+    if (bars.length && Number(bars.at(-1).t) >= this.displayNextCheckAt) {
+      await this._ensureDisplayWindows(bars.at(-1).t);
+    }
     return bars;
+  }
+
+  async _peekNextReplayBar() {
+    const contract = (await this._manifest()).contracts[this.session.contract];
+    await this._loadShard(this.session.shardIndex);
+    if (this.session.barIndex + 1 < this.shard.length) return this.shard[this.session.barIndex + 1];
+    if (this.session.shardIndex + 1 >= contract.shards.length) return null;
+
+    const savedShard = this.shard;
+    const savedKey = this.shardKey;
+    try {
+      await this._loadShard(this.session.shardIndex + 1);
+      return this.shard?.[0] ?? null;
+    } finally {
+      this.shard = savedShard;
+      this.shardKey = savedKey;
+    }
   }
 
   async stepFrame(value) {
@@ -273,15 +365,25 @@ export class ReplaySession extends BaseReplaySession {
     await this._loadShard(this.session.shardIndex);
     const current = this.shard?.[this.session.barIndex];
     if (!current) throw new Error("Replay cursor is unavailable");
-    const initialKey = frameKey(current.t, timeframe);
+    const next = await this._peekNextReplayBar();
+    if (!next) {
+      this.session.state = "FINISHED";
+      await this._persist(false);
+      this._broadcast(this.snapshot());
+      return;
+    }
+
+    const currentKey = frameKey(current.t, timeframe);
+    const nextKey = frameKey(next.t, timeframe);
+    const targetKey = nextKey === currentKey ? currentKey : nextKey;
     const released = [];
 
     while (this.session.state !== "FINISHED") {
+      const upcoming = await this._peekNextReplayBar();
+      if (!upcoming || frameKey(upcoming.t, timeframe) !== targetKey) break;
       const bars = await this._release(1);
       if (!bars.length) break;
-      const bar = bars[0];
-      released.push(bar);
-      if (frameKey(bar.t, timeframe) !== initialKey) break;
+      released.push(bars[0]);
       if (released.length > 2000) throw new Error("Chart-frame step exceeded safety bound");
     }
 
