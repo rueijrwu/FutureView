@@ -134,12 +134,14 @@
 
   p._fvSetTimeframe = function (timeframe) {
     if (!TIMEFRAMES.has(timeframe) || timeframe === this._fvTimeframe) return;
+    this._cancelDrawing();
     this._fvTimeframe = timeframe;
     this._fvSyncTimeframeUi();
     this._fvRenderTimeframe({ preserveRange: true, fitVolume: true });
   };
 
   p.reset = function (rawBars) {
+    this._cancelDrawing();
     this._fvRawBars = (rawBars || []).map(normalizeRaw);
     this._fvRenderTimeframe({ preserveRange: false, fitVolume: false });
   };
@@ -197,10 +199,12 @@
     this._syncDrawToolUi();
   };
 
+  // Single source of truth for all drawing placement. In particular, H-line and
+  // V-line now use this same chart click path instead of a second container click
+  // listener, which could become stale after setData/timeframe reloads.
   p._handleDrawClick = function (param) {
     if (this.editorEl || !this.activeDrawTool || !param?.point) return;
     const tool = this.activeDrawTool;
-    if (tool === "hline" || tool === "vline") return;
     const registryType = DRAW_TOOLS[tool];
     if (!registryType) return;
     const anchor = this._anchorAtPoint(param.point);
@@ -346,17 +350,6 @@
       }, true);
       this.container.addEventListener("pointerup", stopVolumePan, true);
       this.container.addEventListener("pointercancel", stopVolumePan, true);
-
-      this.container.addEventListener("click", (event) => {
-        const tool = this.activeDrawTool;
-        if (tool !== "hline" && tool !== "vline") return;
-        if (this.editorEl) return;
-        const point = this._containerPoint(event);
-        const anchor = this._anchorAtPoint(point);
-        if (!anchor) return;
-        this._finalizeDrawing(DRAW_TOOLS[tool], [anchor], {});
-        this._cancelDrawing();
-      }, true);
 
       this.toolbar.addEventListener("click", (event) => {
         const button = event.target.closest?.("button[data-tool]");
