@@ -16,7 +16,7 @@
     <section class="setup">
       <label>Product<select id="product"><option value="MES">MES</option><option value="ES">ES</option></select></label>
       <label>Start (ET)<input id="start" type="datetime-local" step="300"></label>
-      <label>Warmup<input id="warmup" type="number" min="0" max="5000" value="300"></label>
+      <input id="warmup" type="hidden" value="6900">
       <button id="start-btn" class="primary">Start Replay</button>
       <button id="random-btn" type="button">🎲 Random</button>
       <span id="range">The actual contract is selected automatically from prior-session volume.</span>
@@ -72,6 +72,16 @@
       </aside>
     </section>
 
+    <div id="chart-range-toolbar" class="chart-toolbar" role="toolbar" aria-label="Visible history range">
+      <div class="tool-group">
+        <span>Range</span>
+        <button data-history-range="1D" aria-pressed="false">1D</button>
+        <button data-history-range="5D" class="active" aria-pressed="true">5D</button>
+        <button data-history-range="1M" aria-pressed="false">1M</button>
+        <button data-history-range="3M" aria-pressed="false">3M</button>
+      </div>
+    </div>
+
     <section class="controls">
       <div class="replay-controls">
         <div class="transport"><button id="restart">↺ Restart</button><button id="next">▶| Next</button><button id="play" class="primary">▶ Play</button><button id="pause">⏸ Pause</button></div>
@@ -93,6 +103,7 @@
   </main>
   <script src="/chart-tools.js"></script>
   <script src="/chart-tools-fixes.js"></script>
+  <script src="/replay-range.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
