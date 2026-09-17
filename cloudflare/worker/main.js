@@ -257,6 +257,24 @@ function resolveContract(manifest, product, startValue) {
   return { contract, rule: "runtime_prior_session_max_volume", source_session: sourceSession, reason };
 }
 
+function manifestSessions(manifest) {
+  const selection = manifest?.contract_selection ?? {};
+  const explicit = Array.isArray(selection.sessions) ? selection.sessions : [];
+  const values = explicit
+    .map((item) => typeof item === "string" ? item : item?.session)
+    .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(String(item)));
+  if (values.length) return [...new Set(values)].sort();
+
+  const volumeSessions = Object.keys(selection.session_volumes ?? {})
+    .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item));
+  if (volumeSessions.length) return [...new Set(volumeSessions)].sort();
+
+  const legacy = Array.isArray(selection.calendar) ? selection.calendar : [];
+  return [...new Set(
+    legacy.map((item) => item?.session).filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(String(item)))
+  )].sort();
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -309,8 +327,7 @@ export default {
       if (!manifest) return json(request, { error: "Replay manifest not published" }, 503);
       const contracts = Object.values(manifest.contracts ?? {});
       if (!contracts.length) return json(request, { error: "No replay contracts published" }, 503);
-      const rawSessions = manifest.contract_selection?.sessions ?? [];
-      const sessions = rawSessions.map((x) => typeof x === "string" ? x : x?.session).filter(Boolean).sort();
+      const sessions = manifestSessions(manifest);
       return json(request, {
         product: manifest.product ?? null,
         first_time: Math.min(...contracts.map((item) => Number(item.first_time))),
