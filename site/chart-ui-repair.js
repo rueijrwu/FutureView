@@ -539,10 +539,12 @@
       const volumeScale = this.volume?.priceScale?.();
       try { priceScale.applyOptions({ autoScale: true }); } catch {}
       if (volumeScale) { try { volumeScale.applyOptions({ autoScale: true }); } catch {} }
-      requestAnimationFrame(() => requestAnimationFrame(() => {
+      setTimeout(() => {
         try { priceScale.applyOptions({ autoScale: false }); } catch {}
-        if (volumeScale) { try { volumeScale.applyOptions({ autoScale: false }); } catch {}
-      }));
+        if (volumeScale) {
+          try { volumeScale.applyOptions({ autoScale: false }); } catch {}
+        }
+      }, 0);
     }
   };
 })();
