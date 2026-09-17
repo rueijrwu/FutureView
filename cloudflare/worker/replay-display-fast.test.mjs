@@ -138,6 +138,53 @@ test("normal 5m playback delegates to timezone-aware baseline only for initial s
   }
 });
 
+test("resident cursor validation avoids the async repair path", async () => {
+  const bars = minuteBars("2026-09-17T10:15:00-04:00", 3, 100);
+  const instance = harness(FastReplaySession);
+  instance.shard = bars;
+  instance.shardKey = "s0";
+  instance.manifest = { contracts: { MESZ6: { shards: [{ key: "s0" }] } } };
+  instance.session = { contract: "MESZ6", shardIndex: 0, barIndex: 1, cursorTs: bars[1].t };
+
+  const original = BaselineReplaySession.prototype._ensureReplayCursor;
+  let fallbackCalls = 0;
+  BaselineReplaySession.prototype._ensureReplayCursor = async function () {
+    fallbackCalls += 1;
+    return null;
+  };
+  try {
+    const current = await instance._ensureReplayCursor();
+    assert.equal(current, bars[1]);
+    assert.equal(fallbackCalls, 0);
+  } finally {
+    BaselineReplaySession.prototype._ensureReplayCursor = original;
+  }
+});
+
+test("cursor mismatch still delegates to the proven repair path", async () => {
+  const bars = minuteBars("2026-09-17T10:15:00-04:00", 3, 100);
+  const instance = harness(FastReplaySession);
+  instance.shard = bars;
+  instance.shardKey = "s0";
+  instance.manifest = { contracts: { MESZ6: { shards: [{ key: "s0" }] } } };
+  instance.session = { contract: "MESZ6", shardIndex: 0, barIndex: 1, cursorTs: bars[0].t };
+
+  const sentinel = { repaired: true };
+  const original = BaselineReplaySession.prototype._ensureReplayCursor;
+  let fallbackCalls = 0;
+  BaselineReplaySession.prototype._ensureReplayCursor = async function () {
+    fallbackCalls += 1;
+    return sentinel;
+  };
+  try {
+    const current = await instance._ensureReplayCursor();
+    assert.equal(current, sentinel);
+    assert.equal(fallbackCalls, 1);
+  } finally {
+    BaselineReplaySession.prototype._ensureReplayCursor = original;
+  }
+});
+
 test("5m Next from a completed frame advances one full selected frame in one release", async () => {
   const { instance, bars, releaseCounts, displayBroadcasts } = stepHarness(
     "2026-09-17T10:15:00-04:00",

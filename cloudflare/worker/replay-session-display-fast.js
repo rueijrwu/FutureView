@@ -37,6 +37,27 @@ function lowerBoundBarTime(bars, target, start = 0) {
 }
 
 export class ReplaySession extends DisplayReplaySession {
+  async _ensureReplayCursor() {
+    const session = this.session;
+    if (session && this.shard) {
+      const shardIndex = Number(session.shardIndex);
+      const barIndex = Number(session.barIndex);
+      const contract = this.manifest?.contracts?.[session.contract];
+      const meta = contract?.shards?.[shardIndex];
+      if (
+        meta &&
+        this.shardKey === meta.key &&
+        Number.isInteger(barIndex) &&
+        barIndex >= 0 &&
+        barIndex < this.shard.length
+      ) {
+        const bar = this.shard[barIndex];
+        if (bar && Number(session.cursorTs) === Number(bar.t)) return bar;
+      }
+    }
+    return super._ensureReplayCursor();
+  }
+
   _consumeCanonicalBars(rawBars, resolution = this.displayResolution) {
     resolution = String(resolution || "1");
     const bars = rawBars || [];
@@ -55,10 +76,6 @@ export class ReplaySession extends DisplayReplaySession {
       }
 
       if (resolution === "1D") {
-        // The active trading-day candle is stamped at midnight ET and rolls at 18:00 ET.
-        // DST transitions occur while CME equity futures are closed, so the active day's
-        // midnight and 18:00 boundary share the same UTC offset. Weekend/session gaps still
-        // delegate to the existing timezone-aware implementation when the rollover is crossed.
         const rollover = Number(this.displayAggregate.t) + (18 * 60 * 60);
         if (timestamp >= rollover) {
           completed.push(...super._consumeCanonicalBars([bar], resolution));
@@ -80,8 +97,6 @@ export class ReplaySession extends DisplayReplaySession {
       const cursor = Number(this.displayAggregateCursor);
       const longGap = Number.isFinite(cursor) && (timestamp - cursor) > LONG_GAP_SECONDS;
       if (longGap || timestamp < frameStart) {
-        // Holidays/weekends/DST boundaries are infrequent. Use the original ET calculation
-        // for the first bar after such a gap, then return to the arithmetic hot path.
         completed.push(...super._consumeCanonicalBars([bar], resolution));
         continue;
       }
