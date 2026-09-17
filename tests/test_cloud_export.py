@@ -10,7 +10,7 @@ from futureview_replay.cloud_export import export_cloud
 
 def test_cloud_manifest_contains_runtime_selection_inputs(tmp_path: Path) -> None:
     runtime = tmp_path / "runtime"
-    parquet = runtime / "parquet" / "5m"
+    parquet = runtime / "parquet" / "1m"
     parquet.mkdir(parents=True)
     rows = []
     volumes = {
@@ -38,7 +38,7 @@ def test_cloud_manifest_contains_runtime_selection_inputs(tmp_path: Path) -> Non
             {
                 "dataset": "test",
                 "product": "MES",
-                "files": [{"five_minute": "parquet/5m/test.parquet", "symbols": ["MESM24", "MESU24"]}],
+                "files": [{"one_minute": "parquet/1m/test.parquet", "symbols": ["MESM24", "MESU24"]}],
             }
         ),
         encoding="utf-8",
@@ -46,7 +46,9 @@ def test_cloud_manifest_contains_runtime_selection_inputs(tmp_path: Path) -> Non
 
     result = export_cloud(runtime, tmp_path / "cloud")
     manifest = json.loads(result.read_text(encoding="utf-8"))
-    assert manifest["version"] == 4
+    assert manifest["version"] == 5
+    assert manifest["resolution"] == "1m"
+    assert manifest["supported_display_resolutions"] == ["1", "5", "30", "240", "1D"]
     assert manifest["roll_rule"] == "runtime_prior_session_max_volume"
     selection = manifest["contract_selection"]
     assert selection["rule"] == "runtime_prior_session_max_volume"
