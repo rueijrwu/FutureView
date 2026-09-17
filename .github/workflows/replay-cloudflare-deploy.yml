@@ -72,17 +72,14 @@ jobs:
       - name: Verify live Worker API and Pages CORS
         run: |
           set -euo pipefail
-          ORIGIN='https://futureview.pages.dev'
-          API='https://futureview.rueijrwu.workers.dev'
-
-          curl -fsS --retry 12 --retry-delay 3 --retry-all-errors \
-            "$API/api/auth/status" -o /tmp/auth-status.json
+          ORIGIN="https://futureview.pages.dev"
+          API="https://futureview.rueijrwu.workers.dev"
+          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors "$API/api/auth/status" -o /tmp/auth-status.json
           jq -e 'has("registration_open")' /tmp/auth-status.json >/dev/null
-
-          curl -fsS -D /tmp/cors-headers.txt -o /dev/null -X OPTIONS \
+          curl -fsSI -X OPTIONS "$API/api/replay/range?product=MES" \
             -H "Origin: $ORIGIN" \
-            -H 'Access-Control-Request-Method: GET' \
-            -H 'Access-Control-Request-Headers: authorization' \
-            "$API/api/replay/range?product=MES"
-          tr -d '\r' </tmp/cors-headers.txt | grep -qi '^access-control-allow-origin: https://futureview.pages.dev$'
-          echo 'futureview Worker API and Pages CORS are healthy'
+            -H "Access-Control-Request-Method: GET" \
+            -H "Access-Control-Request-Headers: authorization" \
+            -o /tmp/cors.txt
+          grep -qi '^access-control-allow-origin: https://futureview.pages.dev' /tmp/cors.txt
+          echo "futureview Worker API and Pages CORS are healthy"
