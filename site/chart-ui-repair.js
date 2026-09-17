@@ -11,6 +11,7 @@
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
     hourCycle: "h23",
   });
 
@@ -25,17 +26,6 @@
     };
   }
 
-  function normalizeDisplay(raw) {
-    return {
-      time: Number(raw.t ?? raw.time),
-      open: Number(raw.o ?? raw.open),
-      high: Number(raw.h ?? raw.high),
-      low: Number(raw.l ?? raw.low),
-      close: Number(raw.c ?? raw.close),
-      volume: Number(raw.v ?? raw.volume),
-    };
-  }
-
   function etParts(seconds) {
     return Object.fromEntries(
       etFormatter.formatToParts(new Date(Number(seconds) * 1000))
@@ -45,11 +35,18 @@
   }
 
   function wallToEpochSeconds(parts) {
-    const wanted = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0);
+    const wanted = Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour ?? 0),
+      Number(parts.minute ?? 0),
+      Number(parts.second ?? 0),
+    );
     let guess = wanted;
     for (let i = 0; i < 4; i += 1) {
       const shown = etParts(guess / 1000);
-      const shownWall = Date.UTC(shown.year, shown.month - 1, shown.day, shown.hour, shown.minute, 0);
+      const shownWall = Date.UTC(shown.year, shown.month - 1, shown.day, shown.hour, shown.minute, shown.second || 0);
       const delta = wanted - shownWall;
       guess += delta;
       if (!delta) break;
@@ -67,6 +64,7 @@
       day: local.getUTCDate(),
       hour: 18,
       minute: 0,
+      second: 0,
     });
   }
 
@@ -74,7 +72,26 @@
     const parts = etParts(seconds);
     const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
     if (parts.hour >= 18) day.setUTCDate(day.getUTCDate() + 1);
-    return Math.floor(day.getTime() / 1000);
+    return wallToEpochSeconds({
+      year: day.getUTCFullYear(),
+      month: day.getUTCMonth() + 1,
+      day: day.getUTCDate(),
+      hour: 0,
+      minute: 0,
+      second: 0,
+    });
+  }
+
+  function normalizeDailyTime(seconds) {
+    const date = new Date(Number(seconds) * 1000);
+    return wallToEpochSeconds({
+      year: date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate(),
+      hour: 0,
+      minute: 0,
+      second: 0,
+    });
   }
 
   function bucketTime(seconds, timeframe) {
@@ -83,6 +100,19 @@
     const start = sessionStart(seconds);
     const minutes = Number(timeframe);
     return start + Math.floor(Math.max(0, Number(seconds) - start) / (minutes * 60)) * minutes * 60;
+  }
+
+  function normalizeDisplay(raw, timeframe = null) {
+    let time = Number(raw.t ?? raw.time);
+    if (String(timeframe) === "1D") time = normalizeDailyTime(time);
+    return {
+      time,
+      open: Number(raw.o ?? raw.open),
+      high: Number(raw.h ?? raw.high),
+      low: Number(raw.l ?? raw.low),
+      close: Number(raw.c ?? raw.close),
+      volume: Number(raw.v ?? raw.volume),
+    };
   }
 
   function aggregateAll(rawBars, timeframe) {
@@ -133,8 +163,14 @@
       this._fvHistorySeconds = 5 * 86400;
       this._fvRawBars = [];
       this._fvActiveAggregate = null;
+      this._fvReplayCursor = null;
       this._fvAutoFitPending = false;
       this._fvUserInteractionUntil = 0;
+      this._fvBoundaryFrom = null;
+      this._fvBoundaryTo = null;
+      this._fvBoundaryHistory = null;
+      this._fvBoundaryStep = null;
+      this._fvBoundaryCursor = null;
 
       this._fvNativeCandleUpdate = this.candles.update.bind(this.candles);
       this._fvNativeCandleSetData = this.candles.setData.bind(this.candles);
@@ -147,8 +183,6 @@
         this.volume.setData = () => {};
       }
 
-      // Only the requested range endpoints need synthetic timestamps. A dense minute-by-
-      // minute whitespace spine caused large memory use and polluted fitContent().
       this._fvRangeBoundarySeries = this.chart.addSeries(LightweightCharts.LineSeries, {
         lastValueVisible: false,
         priceLineVisible: false,
@@ -214,8 +248,19 @@
       });
     }
 
+    _fvSetReplayCursor(seconds) {
+      const value = Number(seconds);
+      if (!Number.isFinite(value)) return;
+      this._fvReplayCursor = value;
+      this._fvRefreshRangeBoundaries();
+    }
+
     _fvCursor() {
-      return Number(this._fvRawBars.at(-1)?.t ?? this.bars?.at(-1)?.time);
+      return Number(this._fvReplayCursor ?? this._fvRawBars.at(-1)?.t ?? this.bars?.at(-1)?.time);
+    }
+
+    _fvDisplayTimeForCanonical(seconds) {
+      return bucketTime(Number(seconds), this._fvTimeframe);
     }
 
     _fvStepSeconds() {
@@ -223,13 +268,38 @@
       return Math.max(60, Number(this._fvTimeframe || "5") * 60);
     }
 
-    _fvRefreshRangeBoundaries() {
+    _fvRefreshRangeBoundaries(force = false) {
       const cursor = this._fvCursor();
-      if (!Number.isFinite(cursor)) return;
-      const seconds = Math.max(this._fvStepSeconds(), Number(this._fvHistorySeconds) || 5 * 86400);
-      const from = cursor - seconds;
-      const to = cursor + this._fvStepSeconds() * 2;
-      this._fvRangeBoundarySeries.setData([{ time: from }, { time: to }]);
+      if (!Number.isFinite(cursor) || !this._fvRangeBoundarySeries) return;
+      const step = Math.max(60, Number(this._fvStepSeconds() || 60));
+      const history = Math.max(step, Number(this._fvHistorySeconds) || 5 * 86400);
+      const previousCursor = Number(this._fvBoundaryCursor);
+      const domainChanged = Number(this._fvBoundaryHistory) !== history || Number(this._fvBoundaryStep) !== step;
+      const largeJump = Number.isFinite(previousCursor) && Math.abs(cursor - previousCursor) > history / 2;
+      const reset = force || domainChanged || largeJump || !Number.isFinite(Number(this._fvBoundaryFrom)) || !Number.isFinite(Number(this._fvBoundaryTo));
+
+      if (reset) {
+        this._fvBoundaryFrom = cursor - history;
+        this._fvBoundaryTo = cursor + Math.max(86400, history / 4, step * 32);
+        this._fvBoundaryHistory = history;
+        this._fvBoundaryStep = step;
+        this._fvBoundaryCursor = cursor;
+        this._fvRangeBoundarySeries.setData([
+          { time: this._fvBoundaryFrom },
+          { time: this._fvBoundaryTo },
+        ]);
+        return;
+      }
+
+      const guard = Math.max(3600, step * 8);
+      if (cursor + guard >= this._fvBoundaryTo) {
+        this._fvBoundaryTo = cursor + Math.max(86400, history / 4, step * 32);
+        this._fvRangeBoundarySeries.setData([
+          { time: this._fvBoundaryFrom },
+          { time: this._fvBoundaryTo },
+        ]);
+      }
+      this._fvBoundaryCursor = cursor;
     }
 
     _fvSetTimeDomain(seconds) {
@@ -281,10 +351,12 @@
       if (last && bar.t < last.t) return null;
       if (last && bar.t === last.t) {
         this._fvRawBars[this._fvRawBars.length - 1] = bar;
+        this._fvReplayCursor = bar.t;
         return this._fvRebuildActiveAggregate();
       }
 
       this._fvRawBars.push(bar);
+      this._fvReplayCursor = bar.t;
       this._fvTrimRawTail();
       const time = bucketTime(bar.t, this._fvTimeframe);
       if (!this._fvActiveAggregate || this._fvActiveAggregate.time !== time) {
@@ -331,6 +403,8 @@
     }
 
     _fvEmitDisplayBar(displayBar) {
+      if (!displayBar) return;
+      if (this._fvTimeframe === "1D") displayBar = { ...displayBar, time: normalizeDailyTime(displayBar.time) };
       this._fvNativeCandleUpdate(candle(displayBar));
       this._fvNativeVolumeUpdate?.(volume(displayBar));
       this._appendNormalized(displayBar);
@@ -338,6 +412,9 @@
     }
 
     _fvSetDisplayData(displayBars) {
+      if (this._fvTimeframe === "1D") {
+        displayBars = (displayBars || []).map((bar) => ({ ...bar, time: normalizeDailyTime(bar.time) }));
+      }
       this._fvNativeCandleSetData(displayBars.map(candle));
       this._fvNativeVolumeSetData?.(displayBars.map(volume));
       this.bars = displayBars.map((bar) => ({ ...bar }));
@@ -360,16 +437,18 @@
       }
     }
 
-    _fvLoadCachedWindow(resolution, rawBars) {
+    _fvLoadCachedWindow(resolution, rawBars, activeRaw = null) {
       if (!rawBars?.length || String(resolution) !== this._fvTimeframe) return false;
       this._cancelDrawing?.();
       const visible = this.chart.timeScale().getVisibleRange?.() || null;
-      const displayBars = rawBars.map(normalizeDisplay).filter((bar) => Number.isFinite(bar.time));
-      const partial = this._fvRebuildActiveAggregate();
-      if (partial) {
+      const displayBars = rawBars.map((bar) => normalizeDisplay(bar, resolution)).filter((bar) => Number.isFinite(bar.time));
+      const active = activeRaw
+        ? normalizeDisplay(activeRaw, resolution)
+        : this._fvRebuildActiveAggregate();
+      if (active && Number.isFinite(active.time)) {
         const last = displayBars.at(-1);
-        if (!last || partial.time > last.time) displayBars.push(partial);
-        else if (partial.time === last.time) displayBars[displayBars.length - 1] = partial;
+        if (!last || active.time > last.time) displayBars.push(active);
+        else if (active.time === last.time) displayBars[displayBars.length - 1] = active;
       }
       this._fvSetDisplayData(displayBars);
       this._fvRefreshRangeBoundaries();
@@ -387,13 +466,25 @@
       this._cancelDrawing?.();
       this._fvRawBars = (rawBars || []).map(normalizeRaw).filter((bar) => Number.isFinite(bar.t));
       this._fvTrimRawTail();
+      this._fvReplayCursor = this._fvRawBars.at(-1)?.t ?? null;
       this._fvRebuildActiveAggregate();
       this._fvSetDisplayData(aggregateAll(this._fvRawBars, this._fvTimeframe));
-      this._fvRefreshRangeBoundaries();
+      this._fvRefreshRangeBoundaries(true);
       this._fvAutoFitPending = true;
     }
 
     append(rawBar) {
+      const resolution = rawBar?.display_resolution != null ? String(rawBar.display_resolution) : null;
+      if (resolution && resolution !== "1") {
+        if (resolution !== String(this._fvTimeframe)) return;
+        const displayBar = normalizeDisplay(rawBar, resolution);
+        if (![displayBar.time, displayBar.open, displayBar.high, displayBar.low, displayBar.close, displayBar.volume].every(Number.isFinite)) return;
+        this._fvEmitDisplayBar(displayBar);
+        this._fvRefreshRangeBoundaries();
+        this._showLegend(null);
+        return;
+      }
+
       const displayBar = this._fvProcessRaw(rawBar);
       if (!displayBar) return;
       this._fvEmitDisplayBar(displayBar);
@@ -402,8 +493,23 @@
     }
 
     appendMany(rawBars) {
+      const items = rawBars || [];
+      const direct = items.length && items.every((bar) => bar?.display_resolution != null && String(bar.display_resolution) !== "1");
+      if (direct) {
+        for (const rawBar of items) {
+          const resolution = String(rawBar.display_resolution);
+          if (resolution !== String(this._fvTimeframe)) continue;
+          const displayBar = normalizeDisplay(rawBar, resolution);
+          if (![displayBar.time, displayBar.open, displayBar.high, displayBar.low, displayBar.close, displayBar.volume].every(Number.isFinite)) continue;
+          this._fvEmitDisplayBar(displayBar);
+        }
+        this._fvRefreshRangeBoundaries();
+        this._showLegend(null);
+        return;
+      }
+
       const pending = [];
-      for (const rawBar of rawBars || []) {
+      for (const rawBar of items) {
         const displayBar = this._fvProcessRaw(rawBar);
         if (!displayBar) continue;
         const last = pending.at(-1);
@@ -435,7 +541,7 @@
       if (volumeScale) { try { volumeScale.applyOptions({ autoScale: true }); } catch {} }
       requestAnimationFrame(() => requestAnimationFrame(() => {
         try { priceScale.applyOptions({ autoScale: false }); } catch {}
-        if (volumeScale) { try { volumeScale.applyOptions({ autoScale: false }); } catch {} }
+        if (volumeScale) { try { volumeScale.applyOptions({ autoScale: false }); } catch {}
       }));
     }
   };
