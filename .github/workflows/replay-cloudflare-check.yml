@@ -36,6 +36,7 @@ jobs:
           node --check cloudflare/worker/main-frame.js
           node --check cloudflare/worker/replay-session.js
           node --check cloudflare/worker/replay-session-frame.js
+          node --check cloudflare/worker/replay-session-display.js
       - name: Wrangler dry run
         working-directory: cloudflare
         run: npx --yes wrangler@4.125.0 deploy --dry-run --outdir .dry-run
