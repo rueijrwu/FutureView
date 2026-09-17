@@ -135,6 +135,7 @@
       this._fvActiveAggregate = null;
       this._fvAutoFitPending = false;
       this._fvUserInteractionUntil = 0;
+      this._fvVwapState = null;
 
       this._fvNativeCandleUpdate = this.candles.update.bind(this.candles);
       this._fvNativeCandleSetData = this.candles.setData.bind(this.candles);
@@ -306,6 +307,63 @@
       return cloneBar(this._fvActiveAggregate);
     }
 
+    _fvRebuildVwapState() {
+      const bar = this.bars.at(-1);
+      if (!bar) {
+        this._fvVwapState = null;
+        return null;
+      }
+      const start = sessionStart(bar.time);
+      let priceVolume = 0;
+      let totalVolume = 0;
+      for (let i = this.bars.length - 1; i >= 0; i -= 1) {
+        const item = this.bars[i];
+        if (Number(item.time) < start) break;
+        const itemVolume = Number(item.volume) || 0;
+        priceVolume += ((Number(item.high) + Number(item.low) + Number(item.close)) / 3) * itemVolume;
+        totalVolume += itemVolume;
+      }
+      const lastVolume = Number(bar.volume) || 0;
+      const lastPriceVolume = ((Number(bar.high) + Number(bar.low) + Number(bar.close)) / 3) * lastVolume;
+      this._fvVwapState = {
+        start,
+        end: start + 23 * 60 * 60,
+        priceVolume,
+        volume: totalVolume,
+        lastTime: Number(bar.time),
+        lastPriceVolume,
+        lastVolume,
+      };
+      this.vwapPriceVolume = priceVolume;
+      this.vwapVolume = totalVolume;
+      return this._fvVwapState;
+    }
+
+    _fvSyncVwapStateFromBase() {
+      const bar = this.bars.at(-1);
+      if (!bar) {
+        this._fvVwapState = null;
+        return;
+      }
+      const priceVolume = Number(this.vwapPriceVolume);
+      const totalVolume = Number(this.vwapVolume);
+      if (!Number.isFinite(priceVolume) || !Number.isFinite(totalVolume)) {
+        this._fvRebuildVwapState();
+        return;
+      }
+      const start = sessionStart(bar.time);
+      const lastVolume = Number(bar.volume) || 0;
+      this._fvVwapState = {
+        start,
+        end: start + 23 * 60 * 60,
+        priceVolume,
+        volume: totalVolume,
+        lastTime: Number(bar.time),
+        lastPriceVolume: ((Number(bar.high) + Number(bar.low) + Number(bar.close)) / 3) * lastVolume,
+        lastVolume,
+      };
+    }
+
     _fvUpdateIndicatorsForLastBar() {
       const bar = this.bars.at(-1);
       if (!bar) return;
@@ -317,17 +375,45 @@
         this.indicators[key]?.update({ time: bar.time, value: sum / period });
       }
 
-      const session = sessionStart(bar.time);
-      let priceVolume = 0;
-      let totalVolume = 0;
-      for (let i = this.bars.length - 1; i >= 0; i -= 1) {
-        const item = this.bars[i];
-        if (Number(item.time) < session) break;
-        const itemVolume = Number(item.volume) || 0;
-        priceVolume += ((Number(item.high) + Number(item.low) + Number(item.close)) / 3) * itemVolume;
-        totalVolume += itemVolume;
+      const timestamp = Number(bar.time);
+      let state = this._fvVwapState;
+      if (!state) state = this._fvRebuildVwapState();
+      if (!state) return;
+
+      if (timestamp < state.start || timestamp >= state.end) {
+        const start = sessionStart(timestamp);
+        state = {
+          start,
+          end: start + 23 * 60 * 60,
+          priceVolume: 0,
+          volume: 0,
+          lastTime: null,
+          lastPriceVolume: 0,
+          lastVolume: 0,
+        };
+        this._fvVwapState = state;
+      } else if (state.lastTime != null && timestamp < state.lastTime) {
+        state = this._fvRebuildVwapState();
+        if (!state) return;
       }
-      if (totalVolume > 0) this.indicators.vwap?.update({ time: bar.time, value: priceVolume / totalVolume });
+
+      const itemVolume = Number(bar.volume) || 0;
+      const itemPriceVolume = ((Number(bar.high) + Number(bar.low) + Number(bar.close)) / 3) * itemVolume;
+      if (state.lastTime === timestamp) {
+        state.priceVolume -= state.lastPriceVolume;
+        state.volume -= state.lastVolume;
+      }
+      state.priceVolume += itemPriceVolume;
+      state.volume += itemVolume;
+      state.lastTime = timestamp;
+      state.lastPriceVolume = itemPriceVolume;
+      state.lastVolume = itemVolume;
+      this.vwapPriceVolume = state.priceVolume;
+      this.vwapVolume = state.volume;
+
+      if (state.volume > 0) {
+        this.indicators.vwap?.update({ time: bar.time, value: state.priceVolume / state.volume });
+      }
     }
 
     _fvEmitDisplayBar(displayBar) {
@@ -342,6 +428,7 @@
       this._fvNativeVolumeSetData?.(displayBars.map(volume));
       this.bars = displayBars.map((bar) => ({ ...bar }));
       this._refreshIndicators();
+      this._fvSyncVwapStateFromBase();
       this._showLegend(null);
     }
 
