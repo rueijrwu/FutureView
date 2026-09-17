@@ -17,7 +17,7 @@
       window.__futureViewReplaySocket = this;
       this.addEventListener("open", () => {
         const timeframe = window.__futureViewChartTools?._fvTimeframe || document.querySelector("button[data-timeframe].active")?.dataset.timeframe || "5";
-        try { this.send(JSON.stringify({ type: "set_timeframe", timeframe })); } catch {}
+        try { this.send(JSON.stringify({ type: "set_timeframe", timeframe, history_range: selectedRange })); } catch {}
       });
       this.addEventListener("message", (event) => {
         try {
@@ -26,6 +26,7 @@
           if (payload?.snapshot?.speed != null) syncSpeedUi(payload.snapshot.speed);
           if (payload?.type === "display_window" && payload.future_data_included === false) {
             window.__futureViewChartTools?._fvLoadCachedWindow?.(payload.resolution, payload.bars || []);
+            if (payload.history_range && HISTORY_RANGES[payload.history_range]) selectedRange = payload.history_range;
           }
         } catch {}
       });
@@ -62,13 +63,20 @@
     selectedRange = range;
     localStorage.setItem(STORAGE_KEY, range);
     syncUi();
+    if (replaySocket?.readyState === NativeWebSocket.OPEN) {
+      replaySocket.send(JSON.stringify({ type: "set_history_range", history_range: range }));
+    }
     if (applyToChart) window.__futureViewChartTools?._fvSetHistoryRange?.(range);
   }
 
   document.addEventListener("click", (event) => {
     const timeframeButton = event.target.closest?.("button[data-timeframe]");
     if (timeframeButton && replaySocket?.readyState === NativeWebSocket.OPEN) {
-      replaySocket.send(JSON.stringify({ type: "set_timeframe", timeframe: timeframeButton.dataset.timeframe }));
+      replaySocket.send(JSON.stringify({
+        type: "set_timeframe",
+        timeframe: timeframeButton.dataset.timeframe,
+        history_range: selectedRange,
+      }));
     }
 
     const historyButton = event.target.closest?.("button[data-history-range]");
