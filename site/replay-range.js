@@ -15,11 +15,18 @@
       super(...args);
       replaySocket = this;
       window.__futureViewReplaySocket = this;
+      this.addEventListener("open", () => {
+        const timeframe = window.__futureViewChartTools?._fvTimeframe || document.querySelector("button[data-timeframe].active")?.dataset.timeframe || "5";
+        try { this.send(JSON.stringify({ type: "set_timeframe", timeframe })); } catch {}
+      });
       this.addEventListener("message", (event) => {
         try {
           const payload = JSON.parse(event.data);
           if (payload?.type === "session_snapshot" && payload.speed != null) syncSpeedUi(payload.speed);
           if (payload?.snapshot?.speed != null) syncSpeedUi(payload.snapshot.speed);
+          if (payload?.type === "display_window" && payload.future_data_included === false) {
+            window.__futureViewChartTools?._fvLoadCachedWindow?.(payload.resolution, payload.bars || []);
+          }
         } catch {}
       });
     }
