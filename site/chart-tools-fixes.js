@@ -133,6 +133,58 @@
         });
       } catch {}
 
+      // Lightweight Charts uses normal axis drag for scaling. Add an independent
+      // translation gesture for the volume axis without taking scaling away:
+      // Shift+left-drag or middle-drag the visible LEFT axis to pan its range.
+      // Price on the right axis is unaffected.
+      let volumePan = null;
+      const stopVolumePan = (event) => {
+        if (!volumePan) return;
+        if (event?.pointerId != null && volumePan.pointerId !== event.pointerId) return;
+        try { this.container.releasePointerCapture?.(volumePan.pointerId); } catch {}
+        volumePan = null;
+        this.container.style.cursor = "";
+      };
+      this.container.addEventListener("pointerdown", (event) => {
+        if (this.activeDrawTool || !this.volume) return;
+        if (!(event.button === 1 || (event.button === 0 && event.shiftKey))) return;
+        const scale = this.volume.priceScale();
+        const width = Number(scale.width?.() || 0);
+        const rect = this.container.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        if (width <= 0 || x < 0 || x > width) return;
+        const range = scale.getVisibleRange?.();
+        if (!range || !Number.isFinite(range.from) || !Number.isFinite(range.to)) return;
+        const paneHeight = Math.max(1, rect.height);
+        volumePan = {
+          pointerId: event.pointerId,
+          startY: event.clientY,
+          from: Number(range.from),
+          to: Number(range.to),
+          paneHeight,
+        };
+        try { scale.setAutoScale?.(false); } catch {}
+        try { scale.applyOptions({ autoScale: false }); } catch {}
+        try { this.container.setPointerCapture?.(event.pointerId); } catch {}
+        this.container.style.cursor = "ns-resize";
+        event.preventDefault();
+        event.stopPropagation();
+      }, true);
+      this.container.addEventListener("pointermove", (event) => {
+        if (!volumePan || event.pointerId !== volumePan.pointerId || !this.volume) return;
+        const span = volumePan.to - volumePan.from;
+        if (!(span > 0)) return;
+        // Dragging upward moves the visible value window downward, so the rendered
+        // volume bars move upward with the pointer; dragging downward does the reverse.
+        const delta = ((event.clientY - volumePan.startY) / volumePan.paneHeight) * span;
+        const scale = this.volume.priceScale();
+        try { scale.setVisibleRange({ from: volumePan.from + delta, to: volumePan.to + delta }); } catch {}
+        event.preventDefault();
+        event.stopPropagation();
+      }, true);
+      this.container.addEventListener("pointerup", stopVolumePan, true);
+      this.container.addEventListener("pointercancel", stopVolumePan, true);
+
       // One-anchor tools are placed directly from the DOM click before Lightweight
       // Charts' subscribeClick callback runs. This avoids intermittent lost clicks/state
       // desynchronization observed with H-Line/V-Line while still using candle coordinates.
