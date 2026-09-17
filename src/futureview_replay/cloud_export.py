@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gzip
 import json
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -69,7 +69,18 @@ def _daily_bars(frame: pd.DataFrame) -> list[dict[str, float | int]]:
     out: list[dict[str, float | int]] = []
     for trading_day, group in frame.groupby("trading_day", sort=True):
         day = date.fromisoformat(str(trading_day))
-        stamp = int(datetime(day.year, day.month, day.day, tzinfo=timezone.utc).timestamp())
+        # Display timestamps use one convention everywhere: the UTC epoch that
+        # corresponds to 00:00 America/New_York on the trading day. This preserves
+        # the intended ET calendar date through EST/EDT instead of showing the prior
+        # evening when the chart formats a 00:00-UTC stamp in Eastern time.
+        local_midnight = pd.Timestamp(
+            year=day.year,
+            month=day.month,
+            day=day.day,
+            hour=0,
+            tz=DISPLAY_TIME_ZONE,
+        )
+        stamp = int(local_midnight.tz_convert("UTC").timestamp())
         out.append(_aggregate_ohlcv(group, stamp))
     return out
 
