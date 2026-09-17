@@ -78,9 +78,10 @@
       try { this.chart.timeScale().setVisibleRange({ from, to }); } catch {}
     }
 
+    // Do not re-apply the range after reset. app.js calls fit() immediately after reset,
+    // and Start Replay / Random must finish with the explicit one-shot auto-fit.
     reset(rawBars) {
       super.reset(rawBars);
-      requestAnimationFrame(() => this._fvSetHistoryRange(this._fvHistoryRange || selectedRange));
     }
   };
 })();
