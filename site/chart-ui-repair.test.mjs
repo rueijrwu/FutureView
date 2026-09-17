@@ -373,3 +373,86 @@ test("cached indicator visibility avoids DOM queries on the live path", () => {
   assert.equal(instance._fvIndicatorActive("vwap"), true);
   assert.equal(queryCalls, 0);
 });
+
+
+function rawMinuteBars(startIso, count, base = 100) {
+  const start = sec(startIso);
+  return Array.from({ length: count }, (_, index) => ({
+    t: start + index * 60,
+    o: base + index,
+    h: base + index + 1,
+    l: base + index - 1,
+    c: base + index + 0.5,
+    v: (index % 7) + 1,
+  }));
+}
+
+test("reset warmup aggregation uses bounded ET conversions for 5m history", () => {
+  const instance = Object.create(ChartTools.prototype);
+  instance._fvTimeframe = "5";
+  instance._fvHistorySeconds = 5 * 86400;
+  instance._fvRawBars = [];
+  instance._fvActiveAggregate = null;
+  instance._cancelDrawing = () => {};
+  instance._fvTrimRawTail = () => {};
+  instance._fvRefreshRangeBoundaries = () => {};
+  let display = null;
+  instance._fvSetDisplayData = (bars) => { display = bars; };
+
+  const raw = rawMinuteBars("2026-09-17T09:00:00-04:00", 480, 100);
+  globalThis.__fvEtPartsCalls = 0;
+  instance.reset(raw);
+
+  assert.equal(display.length, 96);
+  assert.ok(globalThis.__fvEtPartsCalls <= 8);
+  assert.equal(display[0].time, sec("2026-09-17T09:00:00-04:00"));
+  assert.equal(display.at(-1).time, sec("2026-09-17T16:55:00-04:00"));
+});
+
+test("active 4h rebuild performs one timezone bucket seed", () => {
+  const instance = Object.create(ChartTools.prototype);
+  instance._fvTimeframe = "240";
+  instance._fvRawBars = rawMinuteBars("2026-09-17T18:00:00-04:00", 370, 200);
+
+  globalThis.__fvEtPartsCalls = 0;
+  const active = instance._fvRebuildActiveAggregate();
+
+  assert.ok(globalThis.__fvEtPartsCalls <= 8);
+  assert.equal(active.time, sec("2026-09-17T22:00:00-04:00"));
+  assert.equal(active.open, instance._fvRawBars[240].o);
+  assert.equal(active.close, instance._fvRawBars.at(-1).c);
+});
+
+test("active 1D rebuild begins at prior 18:00 ET session start", () => {
+  const instance = Object.create(ChartTools.prototype);
+  instance._fvTimeframe = "1D";
+  instance._fvRawBars = rawMinuteBars("2026-09-16T18:00:00-04:00", 960, 300);
+
+  const active = instance._fvRebuildActiveAggregate();
+
+  assert.equal(active.time, sec("2026-09-17T00:00:00-04:00"));
+  assert.equal(active.open, instance._fvRawBars[0].o);
+  assert.equal(active.close, instance._fvRawBars.at(-1).c);
+});
+
+test("warmup aggregation reseeds after a DST weekend gap", () => {
+  const instance = Object.create(ChartTools.prototype);
+  instance._fvTimeframe = "30";
+  instance._fvHistorySeconds = 5 * 86400;
+  instance._fvRawBars = [];
+  instance._fvActiveAggregate = null;
+  instance._cancelDrawing = () => {};
+  instance._fvTrimRawTail = () => {};
+  instance._fvRefreshRangeBoundaries = () => {};
+  let display = null;
+  instance._fvSetDisplayData = (bars) => { display = bars; };
+
+  const friday = rawMinuteBars("2026-03-06T16:30:00-05:00", 30, 100);
+  const sunday = rawMinuteBars("2026-03-08T18:00:00-04:00", 30, 200);
+  instance.reset([...friday, ...sunday]);
+
+  assert.deepEqual(display.map((bar) => bar.time), [
+    sec("2026-03-06T16:30:00-05:00"),
+    sec("2026-03-08T18:00:00-04:00"),
+  ]);
+});

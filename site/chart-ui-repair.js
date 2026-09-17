@@ -88,9 +88,27 @@
   function aggregateAll(rawBars, timeframe) {
     const out = [];
     let current = null;
+    const interval = timeframe === "1" || timeframe === "1D" ? null : Number(timeframe) * 60;
+    let lastRawTime = null;
+
     for (const raw of rawBars || []) {
       const bar = normalizeRaw(raw);
-      const time = bucketTime(bar.t, timeframe);
+      let time;
+      if (timeframe === "1") {
+        time = bar.t;
+      } else if (
+        current &&
+        interval &&
+        Number.isFinite(lastRawTime) &&
+        bar.t >= current.time &&
+        bar.t - lastRawTime <= 6 * 60 * 60
+      ) {
+        const steps = Math.floor((bar.t - current.time) / interval);
+        time = current.time + Math.max(0, steps) * interval;
+      } else {
+        time = bucketTime(bar.t, timeframe);
+      }
+
       if (!current || current.time !== time) {
         current = { time, open: bar.o, high: bar.h, low: bar.l, close: bar.c, volume: bar.v };
         out.push(current);
@@ -100,6 +118,7 @@
         current.close = bar.c;
         current.volume += bar.v;
       }
+      lastRawTime = bar.t;
     }
     return out;
   }
@@ -118,6 +137,17 @@
 
   function cloneBar(bar) {
     return bar ? { ...bar } : null;
+  }
+
+  function lowerBoundRawTime(bars, target) {
+    let lo = 0;
+    let hi = bars.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (Number(bars[mid].t) >= Number(target)) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
   }
 
   function sameRange(a, b) {
@@ -267,8 +297,9 @@
         return null;
       }
       const time = bucketTime(raw.at(-1).t, this._fvTimeframe);
-      let index = raw.length - 1;
-      while (index > 0 && bucketTime(raw[index - 1].t, this._fvTimeframe) === time) index -= 1;
+      const activeStart = this._fvTimeframe === "1D" ? time - 6 * 60 * 60 : time;
+      let index = lowerBoundRawTime(raw, activeStart);
+      if (index >= raw.length) index = raw.length - 1;
       const first = raw[index];
       const aggregate = { time, open: first.o, high: first.h, low: first.l, close: first.c, volume: 0 };
       for (; index < raw.length; index += 1) {
