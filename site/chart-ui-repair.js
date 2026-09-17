@@ -322,7 +322,7 @@
       let totalVolume = 0;
       for (let i = this.bars.length - 1; i >= 0; i -= 1) {
         const item = this.bars[i];
-        if (sessionStart(item.time) !== session) break;
+        if (Number(item.time) < session) break;
         const itemVolume = Number(item.volume) || 0;
         priceVolume += ((Number(item.high) + Number(item.low) + Number(item.close)) / 3) * itemVolume;
         totalVolume += itemVolume;
