@@ -11,12 +11,12 @@ from futureview_replay.store import BarStore
 
 
 def store(tmp_path: Path) -> BarStore:
-    p = tmp_path / "parquet" / "5m"
+    p = tmp_path / "parquet" / "1m"
     p.mkdir(parents=True)
     f = p / "x.parquet"
-    ts = pd.date_range("2024-06-10T13:30:00Z", periods=40, freq="5min")
+    ts = pd.date_range("2024-06-10T13:30:00Z", periods=40, freq="1min")
     pd.DataFrame({"timestamp":ts,"symbol":"MESM24","instrument_id":1,"open":range(40),"high":[x+1 for x in range(40)],"low":[x-1 for x in range(40)],"close":[x+.5 for x in range(40)],"volume":[100+x for x in range(40)]}).to_parquet(f,index=False)
-    (tmp_path / "manifest.json").write_text(json.dumps({"product":"MES","files":[{"five_minute":"parquet/5m/x.parquet","symbols":["MESM24"]}]}))
+    (tmp_path / "manifest.json").write_text(json.dumps({"product":"MES","files":[{"one_minute":"parquet/1m/x.parquet","symbols":["MESM24"]}]}))
     return BarStore(tmp_path / "manifest.json")
 
 
