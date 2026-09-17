@@ -3,6 +3,7 @@ import { ReplaySession as DisplayReplaySession } from "./replay-session-display.
 const FRAME_RESOLUTIONS = new Set(["1", "5", "30", "240", "1D"]);
 const LONG_GAP_SECONDS = 6 * 60 * 60;
 const PREFETCH_THRESHOLD = 0.75;
+const MAX_PARTIAL_MINUTES = 1500;
 
 function newAggregate(bar, stamp) {
   return {
@@ -68,6 +69,47 @@ export class ReplaySession extends DisplayReplaySession {
       }
     }
     return super._ensureReplayCursor();
+  }
+
+  async _ensureDisplayAggregate() {
+    const resolution = String(this.displayResolution || "1");
+    if (resolution === "1") return;
+    if (resolution === "1D") return super._ensureDisplayAggregate();
+
+    const current = await this._ensureReplayCursor();
+    if (
+      this.displayAggregate &&
+      this.displayAggregateResolution === resolution &&
+      Number(this.displayAggregateCursor) === Number(current.t)
+    ) return;
+
+    const warmup = await this._warmupBars(
+      this.session.shardIndex,
+      this.session.barIndex,
+      MAX_PARTIAL_MINUTES,
+    );
+
+    // Seed the selected-frame start with the proven timezone-aware implementation once.
+    // The rest of the active frame can be reconstructed by epoch ordering alone.
+    this.displayAggregate = null;
+    this.displayAggregateResolution = null;
+    this.displayAggregateCursor = null;
+    super._consumeCanonicalBars([current], resolution);
+    const frameStart = Number(this.displayAggregate?.t);
+    if (!Number.isFinite(frameStart)) return super._ensureDisplayAggregate();
+
+    const start = lowerBoundBarTime(warmup, frameStart);
+    let aggregate = null;
+    for (let index = start; index < warmup.length; index += 1) {
+      const bar = warmup[index];
+      if (Number(bar.t) > Number(current.t)) break;
+      if (!aggregate) aggregate = newAggregate(bar, frameStart);
+      else addToAggregate(aggregate, bar);
+    }
+
+    this.displayAggregate = aggregate || newAggregate(current, frameStart);
+    this.displayAggregateResolution = resolution;
+    this.displayAggregateCursor = Number(current.t);
   }
 
   async _ensureDisplayWindows(cursor) {
