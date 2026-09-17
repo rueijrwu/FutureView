@@ -422,7 +422,9 @@
 
         for (const [key, period] of Object.entries(periods)) {
           if (this.bars.length < period) continue;
-          this.indicators[key]?.update({ time: bar.time, value: smaState.sums[key] / period });
+          if (this._fvIndicatorActive(key)) {
+            this.indicators[key]?.update({ time: bar.time, value: smaState.sums[key] / period });
+          }
         }
       }
 
@@ -461,7 +463,7 @@
       this.vwapPriceVolume = state.priceVolume;
       this.vwapVolume = state.volume;
 
-      if (state.volume > 0) {
+      if (state.volume > 0 && this._fvIndicatorActive("vwap")) {
         this.indicators.vwap?.update({ time: bar.time, value: state.priceVolume / state.volume });
       }
     }
@@ -474,7 +476,8 @@
     }
 
     _fvIndicatorActive(name) {
-      return !!this.toolbar?.querySelector?.(`button[data-tool="${name}"].active`);
+      if (!this.toolbar?.querySelector) return true;
+      return !!this.toolbar.querySelector(`button[data-tool="${name}"].active`);
     }
 
     _fvAnyIndicatorActive() {

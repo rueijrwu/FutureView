@@ -275,3 +275,77 @@ test("active indicator preserves full historical refresh on setData", () => {
   assert.equal(vwapSyncs, 1);
   assert.equal(smaSyncs, 1);
 });
+
+
+test("hidden live indicators maintain rolling state without chart series updates", () => {
+  const bars = [];
+  for (let i = 0; i < 70; i += 1) {
+    bars.push({
+      time: sec("2026-09-17T09:30:00-04:00") + i * 60,
+      open: 100 + i,
+      high: 101 + i,
+      low: 99 + i,
+      close: 100.5 + i,
+      volume: 10,
+    });
+  }
+  const instance = Object.create(ChartTools.prototype);
+  instance.bars = bars;
+  instance.toolbar = { querySelector() { return null; } };
+  instance._fvSmaState = null;
+  instance._fvVwapState = null;
+  let seriesUpdates = 0;
+  instance.indicators = {
+    sma5: { update() { seriesUpdates += 1; } },
+    sma10: { update() { seriesUpdates += 1; } },
+    sma20: { update() { seriesUpdates += 1; } },
+    sma60: { update() { seriesUpdates += 1; } },
+    vwap: { update() { seriesUpdates += 1; } },
+  };
+
+  instance._fvUpdateIndicatorsForLastBar();
+  const initialSma = { ...instance._fvSmaState.sums };
+  const initialVwap = instance._fvVwapState.priceVolume;
+
+  const next = { ...bars.at(-1), time: bars.at(-1).time + 60, close: 250, high: 251, low: 249, volume: 20 };
+  instance.bars.push(next);
+  instance._fvUpdateIndicatorsForLastBar();
+
+  assert.equal(seriesUpdates, 0);
+  assert.notDeepEqual(instance._fvSmaState.sums, initialSma);
+  assert.notEqual(instance._fvVwapState.priceVolume, initialVwap);
+});
+
+test("live indicator updates touch only active chart series", () => {
+  const bars = [];
+  for (let i = 0; i < 70; i += 1) {
+    bars.push({
+      time: sec("2026-09-17T09:30:00-04:00") + i * 60,
+      open: 100 + i,
+      high: 101 + i,
+      low: 99 + i,
+      close: 100.5 + i,
+      volume: 10,
+    });
+  }
+  const instance = Object.create(ChartTools.prototype);
+  instance.bars = bars;
+  instance.toolbar = {
+    querySelector(selector) {
+      return selector.includes('sma20') || selector.includes('vwap') ? {} : null;
+    },
+  };
+  instance._fvSmaState = null;
+  instance._fvVwapState = null;
+  const updates = [];
+  instance.indicators = Object.fromEntries(
+    ["sma5", "sma10", "sma20", "sma60", "vwap"].map((key) => [
+      key,
+      { update() { updates.push(key); } },
+    ]),
+  );
+
+  instance._fvUpdateIndicatorsForLastBar();
+
+  assert.deepEqual(updates.sort(), ["sma20", "vwap"]);
+});
