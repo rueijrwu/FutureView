@@ -1,6 +1,7 @@
 import { ReplaySession as BaseReplaySession } from "./replay-session.js";
 
 const FRAME_RESOLUTIONS = new Set(["1", "5", "30", "240", "1D"]);
+const SPEEDS = new Set([1, 5, 10, 25, 50, 100]);
 const ET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   year: "numeric",
@@ -65,13 +66,31 @@ export class ReplaySession extends BaseReplaySession {
       return super.webSocketMessage(ws, message);
     }
 
-    if (command.type !== "step_frame") return super.webSocketMessage(ws, message);
-
     try {
-      await this.stepFrame(command.timeframe);
+      if (command.type === "step_frame") await this.stepFrame(command.timeframe);
+      else if (command.type === "set_speed") await this.setSpeed(command.speed);
+      else return super.webSocketMessage(ws, message);
     } catch (error) {
       ws.send(JSON.stringify({ type: "error", error: String(error?.message ?? error) }));
     }
+  }
+
+  async setSpeed(value) {
+    if (!this.session) throw new Error("Session not initialized");
+    let speed = value;
+    if (String(value).toLowerCase() === "max") speed = "max";
+    else {
+      speed = Number(value);
+      if (!SPEEDS.has(speed)) throw new Error("Invalid replay speed");
+    }
+
+    this.session.speed = speed;
+    if (this.session.state === "PLAYING") {
+      this.credit = 0;
+      this.lastTick = Date.now();
+    }
+    await this.ctx.storage.put("session", this.session);
+    this._broadcast(this.snapshot());
   }
 
   async stepFrame(value) {
@@ -87,8 +106,6 @@ export class ReplaySession extends BaseReplaySession {
     const initialKey = frameKey(current.t, timeframe);
     const released = [];
 
-    // Release authoritative 1m bars until the next visible chart frame begins.
-    // This handles partial current bars, market gaps, weekends, DST, and 1D session rolls.
     while (this.session.state !== "FINISHED") {
       const bars = await this._release(1);
       if (!bars.length) break;
