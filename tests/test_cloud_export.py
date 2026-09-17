@@ -47,9 +47,12 @@ def test_cloud_manifest_contains_runtime_selection_inputs(tmp_path: Path) -> Non
     assert manifest["native_display_resolutions"] == ["1", "5", "30", "240", "1D"]
     assert manifest["intraday_multipliers"] == ["1", "5", "30", "240"]
     assert manifest["daily_multipliers"] == ["1"]
-    assert manifest["display_cache"]["window_bars"] == 512
-    assert manifest["display_cache"]["prefetch_threshold"] == 0.75
-    assert manifest["display_cache"]["partial_bar_source"] == "released_1m_only"
+    assert manifest["display_cache"] == {
+        "strategy": "rolling_precomputed_windows",
+        "window_bars": 512,
+        "prefetch_threshold": 0.75,
+        "partial_bar_source": "released_1m_only",
+    }
     assert manifest["roll_rule"] == "runtime_prior_session_max_volume"
 
     selection = manifest["contract_selection"]
@@ -61,6 +64,8 @@ def test_cloud_manifest_contains_runtime_selection_inputs(tmp_path: Path) -> Non
     contract = manifest["contracts"]["MESM24"]
     for resolution in ["1", "5", "30", "240", "1D"]:
         assert contract["display_shards"][resolution]
+    assert contract["display_shards"]["5"][0]["window"] == 0
+    assert contract["display_shards"]["5"][0]["offset"] == 0
 
     daily_meta = contract["display_shards"]["1D"][0]
     with gzip.open(output / daily_meta["key"], "rt", encoding="utf-8") as f:
