@@ -131,7 +131,7 @@ export class ReplaySession extends DurableObject {
       originBarIndex: barIndex,
       state: "PAUSED",
       speed: 1,
-      warmup: Math.max(0, Math.min(5000, Number(body.warmup ?? 300))),
+      warmup: Math.max(0, Math.min(100000, Number(body.warmup ?? 300))),
       startTs: start,
       trading: this._blankTrading(),
     };
