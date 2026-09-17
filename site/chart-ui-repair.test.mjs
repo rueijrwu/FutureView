@@ -456,3 +456,16 @@ test("warmup aggregation reseeds after a DST weekend gap", () => {
     sec("2026-03-08T18:00:00-04:00"),
   ]);
 });
+
+
+test("active 1D rebuild uses midnight ET during EST", () => {
+  const instance = Object.create(ChartTools.prototype);
+  instance._fvTimeframe = "1D";
+  instance._fvRawBars = rawMinuteBars("2026-12-09T18:00:00-05:00", 960, 400);
+
+  const active = instance._fvRebuildActiveAggregate();
+
+  assert.equal(active.time, sec("2026-12-10T00:00:00-05:00"));
+  assert.equal(active.open, instance._fvRawBars[0].o);
+  assert.equal(active.close, instance._fvRawBars.at(-1).c);
+});

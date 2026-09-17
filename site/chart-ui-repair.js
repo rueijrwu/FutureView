@@ -74,7 +74,13 @@
     const parts = etParts(seconds);
     const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
     if (parts.hour >= 18) day.setUTCDate(day.getUTCDate() + 1);
-    return Math.floor(day.getTime() / 1000);
+    return wallToEpochSeconds({
+      year: day.getUTCFullYear(),
+      month: day.getUTCMonth() + 1,
+      day: day.getUTCDate(),
+      hour: 0,
+      minute: 0,
+    });
   }
 
   function bucketTime(seconds, timeframe) {
