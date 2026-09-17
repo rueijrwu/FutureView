@@ -1,4 +1,11 @@
 import { ReplaySession as FrameReplaySession } from "./replay-session-frame.js";
+import {
+  addToDisplayAggregate,
+  asDisplayBar,
+  consumeDisplayBars,
+  finalizeDisplayBar,
+  newDisplayAggregate,
+} from "./replay-display.js";
 import { FRAME_RESOLUTIONS, displayStamp } from "./replay-time.js";
 
 const MAX_PARTIAL_MINUTES = 1500;
@@ -36,28 +43,6 @@ function indexAtOrAfter(bars, target) {
   return lo < bars.length ? lo : -1;
 }
 
-function newAggregate(bar, resolution) {
-  return {
-    t: displayStamp(bar.t, resolution),
-    o: Number(bar.o),
-    h: Number(bar.h),
-    l: Number(bar.l),
-    c: Number(bar.c),
-    v: Number(bar.v) || 0,
-  };
-}
-
-function addToAggregate(aggregate, bar) {
-  aggregate.h = Math.max(aggregate.h, Number(bar.h));
-  aggregate.l = Math.min(aggregate.l, Number(bar.l));
-  aggregate.c = Number(bar.c);
-  aggregate.v += Number(bar.v) || 0;
-}
-
-function displayBar(aggregate, resolution) {
-  return aggregate ? { ...aggregate, display_resolution: String(resolution) } : null;
-}
-
 export class ReplaySession extends FrameReplaySession {
   constructor(ctx, env) {
     super(ctx, env);
@@ -65,6 +50,22 @@ export class ReplaySession extends FrameReplaySession {
     this.displayAggregateResolution = null;
     this.displayAggregateCursor = null;
     this.displayAggregatePublishedStamp = null;
+  }
+
+  _displayState() {
+    return {
+      aggregate: this.displayAggregate,
+      resolution: this.displayAggregateResolution,
+      cursor: this.displayAggregateCursor,
+      publishedStamp: this.displayAggregatePublishedStamp,
+    };
+  }
+
+  _applyDisplayState(state) {
+    this.displayAggregate = state?.aggregate ?? null;
+    this.displayAggregateResolution = state?.resolution ?? null;
+    this.displayAggregateCursor = state?.cursor ?? null;
+    this.displayAggregatePublishedStamp = state?.publishedStamp ?? null;
   }
 
   snapshot() {
@@ -159,10 +160,7 @@ export class ReplaySession extends FrameReplaySession {
   }
 
   _resetDisplayAggregate() {
-    this.displayAggregate = null;
-    this.displayAggregateResolution = null;
-    this.displayAggregateCursor = null;
-    this.displayAggregatePublishedStamp = null;
+    this._applyDisplayState(null);
   }
 
   async _ensureDisplayAggregate() {
@@ -184,53 +182,28 @@ export class ReplaySession extends FrameReplaySession {
     let aggregate = null;
     for (const bar of warmup) {
       if (displayStamp(bar.t, resolution) !== stamp) continue;
-      if (!aggregate) aggregate = newAggregate(bar, resolution);
-      else addToAggregate(aggregate, bar);
+      if (!aggregate) aggregate = newDisplayAggregate(bar, resolution);
+      else addToDisplayAggregate(aggregate, bar);
     }
-    this.displayAggregate = aggregate || newAggregate(current, resolution);
-    this.displayAggregateResolution = resolution;
-    this.displayAggregateCursor = Number(current.t);
-    this.displayAggregatePublishedStamp = null;
+    this._applyDisplayState({
+      aggregate: aggregate || newDisplayAggregate(current, resolution),
+      resolution,
+      cursor: Number(current.t),
+      publishedStamp: null,
+    });
   }
 
   _consumeCanonicalBars(rawBars, resolution = this.displayResolution) {
-    resolution = String(resolution || "1");
-    if (resolution === "1") {
-      return (rawBars || []).map((bar) => ({ ...bar, display_resolution: "1" }));
-    }
-
-    const completed = [];
-    for (const bar of rawBars || []) {
-      const stamp = displayStamp(bar.t, resolution);
-      if (!this.displayAggregate || this.displayAggregateResolution !== resolution) {
-        this.displayAggregate = newAggregate(bar, resolution);
-        this.displayAggregateResolution = resolution;
-        this.displayAggregatePublishedStamp = null;
-      } else if (this.displayAggregate.t !== stamp) {
-        if (this.displayAggregatePublishedStamp !== this.displayAggregate.t) {
-          completed.push(displayBar(this.displayAggregate, resolution));
-          this.displayAggregatePublishedStamp = this.displayAggregate.t;
-        }
-        this.displayAggregate = newAggregate(bar, resolution);
-        this.displayAggregatePublishedStamp = null;
-      } else {
-        addToAggregate(this.displayAggregate, bar);
-      }
-      this.displayAggregateCursor = Number(bar.t);
-    }
-    return completed;
+    const result = consumeDisplayBars(this._displayState(), rawBars, resolution);
+    this._applyDisplayState(result.state);
+    return result.completed;
   }
 
   async _finalizeAggregateIfComplete(completed, resolution = this.displayResolution) {
-    resolution = String(resolution || "1");
-    if (resolution === "1" || !this.displayAggregate) return completed;
     const next = await this._peekNextReplayBar();
-    const complete = !next || displayStamp(next.t, resolution) !== this.displayAggregate.t;
-    if (complete && this.displayAggregatePublishedStamp !== this.displayAggregate.t) {
-      completed.push(displayBar(this.displayAggregate, resolution));
-      this.displayAggregatePublishedStamp = this.displayAggregate.t;
-    }
-    return completed;
+    const result = finalizeDisplayBar(this._displayState(), next, resolution);
+    this._applyDisplayState(result.state);
+    return [...completed, ...result.completed];
   }
 
   _broadcastDisplayBars(bars, resolution = this.displayResolution, cursor = this.session?.cursorTs) {
@@ -254,7 +227,7 @@ export class ReplaySession extends FrameReplaySession {
     const bars = await this._causalDisplayWindow(cursor, this.displayResolution, this.historyRange);
     const activeBar = String(this.displayResolution) === "1"
       ? { ...current, display_resolution: "1" }
-      : displayBar(this.displayAggregate, this.displayResolution);
+      : asDisplayBar(this.displayAggregate, this.displayResolution);
     this._broadcast({
       type: "display_window",
       resolution: this.displayResolution,
@@ -301,7 +274,6 @@ export class ReplaySession extends FrameReplaySession {
     await this._persistTradingSummary();
     this._broadcast({ type: "reset", warmup, snapshot: this.snapshot() });
     await this._broadcastDisplayWindow();
-    await this._ensureDisplayAggregate();
   }
 
   async _release(count) {
