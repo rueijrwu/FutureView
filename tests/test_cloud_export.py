@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 from pathlib import Path
 
@@ -44,14 +45,29 @@ def test_cloud_manifest_contains_runtime_selection_inputs(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    result = export_cloud(runtime, tmp_path / "cloud")
+    output = tmp_path / "cloud"
+    result = export_cloud(runtime, output)
     manifest = json.loads(result.read_text(encoding="utf-8"))
-    assert manifest["version"] == 5
+    assert manifest["version"] == 6
     assert manifest["resolution"] == "1m"
     assert manifest["supported_display_resolutions"] == ["1", "5", "30", "240", "1D"]
+    assert manifest["native_display_resolutions"] == ["1", "1D"]
+    assert manifest["intraday_multipliers"] == ["1"]
+    assert manifest["daily_multipliers"] == ["1"]
     assert manifest["roll_rule"] == "runtime_prior_session_max_volume"
     selection = manifest["contract_selection"]
     assert selection["rule"] == "runtime_prior_session_max_volume"
     assert selection["expiry_cutoff_et"] == "09:30"
     assert selection["sessions"] == ["2024-06-10", "2024-06-11", "2024-06-12"]
     assert selection["session_volumes"]["2024-06-11"]["MESU24"] == 120.0
+
+    contract = manifest["contracts"]["MESM24"]
+    assert contract["display_shards"]["1m"]
+    daily_meta = contract["display_shards"]["1D"][0]
+    with gzip.open(output / daily_meta["key"], "rt", encoding="utf-8") as f:
+        daily = json.load(f)
+    assert [bar["t"] for bar in daily] == [
+        int(pd.Timestamp("2024-06-10T00:00:00Z").timestamp()),
+        int(pd.Timestamp("2024-06-11T00:00:00Z").timestamp()),
+        int(pd.Timestamp("2024-06-12T00:00:00Z").timestamp()),
+    ]
