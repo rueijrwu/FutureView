@@ -30,6 +30,14 @@
 
     <section id="workspace" class="workspace">
       <div id="chart-toolbar" class="chart-toolbar" role="toolbar" aria-label="Chart tools">
+        <div class="tool-group timeframe-group" aria-label="Chart timeframe">
+          <span>Time</span>
+          <button data-timeframe="1" aria-pressed="false">1m</button>
+          <button data-timeframe="5" class="active" aria-pressed="true">5m</button>
+          <button data-timeframe="30" aria-pressed="false">30m</button>
+          <button data-timeframe="240" aria-pressed="false">4h</button>
+          <button data-timeframe="1D" aria-pressed="false">1D</button>
+        </div>
         <div class="tool-group">
           <span>Indicators</span>
           <span class="indicator-pick"><button data-tool="sma5" aria-pressed="false">SMA5</button><button type="button" class="fv-color-swatch" data-indicator-color="sma5" title="SMA5 color"></button></span>
