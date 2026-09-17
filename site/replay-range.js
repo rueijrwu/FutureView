@@ -55,6 +55,71 @@
     };
   }
 
+  // Historical 1D cache bars were originally stamped at 00:00 UTC. The chart formats
+  // every timestamp in America/New_York, which made those bars appear at 19:00/20:00 on
+  // the prior date. Normalize every daily bar to midnight ET for its encoded trading day.
+  // This is also idempotent for the corrected cache format, whose UTC epoch represents
+  // 00:00 ET directly.
+  const ET_WALL_FORMATTER = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+
+  function etWallParts(seconds) {
+    return Object.fromEntries(
+      ET_WALL_FORMATTER.formatToParts(new Date(Number(seconds) * 1000))
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, Number(part.value)]),
+    );
+  }
+
+  function etWallToEpoch(parts) {
+    const wanted = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour || 0, parts.minute || 0, 0);
+    let guess = wanted;
+    for (let i = 0; i < 4; i += 1) {
+      const shown = etWallParts(guess / 1000);
+      const shownWall = Date.UTC(shown.year, shown.month - 1, shown.day, shown.hour, shown.minute, 0);
+      const delta = wanted - shownWall;
+      guess += delta;
+      if (!delta) break;
+    }
+    return Math.floor(guess / 1000);
+  }
+
+  function normalizeDailyTime(seconds) {
+    const date = new Date(Number(seconds) * 1000);
+    return etWallToEpoch({
+      year: date.getUTCFullYear(),
+      month: date.getUTCMonth() + 1,
+      day: date.getUTCDate(),
+      hour: 0,
+      minute: 0,
+    });
+  }
+
+  if (ChartCtor) {
+    window.FutureViewChartTools = class FutureViewChartToolsEasternDaily extends ChartCtor {
+      _fvSetDisplayData(displayBars) {
+        if (this._fvTimeframe === "1D") {
+          displayBars = (displayBars || []).map((bar) => ({ ...bar, time: normalizeDailyTime(bar.time) }));
+        }
+        return super._fvSetDisplayData(displayBars);
+      }
+
+      _fvEmitDisplayBar(displayBar) {
+        if (this._fvTimeframe === "1D" && displayBar) {
+          displayBar = { ...displayBar, time: normalizeDailyTime(displayBar.time) };
+        }
+        return super._fvEmitDisplayBar(displayBar);
+      }
+    };
+  }
+
   function timeframe() {
     return String(
       window.__futureViewChartTools?._fvTimeframe ||
