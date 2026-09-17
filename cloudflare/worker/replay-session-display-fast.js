@@ -4,6 +4,8 @@ const FRAME_RESOLUTIONS = new Set(["1", "5", "30", "240", "1D"]);
 const LONG_GAP_SECONDS = 6 * 60 * 60;
 const PREFETCH_THRESHOLD = 0.75;
 const MAX_PARTIAL_MINUTES = 1500;
+const HISTORY_SECONDS = { "1D": 86400, "5D": 5 * 86400, "1M": 30 * 86400, "3M": 90 * 86400 };
+const HISTORY_LOAD_CONCURRENCY = 4;
 
 function newAggregate(bar, stamp) {
   return {
@@ -89,8 +91,6 @@ export class ReplaySession extends DisplayReplaySession {
       MAX_PARTIAL_MINUTES,
     );
 
-    // Seed the selected-frame start with the proven timezone-aware implementation once.
-    // The rest of the active frame can be reconstructed by epoch ordering alone.
     this.displayAggregate = null;
     this.displayAggregateResolution = null;
     this.displayAggregateCursor = null;
@@ -162,6 +162,37 @@ export class ReplaySession extends DisplayReplaySession {
       ? edge
       : Math.min(edge, this.displayPrefetchAt);
     this._trimDisplayWindows(index, resolution);
+  }
+
+  async _preloadDisplayHistory(cursor, resolution = this.displayResolution, historyRange = this.historyRange) {
+    cursor = Number(cursor);
+    resolution = String(resolution || this.displayResolution || "5");
+    historyRange = String(historyRange || this.historyRange || "5D");
+    if (!Number.isFinite(cursor) || resolution !== String(this.displayResolution)) return;
+
+    await this._ensureDisplayWindows(cursor);
+    const center = Number(this.displayWindowIndex);
+    if (!Number.isInteger(center) || center < 0) return;
+
+    const shards = await this._displayShardMeta(resolution);
+    if (!shards.length) return;
+    const seconds = HISTORY_SECONDS[historyRange] ?? HISTORY_SECONDS["5D"];
+    const historyFrom = cursor - seconds;
+    const firstNeeded = Math.max(0, Math.min(center, lowerBoundLastTime(shards, historyFrom)));
+    const missing = [];
+    for (let index = firstNeeded; index <= center; index += 1) {
+      if (!this.displayWindows.has(`${resolution}:${index}`)) missing.push(index);
+    }
+
+    for (let offset = 0; offset < missing.length; offset += HISTORY_LOAD_CONCURRENCY) {
+      const group = missing.slice(offset, offset + HISTORY_LOAD_CONCURRENCY);
+      await Promise.all(group.map((index) => this._loadDisplayWindow(index, resolution)));
+    }
+  }
+
+  async _causalDisplayWindow(cursor, resolution = this.displayResolution, historyRange = this.historyRange) {
+    await this._preloadDisplayHistory(cursor, resolution, historyRange);
+    return super._causalDisplayWindow(cursor, resolution, historyRange);
   }
 
   _consumeCanonicalBars(rawBars, resolution = this.displayResolution) {
