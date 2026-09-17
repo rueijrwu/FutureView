@@ -30,14 +30,6 @@
 
     <section id="workspace" class="workspace">
       <div id="chart-toolbar" class="chart-toolbar" role="toolbar" aria-label="Chart tools">
-        <div class="tool-group timeframe-group" aria-label="Chart timeframe">
-          <span>Time</span>
-          <button data-timeframe="1" aria-pressed="false">1m</button>
-          <button data-timeframe="5" class="active" aria-pressed="true">5m</button>
-          <button data-timeframe="30" aria-pressed="false">30m</button>
-          <button data-timeframe="240" aria-pressed="false">4h</button>
-          <button data-timeframe="1D" aria-pressed="false">1D</button>
-        </div>
         <div class="tool-group">
           <span>Indicators</span>
           <span class="indicator-pick"><button data-tool="sma5" aria-pressed="false">SMA5</button><button type="button" class="fv-color-swatch" data-indicator-color="sma5" title="SMA5 color"></button></span>
@@ -50,7 +42,22 @@
         <div class="tool-group"><span>View</span><button data-tool="crosshair" aria-pressed="false">Magnet</button><button data-tool="zoom-in">Zoom +</button><button data-tool="zoom-out">Zoom −</button><button data-tool="fit">Fit</button><button data-tool="latest">Latest</button><button data-tool="log" aria-pressed="false">Linear</button></div>
       </div>
       <div id="chart-legend" class="chart-legend">O — H — L — C — V —</div>
-      <div class="plot-area"><div id="chart"></div></div>
+      <div class="plot-area">
+        <div id="chart"></div>
+        <div class="chart-overlay chart-timeframe-overlay" role="toolbar" aria-label="Chart timeframe">
+          <button data-timeframe="1" aria-pressed="false">1m</button>
+          <button data-timeframe="5" class="active" aria-pressed="true">5m</button>
+          <button data-timeframe="30" aria-pressed="false">30m</button>
+          <button data-timeframe="240" aria-pressed="false">4h</button>
+          <button data-timeframe="1D" aria-pressed="false">1D</button>
+        </div>
+        <div id="chart-range-toolbar" class="chart-overlay chart-range-overlay" role="toolbar" aria-label="Visible history range">
+          <button data-history-range="1D" aria-pressed="false">1D</button>
+          <button data-history-range="5D" class="active" aria-pressed="true">5D</button>
+          <button data-history-range="1M" aria-pressed="false">1M</button>
+          <button data-history-range="3M" aria-pressed="false">3M</button>
+        </div>
+      </div>
       <aside id="trade-sidebar" class="trade-sidebar" aria-label="Trading record">
         <div class="trade-summary">
           <div><span>Position</span><strong id="trade-position">Flat</strong></div>
@@ -71,16 +78,6 @@
         </div>
       </aside>
     </section>
-
-    <div id="chart-range-toolbar" class="chart-toolbar" role="toolbar" aria-label="Visible history range">
-      <div class="tool-group">
-        <span>Range</span>
-        <button data-history-range="1D" aria-pressed="false">1D</button>
-        <button data-history-range="5D" class="active" aria-pressed="true">5D</button>
-        <button data-history-range="1M" aria-pressed="false">1M</button>
-        <button data-history-range="3M" aria-pressed="false">3M</button>
-      </div>
-    </div>
 
     <section class="controls">
       <div class="replay-controls">
