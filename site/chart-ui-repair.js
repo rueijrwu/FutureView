@@ -23,6 +23,17 @@
     };
   }
 
+  function normalizeDisplay(raw) {
+    return {
+      time: Number(raw.t ?? raw.time),
+      open: Number(raw.o ?? raw.open),
+      high: Number(raw.h ?? raw.high),
+      low: Number(raw.l ?? raw.low),
+      close: Number(raw.c ?? raw.close),
+      volume: Number(raw.v ?? raw.volume),
+    };
+  }
+
   function etParts(seconds) {
     return Object.fromEntries(
       etFormatter.formatToParts(new Date(seconds * 1000))
@@ -129,9 +140,6 @@
 
     constructor(options) {
       super(options);
-
-      // app.js still writes raw 1m candles before calling chartTools.append().
-      // Suppress those direct writes; this adapter emits only the selected timeframe.
       this._fvNativeCandleUpdate = this.candles.update.bind(this.candles);
       this._fvNativeVolumeUpdate = this.volume?.update?.bind(this.volume) ?? null;
       this.candles.update = () => {};
@@ -149,13 +157,37 @@
       window.__futureViewChartTools = this;
     }
 
+    _fvLoadCachedWindow(resolution, rawBars) {
+      if (!rawBars?.length) return;
+      const visible = this.chart.timeScale().getVisibleRange?.() || null;
+      this._fvTimeframe = String(resolution || this._fvTimeframe || "5");
+      this._fvSyncTimeframeUi();
+
+      const displayBars = rawBars.map(normalizeDisplay);
+      const partial = aggregateTail(this._fvRawBars || [], this._fvTimeframe);
+      if (partial) {
+        const last = displayBars.at(-1);
+        if (!last || partial.time > last.time) displayBars.push(partial);
+        else if (partial.time === last.time) displayBars[displayBars.length - 1] = partial;
+      }
+
+      this.candles.setData(displayBars.map(candle));
+      if (this.volume) this.volume.setData(displayBars.map(volume));
+      this.bars = displayBars.map((bar) => ({ ...bar }));
+      this._refreshIndicators();
+      this._showLegend(null);
+
+      if (visible) {
+        try { this.chart.timeScale().setVisibleRange(visible); } catch {}
+      }
+    }
+
     _fvEmitDisplayBar(displayBar) {
       this._fvNativeCandleUpdate(candle(displayBar));
       this._fvNativeVolumeUpdate?.(volume(displayBar));
-      this._appendNormalized(displayBar);
-      // All live changes only affect the current last display bar or append new bars,
-      // so an incremental indicator update is sufficient; avoid full-history rebuilds.
-      this._updateIndicatorsForLastBar();
+      const replaced = this._appendNormalized(displayBar);
+      if (replaced) this._refreshIndicators();
+      else this._updateIndicatorsForLastBar();
     }
 
     _fvApplyRaw(rawBar) {
