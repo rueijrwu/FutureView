@@ -101,6 +101,14 @@ export class ReplaySession extends DurableObject {
     return this.shard;
   }
 
+  _findShardAtOrAfter(contract, start) {
+    return contract.shards.findIndex((item) => Number(item.last_time) >= Number(start));
+  }
+
+  _findBarAtOrAfter(bars, start) {
+    return bars.findIndex((bar) => Number(bar.t) >= Number(start));
+  }
+
   async init(body) {
     const product = body.product || "MES";
     const manifest = await this._manifest(product);
@@ -108,10 +116,10 @@ export class ReplaySession extends DurableObject {
     if (!contract) throw new Error(`Unknown contract ${body.contract}`);
     const start = Math.floor(new Date(body.start).getTime() / 1000);
     if (!Number.isFinite(start)) throw new Error("Invalid start timestamp");
-    const shardIndex = contract.shards.findIndex((x) => x.last_time >= start);
+    const shardIndex = this._findShardAtOrAfter(contract, start);
     if (shardIndex < 0) throw new Error("No bar exists at or after requested start");
     const shard = await this._loadShardForContract(contract, shardIndex, product);
-    let barIndex = shard.findIndex((x) => x.t >= start);
+    let barIndex = this._findBarAtOrAfter(shard, start);
     let resolvedShard = shardIndex;
     if (barIndex < 0) {
       resolvedShard += 1;

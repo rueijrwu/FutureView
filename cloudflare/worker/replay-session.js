@@ -1,6 +1,29 @@
 import { ReplaySession as CoreReplaySession } from "./replay-session-core.js";
 
 export class ReplaySession extends CoreReplaySession {
+  _findShardAtOrAfter(contract, start) {
+    const shards = contract?.shards || [];
+    let lo = 0;
+    let hi = shards.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (Number(shards[mid].last_time) >= Number(start)) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo < shards.length ? lo : -1;
+  }
+
+  _findBarAtOrAfter(bars, start) {
+    let lo = 0;
+    let hi = bars.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (Number(bars[mid].t) >= Number(start)) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo < bars.length ? lo : -1;
+  }
+
   _residentShard(contract, index) {
     const meta = contract?.shards?.[index];
     if (!meta || !this.shard || this.shardKey !== meta.key) return null;

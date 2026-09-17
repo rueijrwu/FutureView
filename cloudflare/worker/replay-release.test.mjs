@@ -132,3 +132,36 @@ test("warmup contained in current shard performs no R2 shard loads", async () =>
   assert.deepEqual(warmup.map((bar) => bar.t), [160, 220]);
   assert.deepEqual(metrics.warmupLoads, []);
 });
+
+
+test("binary shard lookup matches first shard whose last_time reaches start", () => {
+  const instance = Object.create(ReplaySession.prototype);
+  const contract = {
+    shards: [
+      { last_time: 100 },
+      { last_time: 200 },
+      { last_time: 300 },
+      { last_time: 400 },
+    ],
+  };
+  assert.equal(instance._findShardAtOrAfter(contract, 50), 0);
+  assert.equal(instance._findShardAtOrAfter(contract, 100), 0);
+  assert.equal(instance._findShardAtOrAfter(contract, 101), 1);
+  assert.equal(instance._findShardAtOrAfter(contract, 300), 2);
+  assert.equal(instance._findShardAtOrAfter(contract, 401), -1);
+});
+
+test("binary bar lookup matches first canonical bar at or after start", () => {
+  const instance = Object.create(ReplaySession.prototype);
+  const bars = [
+    makeBar(100, 10),
+    makeBar(160, 11),
+    makeBar(220, 12),
+    makeBar(280, 13),
+  ];
+  assert.equal(instance._findBarAtOrAfter(bars, 99), 0);
+  assert.equal(instance._findBarAtOrAfter(bars, 100), 0);
+  assert.equal(instance._findBarAtOrAfter(bars, 101), 1);
+  assert.equal(instance._findBarAtOrAfter(bars, 220), 2);
+  assert.equal(instance._findBarAtOrAfter(bars, 281), -1);
+});
