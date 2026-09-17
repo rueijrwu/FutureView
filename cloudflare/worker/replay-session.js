@@ -55,6 +55,67 @@ export class ReplaySession extends CoreReplaySession {
     return flattened;
   }
 
+  _lowerBoundCanonicalTime(bars, target, start = 0) {
+    let lo = Math.max(0, Number(start) || 0);
+    let hi = bars.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (Number(bars[mid].t) >= Number(target)) hi = mid;
+      else lo = mid + 1;
+    }
+    return lo;
+  }
+
+  async _releaseUntilBefore(targetExclusive, maxCount = 2000) {
+    const contract = (await this._manifest()).contracts[this.session.contract];
+    const released = [];
+    const trading = this._trading();
+    targetExclusive = Number(targetExclusive);
+
+    while (released.length < maxCount) {
+      const shardMeta = contract.shards[this.session.shardIndex];
+      if (!shardMeta) {
+        this.session.state = "FINISHED";
+        break;
+      }
+      if (!this.shard || this.shardKey !== shardMeta.key) {
+        await this._loadShard(this.session.shardIndex);
+      }
+
+      const start = this.session.barIndex + 1;
+      const end = this._lowerBoundCanonicalTime(this.shard, targetExclusive, start);
+      const available = Math.max(0, end - start);
+      const take = Math.min(available, maxCount - released.length);
+      for (let index = start; index < start + take; index += 1) {
+        this.session.barIndex = index;
+        const bar = this.shard[index];
+        if (trading.pendingOrders.length) await this._fillPendingOrders(bar);
+        trading.lastPrice = bar.c;
+        released.push(bar);
+      }
+
+      if (take < available) {
+        throw new Error("Timestamp-bounded replay release exceeded safety bound");
+      }
+      if (end < this.shard.length) break;
+
+      const nextIndex = this.session.shardIndex + 1;
+      if (nextIndex >= contract.shards.length) {
+        if (this.session.barIndex >= this.shard.length - 1) this.session.state = "FINISHED";
+        break;
+      }
+      const nextMeta = contract.shards[nextIndex];
+      if (Number.isFinite(Number(nextMeta?.first_time)) && Number(nextMeta.first_time) >= targetExclusive) break;
+
+      this.session.shardIndex = nextIndex;
+      this.session.barIndex = -1;
+      this.shard = null;
+      this.shardKey = null;
+    }
+
+    return released;
+  }
+
   async _release(count) {
     const contract = (await this._manifest()).contracts[this.session.contract];
     const released = [];

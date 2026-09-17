@@ -278,11 +278,53 @@ export class ReplaySession extends DisplayReplaySession {
 
     const timeframe = String(value || this.displayResolution || "1");
     if (!FRAME_RESOLUTIONS.has(timeframe)) throw new Error(`Unsupported chart timeframe ${timeframe}`);
-    if (timeframe !== String(this.displayResolution || "1") || timeframe === "1D") {
+    if (timeframe !== String(this.displayResolution || "1")) {
       return super.stepFrame(value);
     }
 
     const current = await this._ensureReplayCursor();
+
+    if (timeframe === "1D") {
+      await this._ensureDisplayAggregate();
+      const nextIndex = Number(this.session.barIndex) + 1;
+      const next = this.shard?.[nextIndex] ?? await this._peekNextReplayBar();
+      if (!next) {
+        this.session.state = "FINISHED";
+        await this._persist(false);
+        this._broadcast(this.snapshot());
+        return;
+      }
+
+      const currentTime = Number(current.t);
+      const nextTime = Number(next.t);
+      const dailyStamp = Number(this.displayAggregate?.t);
+      if (
+        !Number.isFinite(currentTime) ||
+        !Number.isFinite(nextTime) ||
+        !Number.isFinite(dailyStamp) ||
+        (nextTime - currentTime) > LONG_GAP_SECONDS
+      ) {
+        return super.stepFrame(value);
+      }
+
+      const currentRollover = dailyStamp + 18 * 60 * 60;
+      const targetEnd = nextTime < currentRollover
+        ? currentRollover
+        : dailyStamp + 24 * 60 * 60 + 18 * 60 * 60;
+      const released = await this._releaseUntilBefore(targetEnd, 2000);
+      if (released.length) {
+        const last = released.at(-1);
+        this.session.cursorTs = Number(last.t);
+        if (Number(last.t) >= this.displayNextCheckAt) await this._ensureDisplayWindows(last.t);
+        this._consumeCanonicalBars(released, "1D");
+        this._broadcastDisplayBars([
+          { ...this.displayAggregate, display_resolution: "1D" },
+        ], "1D");
+      }
+      await this._persist(false);
+      this._broadcast(this.snapshot());
+      return;
+    }
 
     if (timeframe === "1") {
       const released = await this._release(1);

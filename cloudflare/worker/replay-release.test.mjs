@@ -240,3 +240,48 @@ test("init keeps the next shard resident when start falls into a metadata gap", 
   assert.equal(instance.session.shardIndex, 1);
   assert.equal(instance.session.barIndex, 0);
 });
+
+
+test("timestamp-bounded release stops before target inside one shard", async () => {
+  const bars = [
+    makeBar(100, 10),
+    makeBar(160, 11),
+    makeBar(220, 12),
+    makeBar(280, 13),
+    makeBar(340, 14),
+  ];
+  const { instance, trading, metrics } = makeHarness({ shards: [bars] });
+
+  const released = await instance._releaseUntilBefore(300);
+
+  assert.deepEqual(released.map((bar) => bar.t), [160, 220, 280]);
+  assert.equal(instance.session.barIndex, 3);
+  assert.equal(trading.lastPrice, bars[3].c);
+  assert.equal(instance.session.state, "PAUSED");
+  assert.deepEqual(metrics.loaded, []);
+});
+
+test("timestamp-bounded release crosses shards without duplicate loads", async () => {
+  const shard0 = [makeBar(100, 10), makeBar(160, 11)];
+  const shard1 = [makeBar(220, 12), makeBar(280, 13), makeBar(340, 14)];
+  const { instance, metrics } = makeHarness({ shards: [shard0, shard1] });
+
+  const released = await instance._releaseUntilBefore(300);
+
+  assert.deepEqual(released.map((bar) => bar.t), [160, 220, 280]);
+  assert.equal(instance.session.shardIndex, 1);
+  assert.equal(instance.session.barIndex, 1);
+  assert.deepEqual(metrics.loaded, [1]);
+});
+
+test("timestamp-bounded release fills pending order on first released bar", async () => {
+  const bars = [makeBar(100, 10), makeBar(160, 11), makeBar(220, 12)];
+  const { instance, trading, metrics } = makeHarness({ shards: [bars], pending: true });
+
+  const released = await instance._releaseUntilBefore(221);
+
+  assert.deepEqual(released.map((bar) => bar.t), [160, 220]);
+  assert.deepEqual(metrics.fillBars, [160]);
+  assert.equal(metrics.fillCalls, 1);
+  assert.equal(trading.pendingOrders.length, 0);
+});

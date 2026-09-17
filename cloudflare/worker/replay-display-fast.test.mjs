@@ -220,3 +220,95 @@ test("5m Next from mid-frame completes only the current selected frame in one re
   assert.equal(displayBroadcasts[0].shown[0].t, sec("2026-09-17T10:15:00-04:00"));
   assert.equal(displayBroadcasts[0].shown[0].c, bars[4].c);
 });
+
+
+function dailyStepHarness(currentIso, nextIso, dailyStampIso, releasedBars) {
+  const current = barAt(sec(currentIso), 100);
+  const next = barAt(sec(nextIso), 101);
+  const instance = harness(FastReplaySession);
+  instance.displayResolution = "1D";
+  instance.historyRange = "5D";
+  instance.shard = [current, next];
+  instance.shardKey = "s0";
+  instance.manifest = {
+    contracts: {
+      MESZ6: {
+        shards: [{ key: "s0", first_time: current.t, last_time: next.t }],
+      },
+    },
+  };
+  instance.session = {
+    contract: "MESZ6",
+    shardIndex: 0,
+    barIndex: 0,
+    state: "PAUSED",
+    cursorTs: current.t,
+  };
+  instance.displayAggregate = {
+    t: sec(dailyStampIso),
+    o: current.o,
+    h: current.h,
+    l: current.l,
+    c: current.c,
+    v: current.v,
+  };
+  instance.displayAggregateResolution = "1D";
+  instance.displayAggregateCursor = current.t;
+  instance.displayNextCheckAt = Infinity;
+  instance._ensureReplayCursor = async () => current;
+  instance._ensureDisplayAggregate = async () => {};
+  instance._persist = async () => {};
+  instance._ensureDisplayWindows = async () => {};
+  instance.snapshot = () => ({ type: "session_snapshot", cursor: instance.session.cursorTs });
+
+  let target = null;
+  instance._releaseUntilBefore = async (targetEnd) => {
+    target = targetEnd;
+    instance.session.barIndex += releasedBars.length;
+    return releasedBars;
+  };
+  const displayBroadcasts = [];
+  instance._broadcastDisplayBars = (shown, resolution) => displayBroadcasts.push({ shown, resolution });
+  instance._broadcast = () => {};
+  return { instance, target: () => target, displayBroadcasts };
+}
+
+test("1D Next from mid-session releases to current 18:00 ET rollover in one batch", async () => {
+  const released = [
+    barAt(sec("2026-09-17T10:01:00-04:00"), 102),
+    barAt(sec("2026-09-17T16:59:00-04:00"), 103),
+  ];
+  const { instance, target, displayBroadcasts } = dailyStepHarness(
+    "2026-09-17T10:00:00-04:00",
+    "2026-09-17T10:01:00-04:00",
+    "2026-09-17T00:00:00-04:00",
+    released,
+  );
+
+  await instance.stepFrame("1D");
+
+  assert.equal(target(), sec("2026-09-17T18:00:00-04:00"));
+  assert.equal(instance.session.cursorTs, released.at(-1).t);
+  assert.equal(displayBroadcasts.length, 1);
+  assert.equal(displayBroadcasts[0].resolution, "1D");
+  assert.equal(displayBroadcasts[0].shown[0].t, sec("2026-09-17T00:00:00-04:00"));
+});
+
+test("1D Next at session end targets the next trading day's rollover", async () => {
+  const released = [
+    barAt(sec("2026-09-17T18:00:00-04:00"), 102),
+    barAt(sec("2026-09-18T16:59:00-04:00"), 103),
+  ];
+  const { instance, target, displayBroadcasts } = dailyStepHarness(
+    "2026-09-17T16:59:00-04:00",
+    "2026-09-17T18:00:00-04:00",
+    "2026-09-17T00:00:00-04:00",
+    released,
+  );
+
+  await instance.stepFrame("1D");
+
+  assert.equal(target(), sec("2026-09-18T18:00:00-04:00"));
+  assert.equal(instance.session.cursorTs, released.at(-1).t);
+  assert.equal(displayBroadcasts[0].shown[0].t, sec("2026-09-18T00:00:00-04:00"));
+});
