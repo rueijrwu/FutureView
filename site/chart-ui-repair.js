@@ -145,6 +145,27 @@
       this.candles.update = () => {};
       if (this.volume) this.volume.update = () => {};
 
+      // Lightweight Charts' horizontal scale is logical-point based. Add an invisible
+      // whitespace-only series that defines a continuous calendar-time lattice, so the
+      // date axis no longer depends on how many market bars happen to be loaded.
+      this._fvHistorySeconds = 5 * 86400;
+      this._fvTimeAxisStart = null;
+      this._fvTimeAxisEnd = null;
+      this._fvTimeAxisSeries = this.chart.addSeries(LightweightCharts.LineSeries, {
+        lastValueVisible: false,
+        priceLineVisible: false,
+        crosshairMarkerVisible: false,
+      });
+      try {
+        this.chart.applyOptions({
+          timeScale: {
+            minBarSpacing: 0.01,
+            enableConflation: true,
+            ignoreWhitespaceIndices: false,
+          },
+        });
+      } catch {}
+
       const overlay = document.querySelector(".chart-timeframe-overlay");
       overlay?.addEventListener("click", (event) => {
         const button = event.target.closest?.("button[data-timeframe]");
@@ -157,10 +178,45 @@
       window.__futureViewChartTools = this;
     }
 
+    _fvTimeStepSeconds() {
+      if (this._fvTimeframe === "1D") return 86400;
+      const minutes = Number(this._fvTimeframe || "5");
+      return Math.max(60, minutes * 60);
+    }
+
+    _fvRefreshTimeAxis(force = false) {
+      const raw = this._fvRawBars || [];
+      const cursor = Number(raw.at(-1)?.t ?? this.bars?.at(-1)?.time);
+      if (!Number.isFinite(cursor) || !this._fvTimeAxisSeries) return;
+
+      const step = this._fvTimeStepSeconds();
+      const history = Math.max(step * 8, Number(this._fvHistorySeconds) || 5 * 86400);
+      const from = Math.floor((cursor - history) / step) * step;
+      const to = Math.ceil((cursor + Math.max(86400, step * 32)) / step) * step;
+      if (!force && this._fvTimeAxisStart === from && this._fvTimeAxisEnd != null && cursor < this._fvTimeAxisEnd - step * 16) return;
+
+      const points = [];
+      for (let t = from; t <= to; t += step) points.push({ time: t });
+      this._fvTimeAxisSeries.setData(points);
+      this._fvTimeAxisStart = from;
+      this._fvTimeAxisEnd = to;
+    }
+
+    _fvSetTimeDomain(seconds) {
+      const value = Number(seconds);
+      if (!Number.isFinite(value) || value <= 0) return;
+      this._fvHistorySeconds = value;
+      this._fvRefreshTimeAxis(true);
+    }
+
+    _fvSetTimeframe(timeframe) {
+      const changed = String(timeframe) !== String(this._fvTimeframe);
+      super._fvSetTimeframe(timeframe);
+      if (changed) this._fvRefreshTimeAxis(true);
+    }
+
     _fvLoadCachedWindow(resolution, rawBars) {
       if (!rawBars?.length) return;
-      // Replacing series data invalidates the coordinate state an armed drawing tool
-      // was created against. Cancel it explicitly so the toolbar cannot remain stale.
       this._cancelDrawing?.();
       const visible = this.chart.timeScale().getVisibleRange?.() || null;
       this._fvTimeframe = String(resolution || this._fvTimeframe || "5");
@@ -179,6 +235,7 @@
       this.bars = displayBars.map((bar) => ({ ...bar }));
       this._refreshIndicators();
       this._showLegend(null);
+      this._fvRefreshTimeAxis(true);
 
       if (visible) {
         try { this.chart.timeScale().setVisibleRange(visible); } catch {}
@@ -204,6 +261,7 @@
       const displayBar = aggregateTail(raw, this._fvTimeframe || "5");
       if (!displayBar) return;
       this._fvEmitDisplayBar(displayBar);
+      this._fvRefreshTimeAxis(false);
       this._showLegend(null);
     }
 
@@ -230,6 +288,7 @@
       if (changedFrom == null) return;
       const displayBars = aggregateSuffix(raw, this._fvTimeframe || "5", changedFrom);
       for (const displayBar of displayBars) this._fvEmitDisplayBar(displayBar);
+      this._fvRefreshTimeAxis(false);
       this._showLegend(null);
     }
   };
