@@ -159,6 +159,9 @@
 
     _fvLoadCachedWindow(resolution, rawBars) {
       if (!rawBars?.length) return;
+      // Replacing series data invalidates the coordinate state an armed drawing tool
+      // was created against. Cancel it explicitly so the toolbar cannot remain stale.
+      this._cancelDrawing?.();
       const visible = this.chart.timeScale().getVisibleRange?.() || null;
       this._fvTimeframe = String(resolution || this._fvTimeframe || "5");
       this._fvSyncTimeframeUi();
