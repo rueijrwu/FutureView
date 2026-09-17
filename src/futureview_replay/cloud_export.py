@@ -18,7 +18,7 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
     session_volumes: dict[date, dict[str, float]] = {}
 
     for entry in manifest["files"]:
-        path = runtime_dir / str(entry["five_minute"])
+        path = runtime_dir / str(entry["one_minute"])
         frame = pd.read_parquet(path)
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
         month = frame["timestamp"].min().strftime("%Y-%m")
@@ -69,10 +69,11 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
 
     sessions = sorted(session_volumes)
     cloud_manifest = {
-        "version": 4,
+        "version": 5,
         "dataset": manifest.get("dataset"),
         "product": manifest.get("product"),
-        "resolution": "5m",
+        "resolution": "1m",
+        "supported_display_resolutions": ["1", "5", "30", "240", "1D"],
         "continuous_series": False,
         "roll_rule": "runtime_prior_session_max_volume",
         "contract_selection": {
@@ -90,5 +91,5 @@ def export_cloud(runtime_dir: Path, output_dir: Path) -> Path:
     }
     out = output_dir / "manifest.json"
     out.write_text(json.dumps(cloud_manifest, indent=2), encoding="utf-8")
-    print(f"CLOUD_EXPORT_OK product={cloud_manifest['product']} contracts={len(ordered)} manifest={out}", flush=True)
+    print(f"CLOUD_EXPORT_OK product={cloud_manifest['product']} resolution=1m contracts={len(ordered)} manifest={out}", flush=True)
     return out
