@@ -30,6 +30,7 @@ jobs:
           node --check site/chart-tools-fixes.js
           node --check site/chart-ui-repair.js
           node --check site/replay-range.js
+          node --check site/random-replay.js
           node --check src/futureview_replay/static/app.js
           node --check cloudflare/public/app.js
           node --check cloudflare/worker/main.js
