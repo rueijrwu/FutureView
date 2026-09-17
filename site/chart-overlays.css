@@ -1,0 +1,41 @@
+.plot-area {
+  position: relative;
+}
+
+.chart-overlay {
+  position: absolute;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid rgba(53, 69, 93, .75);
+  border-radius: 6px;
+  background: rgba(16, 23, 34, .88);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+
+.chart-overlay button {
+  padding: 3px 6px;
+  min-width: 0;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.chart-timeframe-overlay {
+  top: 8px;
+  left: 8px;
+}
+
+.chart-range-overlay {
+  left: 8px;
+  bottom: 28px;
+}
+
+@media (max-width: 850px) {
+  .chart-overlay button {
+    padding: 3px 5px;
+  }
+}
