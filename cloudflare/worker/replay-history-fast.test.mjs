@@ -9,7 +9,9 @@ baselineSource = baselineSource.replace(
 );
 const baselineUrl = `data:text/javascript;base64,${Buffer.from(baselineSource).toString("base64")}`;
 
-const { ReplaySession: BaselineReplaySession } = await import(baselineUrl);\n\nlet fastSource = await fs.readFile(new URL("./replay-session-display-fast.js", import.meta.url), "utf8");
+const { ReplaySession: BaselineReplaySession } = await import(baselineUrl);
+
+let fastSource = await fs.readFile(new URL("./replay-session-display-fast.js", import.meta.url), "utf8");
 fastSource = fastSource.replace("./replay-session-display.js", baselineUrl);
 const fastUrl = `data:text/javascript;base64,${Buffer.from(fastSource).toString("base64")}`;
 const { ReplaySession } = await import(fastUrl);
