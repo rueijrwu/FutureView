@@ -25,26 +25,49 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Ensure FutureView Pages project exists
+      - name: Ensure FutureView Pages production project
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
         run: |
           set -euo pipefail
           API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/futureview"
-          STATUS=$(curl -sS -o /tmp/pages-project.json -w '%{http_code}' "$API" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}")
+          AUTH="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+          STATUS=$(curl -sS -o /tmp/pages-project.json -w '%{http_code}' "$API" -H "$AUTH")
           if [ "$STATUS" = "404" ]; then
             curl -fsS -X POST "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects" \
-              -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+              -H "$AUTH" \
               -H "Content-Type: application/json" \
-              --data '{"name":"futureview","production_branch":"master"}' >/tmp/pages-create.json
-          elif [ "$STATUS" != "200" ]; then
+              --data '{"name":"futureview","production_branch":"master"}' >/tmp/pages-project.json
+          elif [ "$STATUS" = "200" ]; then
+            curl -fsS -X PATCH "$API" \
+              -H "$AUTH" \
+              -H "Content-Type: application/json" \
+              --data '{"production_branch":"master"}' >/tmp/pages-project.json
+          else
             cat /tmp/pages-project.json
             exit 1
           fi
+          test "$(jq -r '.result.production_branch' /tmp/pages-project.json)" = "master"
+          echo "Pages production branch: $(jq -r '.result.production_branch' /tmp/pages-project.json)"
 
-      - name: Deploy replay frontend to Pages
+      - name: Deploy replay frontend to production Pages
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
         run: npx --yes wrangler@4.125.0 pages deploy site --project-name=futureview --branch=master
+
+      - name: Verify canonical production alias
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/futureview"
+          curl -fsS "$API" -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" >/tmp/pages-project.json
+          echo "Canonical deployment aliases:"
+          jq -r '.result.canonical_deployment.aliases[]? // empty' /tmp/pages-project.json
+          test "$(jq -r '.result.production_branch' /tmp/pages-project.json)" = "master"
+          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors https://futureview.pages.dev/ -o /tmp/futureview-index.html
+          grep -q '<title>FutureView</title>' /tmp/futureview-index.html
+          echo "futureview.pages.dev is healthy"
