@@ -112,6 +112,21 @@ export class ReplaySession extends DisplayReplaySession {
     this.displayAggregateCursor = Number(current.t);
   }
 
+  async _loadDisplayWindow(index, resolution = this.displayResolution) {
+    const key = `${resolution}:${index}`;
+    if (this.displayWindows?.has(key)) return this.displayWindows.get(key);
+    const loads = this._fvDisplayWindowLoads ??= new Map();
+    if (loads.has(key)) return loads.get(key);
+
+    const load = super._loadDisplayWindow(index, resolution);
+    loads.set(key, load);
+    try {
+      return await load;
+    } finally {
+      if (loads.get(key) === load) loads.delete(key);
+    }
+  }
+
   async _ensureDisplayWindows(cursor) {
     const resolution = this.displayResolution;
     cursor = Number(cursor);
@@ -153,8 +168,15 @@ export class ReplaySession extends DisplayReplaySession {
       cursor >= this.displayPrefetchAt &&
       this.displayPrefetchedIndex !== index + 2
     ) {
-      await this._loadDisplayWindow(index + 2, resolution);
-      this.displayPrefetchedIndex = index + 2;
+      const target = index + 2;
+      this.displayPrefetchedIndex = target;
+      const prefetch = this._loadDisplayWindow(target, resolution).catch((error) => {
+        if (this.displayPrefetchedIndex === target) this.displayPrefetchedIndex = -1;
+        console.error("Display prefetch failed", error);
+        return null;
+      });
+      if (this.ctx?.waitUntil) this.ctx.waitUntil(prefetch);
+      else await prefetch;
     }
 
     const edge = Number(current.meta.last_time) + 1;
