@@ -5,6 +5,7 @@ const USERNAME_RE = /^[A-Za-z0-9._-]{3,32}$/;
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 const PBKDF2_ITERATIONS = 310000;
 const PUBLIC_ASSETS = new Set(["/login", "/login.html", "/login.css", "/login.js", "/favicon.ico"]);
+const SESSION_LIST_CACHE = new Map();
 
 const timeFormatter = new Intl.DateTimeFormat("en-US", {
   timeZone: DISPLAY_TIME_ZONE,
@@ -20,7 +21,12 @@ const timeFormatter = new Intl.DateTimeFormat("en-US", {
 function json(request, value, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(value), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders(request), ...extraHeaders },
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      ...corsHeaders(request),
+      ...extraHeaders,
+    },
   });
 }
 
@@ -257,7 +263,7 @@ function resolveContract(manifest, product, startValue) {
   return { contract, rule: "runtime_prior_session_max_volume", source_session: sourceSession, reason };
 }
 
-function manifestSessions(manifest) {
+function metadataSessions(manifest) {
   const selection = manifest?.contract_selection ?? {};
   const explicit = Array.isArray(selection.sessions) ? selection.sessions : [];
   const values = explicit
@@ -270,9 +276,58 @@ function manifestSessions(manifest) {
   if (volumeSessions.length) return [...new Set(volumeSessions)].sort();
 
   const legacy = Array.isArray(selection.calendar) ? selection.calendar : [];
+  const legacyValues = legacy
+    .map((item) => item?.session)
+    .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(String(item)));
+  if (legacyValues.length) return [...new Set(legacyValues)].sort();
+
+  const topLevel = Array.isArray(manifest?.sessions) ? manifest.sessions : [];
   return [...new Set(
-    legacy.map((item) => item?.session).filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(String(item)))
+    topLevel.map((item) => typeof item === "string" ? item : item?.session)
+      .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(String(item)))
   )].sort();
+}
+
+async function manifestSessions(env, manifest, product) {
+  const metadata = metadataSessions(manifest);
+  if (metadata.length) return metadata;
+
+  const contracts = Object.values(manifest?.contracts ?? {});
+  const first = Math.min(...contracts.map((item) => Number(item.first_time)).filter(Number.isFinite));
+  const last = Math.max(...contracts.map((item) => Number(item.last_time)).filter(Number.isFinite));
+  const cacheKey = `${String(product).toUpperCase()}:${manifest?.version ?? "legacy"}:${contracts.length}:${first}:${last}`;
+  if (SESSION_LIST_CACHE.has(cacheKey)) return SESSION_LIST_CACHE.get(cacheKey);
+
+  const prefix = `${String(product).toLowerCase()}-replay/v1`;
+  const dates = new Set();
+  for (const contract of contracts) {
+    const dailyShards = contract?.display_shards?.["1D"] ?? [];
+    for (const meta of dailyShards) {
+      if (!meta?.key) continue;
+      const object = await env.MES_DATA.get(`${prefix}/${meta.key}`);
+      if (!object) continue;
+      const stream = String(meta.key).endsWith(".gz")
+        ? object.body.pipeThrough(new DecompressionStream("gzip"))
+        : object.body;
+      let bars;
+      try {
+        bars = JSON.parse(await new Response(stream).text());
+      } catch {
+        continue;
+      }
+      for (const bar of bars || []) {
+        const timestamp = Number(bar?.t);
+        if (!Number.isFinite(timestamp)) continue;
+        // Both legacy 00:00-UTC and corrected 00:00-ET daily stamps preserve
+        // the intended trading-day date in their UTC Y/M/D fields.
+        dates.add(new Date(timestamp * 1000).toISOString().slice(0, 10));
+      }
+    }
+  }
+
+  const sessions = [...dates].sort();
+  if (sessions.length) SESSION_LIST_CACHE.set(cacheKey, sessions);
+  return sessions;
 }
 
 export default {
@@ -327,7 +382,8 @@ export default {
       if (!manifest) return json(request, { error: "Replay manifest not published" }, 503);
       const contracts = Object.values(manifest.contracts ?? {});
       if (!contracts.length) return json(request, { error: "No replay contracts published" }, 503);
-      const sessions = manifestSessions(manifest);
+      const sessions = await manifestSessions(env, manifest, product);
+      if (!sessions.length) return json(request, { error: "Replay session metadata is unavailable" }, 503);
       return json(request, {
         product: manifest.product ?? null,
         first_time: Math.min(...contracts.map((item) => Number(item.first_time))),
