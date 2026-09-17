@@ -102,6 +102,18 @@
     });
   }
 
+  function normalizeDisplayBar(raw, timeframe) {
+    const time = Number(raw?.t ?? raw?.time);
+    return {
+      time: timeframe === "1D" ? normalizeDailyTime(time) : time,
+      open: Number(raw?.o ?? raw?.open),
+      high: Number(raw?.h ?? raw?.high),
+      low: Number(raw?.l ?? raw?.low),
+      close: Number(raw?.c ?? raw?.close),
+      volume: Number(raw?.v ?? raw?.volume),
+    };
+  }
+
   if (ChartCtor) {
     window.FutureViewChartTools = class FutureViewChartToolsEasternDaily extends ChartCtor {
       _fvSetDisplayData(displayBars) {
@@ -116,6 +128,35 @@
           displayBar = { ...displayBar, time: normalizeDailyTime(displayBar.time) };
         }
         return super._fvEmitDisplayBar(displayBar);
+      }
+
+      append(rawBar) {
+        const resolution = rawBar?.display_resolution != null ? String(rawBar.display_resolution) : null;
+        if (resolution && resolution !== "1") {
+          if (resolution !== String(this._fvTimeframe)) return;
+          const bar = normalizeDisplayBar(rawBar, resolution);
+          if (![bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume].every(Number.isFinite)) return;
+          this._fvEmitDisplayBar(bar);
+          this._fvRefreshRangeBoundaries?.();
+          this._showLegend?.(null);
+          return;
+        }
+        return super.append(rawBar);
+      }
+
+      appendMany(rawBars) {
+        const items = rawBars || [];
+        const direct = items.length && items.every((bar) => bar?.display_resolution != null && String(bar.display_resolution) !== "1");
+        if (!direct) return super.appendMany(items);
+        for (const rawBar of items) {
+          const resolution = String(rawBar.display_resolution);
+          if (resolution !== String(this._fvTimeframe)) continue;
+          const bar = normalizeDisplayBar(rawBar, resolution);
+          if (![bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume].every(Number.isFinite)) continue;
+          this._fvEmitDisplayBar(bar);
+        }
+        this._fvRefreshRangeBoundaries?.();
+        this._showLegend?.(null);
       }
     };
   }
