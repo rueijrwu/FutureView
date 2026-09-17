@@ -21,40 +21,37 @@ def test_cloud_manifest_contains_runtime_selection_inputs(tmp_path: Path) -> Non
     }
     for timestamp, contract_volumes in volumes.items():
         for contract, volume in contract_volumes.items():
-            rows.append(
-                {
-                    "timestamp": timestamp,
-                    "symbol": contract,
-                    "open": 5000,
-                    "high": 5001,
-                    "low": 4999,
-                    "close": 5000.5,
-                    "volume": volume,
-                }
-            )
+            rows.append({
+                "timestamp": timestamp,
+                "symbol": contract,
+                "open": 5000,
+                "high": 5001,
+                "low": 4999,
+                "close": 5000.5,
+                "volume": volume,
+            })
     path = parquet / "test.parquet"
     pd.DataFrame(rows).to_parquet(path, index=False)
-    (runtime / "manifest.json").write_text(
-        json.dumps(
-            {
-                "dataset": "test",
-                "product": "MES",
-                "files": [{"one_minute": "parquet/1m/test.parquet", "symbols": ["MESM24", "MESU24"]}],
-            }
-        ),
-        encoding="utf-8",
-    )
+    (runtime / "manifest.json").write_text(json.dumps({
+        "dataset": "test",
+        "product": "MES",
+        "files": [{"one_minute": "parquet/1m/test.parquet", "symbols": ["MESM24", "MESU24"]}],
+    }), encoding="utf-8")
 
     output = tmp_path / "cloud"
     result = export_cloud(runtime, output)
     manifest = json.loads(result.read_text(encoding="utf-8"))
-    assert manifest["version"] == 6
+    assert manifest["version"] == 7
     assert manifest["resolution"] == "1m"
     assert manifest["supported_display_resolutions"] == ["1", "5", "30", "240", "1D"]
-    assert manifest["native_display_resolutions"] == ["1", "1D"]
-    assert manifest["intraday_multipliers"] == ["1"]
+    assert manifest["native_display_resolutions"] == ["1", "5", "30", "240", "1D"]
+    assert manifest["intraday_multipliers"] == ["1", "5", "30", "240"]
     assert manifest["daily_multipliers"] == ["1"]
+    assert manifest["display_cache"]["window_bars"] == 512
+    assert manifest["display_cache"]["prefetch_threshold"] == 0.75
+    assert manifest["display_cache"]["partial_bar_source"] == "released_1m_only"
     assert manifest["roll_rule"] == "runtime_prior_session_max_volume"
+
     selection = manifest["contract_selection"]
     assert selection["rule"] == "runtime_prior_session_max_volume"
     assert selection["expiry_cutoff_et"] == "09:30"
@@ -62,7 +59,9 @@ def test_cloud_manifest_contains_runtime_selection_inputs(tmp_path: Path) -> Non
     assert selection["session_volumes"]["2024-06-11"]["MESU24"] == 120.0
 
     contract = manifest["contracts"]["MESM24"]
-    assert contract["display_shards"]["1m"]
+    for resolution in ["1", "5", "30", "240", "1D"]:
+        assert contract["display_shards"][resolution]
+
     daily_meta = contract["display_shards"]["1D"][0]
     with gzip.open(output / daily_meta["key"], "rt", encoding="utf-8") as f:
         daily = json.load(f)
@@ -71,3 +70,41 @@ def test_cloud_manifest_contains_runtime_selection_inputs(tmp_path: Path) -> Non
         int(pd.Timestamp("2024-06-11T00:00:00Z").timestamp()),
         int(pd.Timestamp("2024-06-12T00:00:00Z").timestamp()),
     ]
+
+
+def test_intraday_display_bars_are_session_aligned(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    parquet = runtime / "parquet" / "1m"
+    parquet.mkdir(parents=True)
+    timestamps = pd.date_range("2024-06-10T22:00:00Z", periods=7, freq="min")
+    rows = [{
+        "timestamp": ts,
+        "symbol": "MESM24",
+        "open": 5000 + i,
+        "high": 5001 + i,
+        "low": 4999 + i,
+        "close": 5000.5 + i,
+        "volume": 10 + i,
+    } for i, ts in enumerate(timestamps)]
+    path = parquet / "test.parquet"
+    pd.DataFrame(rows).to_parquet(path, index=False)
+    (runtime / "manifest.json").write_text(json.dumps({
+        "dataset": "test",
+        "product": "MES",
+        "files": [{"one_minute": "parquet/1m/test.parquet"}],
+    }), encoding="utf-8")
+
+    output = tmp_path / "cloud"
+    manifest = json.loads(export_cloud(runtime, output).read_text(encoding="utf-8"))
+    meta = manifest["contracts"]["MESM24"]["display_shards"]["5"][0]
+    with gzip.open(output / meta["key"], "rt", encoding="utf-8") as f:
+        bars = json.load(f)
+
+    assert len(bars) == 2
+    assert bars[0]["t"] == int(pd.Timestamp("2024-06-10T22:00:00Z").timestamp())
+    assert bars[0]["o"] == 5000.0
+    assert bars[0]["c"] == 5004.5
+    assert bars[0]["h"] == 5005.0
+    assert bars[0]["l"] == 4999.0
+    assert bars[0]["v"] == sum(range(10, 15))
+    assert bars[1]["t"] == int(pd.Timestamp("2024-06-10T22:05:00Z").timestamp())
