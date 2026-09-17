@@ -39,8 +39,9 @@ jobs:
           node --check cloudflare/worker/replay-session-frame.js
           node --check cloudflare/worker/replay-session-display.js
           node --check cloudflare/worker/replay-release.test.mjs
-      - name: Canonical release semantics
-        run: node --test cloudflare/worker/replay-release.test.mjs
+          node --check cloudflare/worker/replay-display.test.mjs
+      - name: Replay semantics
+        run: node --test cloudflare/worker/replay-release.test.mjs cloudflare/worker/replay-display.test.mjs
       - name: Wrangler dry run
         working-directory: cloudflare
         run: npx --yes wrangler@4.125.0 deploy --dry-run --outdir .dry-run
