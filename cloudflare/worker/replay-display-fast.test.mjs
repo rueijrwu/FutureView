@@ -59,6 +59,43 @@ function assertEquivalent(resolution, bars) {
   );
 }
 
+function stepHarness(startIso, minutes, currentOffset, timeframe = "5") {
+  const bars = minuteBars(startIso, minutes, 100);
+  const instance = harness(FastReplaySession);
+  instance.displayResolution = timeframe;
+  instance.historyRange = "5D";
+  instance.shard = bars;
+  instance.shardKey = "s0";
+  instance.manifest = { contracts: { MESZ6: { shards: [{ key: "s0", first_time: bars[0].t, last_time: bars.at(-1).t }] } } };
+  instance.session = {
+    contract: "MESZ6",
+    shardIndex: 0,
+    barIndex: currentOffset,
+    state: "PAUSED",
+    cursorTs: bars[currentOffset].t,
+  };
+  instance._consumeCanonicalBars(bars.slice(0, currentOffset + 1), timeframe);
+  instance._ensureReplayCursor = async () => bars[instance.session.barIndex];
+  instance._ensureDisplayAggregate = async () => {};
+  instance._persist = async () => {};
+  instance.snapshot = () => ({ type: "session_snapshot", cursor: instance.session.cursorTs });
+
+  const releaseCounts = [];
+  instance._release = async (count) => {
+    releaseCounts.push(count);
+    const start = instance.session.barIndex + 1;
+    const released = bars.slice(start, start + count);
+    instance.session.barIndex += released.length;
+    return released;
+  };
+
+  const displayBroadcasts = [];
+  instance._broadcastDisplayBars = (shown, resolution) => displayBroadcasts.push({ shown, resolution });
+  const snapshots = [];
+  instance._broadcast = (payload) => snapshots.push(payload);
+  return { instance, bars, releaseCounts, displayBroadcasts, snapshots };
+}
+
 test("fast 5m aggregation is identical across many frame transitions", () => {
   assertEquivalent("5", minuteBars("2026-09-17T09:30:00-04:00", 180));
 });
@@ -99,4 +136,40 @@ test("normal 5m playback delegates to timezone-aware baseline only for initial s
   } finally {
     BaselineReplaySession.prototype._consumeCanonicalBars = original;
   }
+});
+
+test("5m Next from a completed frame advances one full selected frame in one release", async () => {
+  const { instance, bars, releaseCounts, displayBroadcasts } = stepHarness(
+    "2026-09-17T10:15:00-04:00",
+    12,
+    4,
+    "5",
+  );
+
+  await instance.stepFrame("5");
+
+  assert.deepEqual(releaseCounts, [5]);
+  assert.equal(instance.session.barIndex, 9);
+  assert.equal(instance.session.cursorTs, bars[9].t);
+  assert.equal(displayBroadcasts.length, 1);
+  assert.equal(displayBroadcasts[0].resolution, "5");
+  assert.equal(displayBroadcasts[0].shown[0].t, sec("2026-09-17T10:20:00-04:00"));
+  assert.equal(displayBroadcasts[0].shown[0].c, bars[9].c);
+});
+
+test("5m Next from mid-frame completes only the current selected frame in one release", async () => {
+  const { instance, bars, releaseCounts, displayBroadcasts } = stepHarness(
+    "2026-09-17T10:15:00-04:00",
+    12,
+    2,
+    "5",
+  );
+
+  await instance.stepFrame("5");
+
+  assert.deepEqual(releaseCounts, [2]);
+  assert.equal(instance.session.barIndex, 4);
+  assert.equal(instance.session.cursorTs, bars[4].t);
+  assert.equal(displayBroadcasts[0].shown[0].t, sec("2026-09-17T10:15:00-04:00"));
+  assert.equal(displayBroadcasts[0].shown[0].c, bars[4].c);
 });

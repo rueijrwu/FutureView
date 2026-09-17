@@ -1,5 +1,6 @@
 import { ReplaySession as DisplayReplaySession } from "./replay-session-display.js";
 
+const FRAME_RESOLUTIONS = new Set(["1", "5", "30", "240", "1D"]);
 const LONG_GAP_SECONDS = 6 * 60 * 60;
 
 function newAggregate(bar, stamp) {
@@ -22,6 +23,17 @@ function addToAggregate(aggregate, bar) {
 
 function completedBar(aggregate, resolution) {
   return { ...aggregate, display_resolution: String(resolution) };
+}
+
+function lowerBoundBarTime(bars, target, start = 0) {
+  let lo = Math.max(0, Number(start) || 0);
+  let hi = bars.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (Number(bars[mid].t) >= Number(target)) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
 }
 
 export class ReplaySession extends DisplayReplaySession {
@@ -82,5 +94,76 @@ export class ReplaySession extends DisplayReplaySession {
     }
 
     return completed;
+  }
+
+  async stepFrame(value) {
+    if (!this.session) throw new Error("Session not initialized");
+    if (this.session.state === "PLAYING") throw new Error("Pause before stepping");
+
+    const timeframe = String(value || this.displayResolution || "1");
+    if (!FRAME_RESOLUTIONS.has(timeframe)) throw new Error(`Unsupported chart timeframe ${timeframe}`);
+    if (timeframe !== String(this.displayResolution || "1") || timeframe === "1D") {
+      return super.stepFrame(value);
+    }
+
+    const current = await this._ensureReplayCursor();
+
+    if (timeframe === "1") {
+      const released = await this._release(1);
+      if (released.length) {
+        this.session.cursorTs = Number(released.at(-1).t);
+        this._consumeCanonicalBars(released, "1");
+        this._broadcastDisplayBars([{ ...released.at(-1), display_resolution: "1" }], "1");
+      }
+      await this._persist(false);
+      this._broadcast(this.snapshot());
+      return;
+    }
+
+    await this._ensureDisplayAggregate();
+    const nextIndex = Number(this.session.barIndex) + 1;
+    const next = this.shard?.[nextIndex];
+    if (!next || !this.displayAggregate) return super.stepFrame(value);
+
+    const currentTime = Number(current.t);
+    const nextTime = Number(next.t);
+    if (!Number.isFinite(currentTime) || !Number.isFinite(nextTime) || (nextTime - currentTime) > LONG_GAP_SECONDS) {
+      return super.stepFrame(value);
+    }
+
+    const interval = Number(timeframe) * 60;
+    const aggregateStart = Number(this.displayAggregate.t);
+    if (!Number.isFinite(interval) || !Number.isFinite(aggregateStart) || interval <= 0) {
+      return super.stepFrame(value);
+    }
+
+    const currentFrameEnd = aggregateStart + interval;
+    const targetStart = nextTime < currentFrameEnd
+      ? aggregateStart
+      : aggregateStart + Math.max(1, Math.floor((nextTime - aggregateStart) / interval)) * interval;
+    const targetEnd = targetStart + interval;
+
+    const lastCurrentShardTime = Number(this.shard?.at(-1)?.t);
+    if (!Number.isFinite(lastCurrentShardTime)) return super.stepFrame(value);
+    if (targetEnd > lastCurrentShardTime) {
+      const contract = this.manifest?.contracts?.[this.session.contract];
+      const nextMeta = contract?.shards?.[Number(this.session.shardIndex) + 1];
+      if (nextMeta && Number(nextMeta.first_time) < targetEnd) return super.stepFrame(value);
+    }
+
+    const endIndex = lowerBoundBarTime(this.shard, targetEnd, nextIndex);
+    const count = endIndex - nextIndex;
+    if (count <= 0 || count > 2000) return super.stepFrame(value);
+
+    const released = await this._release(count);
+    if (released.length) {
+      this.session.cursorTs = Number(released.at(-1).t);
+      this._consumeCanonicalBars(released, timeframe);
+      this._broadcastDisplayBars([
+        { ...this.displayAggregate, display_resolution: timeframe },
+      ], timeframe);
+    }
+    await this._persist(false);
+    this._broadcast(this.snapshot());
   }
 }
