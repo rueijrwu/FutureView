@@ -2,6 +2,10 @@
   const Base = window.FutureViewChartTools;
   if (!Base) return;
 
+  const TIMEFRAMES = new Set(["1", "5", "30", "240", "1D"]);
+  // One futures session is ~1380 minutes. Keep a small margin so the current 1D
+  // partial bar can always be reconstructed after reconnect/timeframe changes.
+  const RAW_TAIL_LIMIT = 1500;
   const etFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
@@ -36,7 +40,7 @@
 
   function etParts(seconds) {
     return Object.fromEntries(
-      etFormatter.formatToParts(new Date(seconds * 1000))
+      etFormatter.formatToParts(new Date(Number(seconds) * 1000))
         .filter((part) => part.type !== "literal")
         .map((part) => [part.type, Number(part.value)]),
     );
@@ -69,43 +73,21 @@
   }
 
   function bucketTime(seconds, timeframe) {
-    if (timeframe === "1") return seconds;
+    if (timeframe === "1") return Number(seconds);
     const start = sessionStart(seconds);
     if (timeframe === "1D") return start;
     const minutes = Number(timeframe);
-    return start + Math.floor(Math.max(0, seconds - start) / (minutes * 60)) * minutes * 60;
+    return start + Math.floor(Math.max(0, Number(seconds) - start) / (minutes * 60)) * minutes * 60;
   }
 
-  function aggregateTail(raw, timeframe) {
-    if (!raw.length) return null;
-    const last = raw.at(-1);
-    const t = bucketTime(last.t, timeframe);
-    let i = raw.length - 1;
-    while (i > 0 && bucketTime(raw[i - 1].t, timeframe) === t) i -= 1;
-    const first = raw[i];
-    let high = -Infinity, low = Infinity, volume = 0;
-    for (; i < raw.length; i += 1) {
-      const bar = raw[i];
-      high = Math.max(high, bar.h);
-      low = Math.min(low, bar.l);
-      volume += bar.v;
-    }
-    return { time: t, open: first.o, high, low, close: last.c, volume };
-  }
-
-  function aggregateSuffix(raw, timeframe, startIndex) {
-    if (!raw.length || startIndex == null) return [];
-    startIndex = Math.max(0, Math.min(raw.length - 1, startIndex));
-    const firstBucket = bucketTime(raw[startIndex].t, timeframe);
-    while (startIndex > 0 && bucketTime(raw[startIndex - 1].t, timeframe) === firstBucket) startIndex -= 1;
-
+  function aggregateAll(rawBars, timeframe) {
     const out = [];
     let current = null;
-    for (let i = startIndex; i < raw.length; i += 1) {
-      const bar = raw[i];
-      const t = bucketTime(bar.t, timeframe);
-      if (!current || current.time !== t) {
-        current = { time: t, open: bar.o, high: bar.h, low: bar.l, close: bar.c, volume: bar.v };
+    for (const raw of rawBars || []) {
+      const bar = normalizeRaw(raw);
+      const time = bucketTime(bar.t, timeframe);
+      if (!current || current.time !== time) {
+        current = { time, open: bar.o, high: bar.h, low: bar.l, close: bar.c, volume: bar.v };
         out.push(current);
       } else {
         current.high = Math.max(current.high, bar.h);
@@ -129,29 +111,37 @@
     };
   }
 
-  window.FutureViewChartTools = class FutureViewChartToolsUiRepair extends Base {
-    _fvSyncTimeframeUi() {
-      document.querySelectorAll("button[data-timeframe]").forEach((button) => {
-        const active = button.dataset.timeframe === this._fvTimeframe;
-        button.classList.toggle("active", active);
-        button.setAttribute("aria-pressed", String(active));
-      });
-    }
+  function cloneBar(bar) {
+    return bar ? { ...bar } : null;
+  }
 
+  window.FutureViewChartTools = class FutureViewChartToolsReplayController extends Base {
     constructor(options) {
       super(options);
-      this._fvNativeCandleUpdate = this.candles.update.bind(this.candles);
-      this._fvNativeVolumeUpdate = this.volume?.update?.bind(this.volume) ?? null;
-      this.candles.update = () => {};
-      if (this.volume) this.volume.update = () => {};
-
-      // Lightweight Charts' horizontal scale is logical-point based. Add an invisible
-      // whitespace-only series that defines a continuous calendar-time lattice, so the
-      // date axis no longer depends on how many market bars happen to be loaded.
+      this._fvTimeframe = "5";
       this._fvHistorySeconds = 5 * 86400;
-      this._fvTimeAxisStart = null;
-      this._fvTimeAxisEnd = null;
-      this._fvTimeAxisSeries = this.chart.addSeries(LightweightCharts.LineSeries, {
+      this._fvRawBars = [];
+      this._fvActiveAggregate = null;
+      this._fvAutoFitPending = false;
+      this._fvUserInteractionUntil = 0;
+
+      // app.js still writes canonical 1m directly before calling the chart adapter.
+      // Make the adapter the sole writer of the candle/volume series so raw 1m never
+      // flashes through a higher-timeframe chart and reset does not duplicate setData.
+      this._fvNativeCandleUpdate = this.candles.update.bind(this.candles);
+      this._fvNativeCandleSetData = this.candles.setData.bind(this.candles);
+      this._fvNativeVolumeUpdate = this.volume?.update?.bind(this.volume) ?? null;
+      this._fvNativeVolumeSetData = this.volume?.setData?.bind(this.volume) ?? null;
+      this.candles.update = () => {};
+      this.candles.setData = () => {};
+      if (this.volume) {
+        this.volume.update = () => {};
+        this.volume.setData = () => {};
+      }
+
+      // Two whitespace boundary points are enough to make the selected calendar range
+      // addressable by setVisibleRange. Do not generate one synthetic point per minute.
+      this._fvRangeBoundarySeries = this.chart.addSeries(LightweightCharts.LineSeries, {
         lastValueVisible: false,
         priceLineVisible: false,
         crosshairMarkerVisible: false,
@@ -166,6 +156,8 @@
         });
       } catch {}
 
+      this._fvInstallViewportGuard();
+
       const overlay = document.querySelector(".chart-timeframe-overlay");
       overlay?.addEventListener("click", (event) => {
         const button = event.target.closest?.("button[data-timeframe]");
@@ -174,122 +166,267 @@
         event.stopImmediatePropagation();
         this._fvSetTimeframe(button.dataset.timeframe);
       }, true);
+
       this._fvSyncTimeframeUi();
       window.__futureViewChartTools = this;
     }
 
-    _fvTimeStepSeconds() {
-      if (this._fvTimeframe === "1D") return 86400;
-      const minutes = Number(this._fvTimeframe || "5");
-      return Math.max(60, minutes * 60);
+    _fvInstallViewportGuard() {
+      const ts = this.chart.timeScale();
+      this._fvNativeSetVisibleRange = ts.setVisibleRange.bind(ts);
+      this._fvNativeSetVisibleLogicalRange = ts.setVisibleLogicalRange?.bind(ts) ?? null;
+      const blocked = () => this._fvUserInteractionUntil === Infinity || performance.now() < this._fvUserInteractionUntil;
+
+      ts.setVisibleRange = (range) => {
+        if (blocked()) return;
+        return this._fvNativeSetVisibleRange(range);
+      };
+      if (this._fvNativeSetVisibleLogicalRange) {
+        ts.setVisibleLogicalRange = (range) => {
+          if (blocked()) return;
+          return this._fvNativeSetVisibleLogicalRange(range);
+        };
+      }
+
+      const begin = () => { this._fvUserInteractionUntil = Infinity; };
+      const end = () => { this._fvUserInteractionUntil = performance.now() + 180; };
+      this.container.addEventListener("pointerdown", begin, true);
+      this.container.addEventListener("pointerup", end, true);
+      this.container.addEventListener("pointercancel", end, true);
+      this.container.addEventListener("wheel", () => { this._fvUserInteractionUntil = performance.now() + 180; }, { capture: true, passive: true });
     }
 
-    _fvRefreshTimeAxis(force = false) {
-      const raw = this._fvRawBars || [];
-      const cursor = Number(raw.at(-1)?.t ?? this.bars?.at(-1)?.time);
-      if (!Number.isFinite(cursor) || !this._fvTimeAxisSeries) return;
+    _fvSyncTimeframeUi() {
+      document.querySelectorAll("button[data-timeframe]").forEach((button) => {
+        const active = button.dataset.timeframe === this._fvTimeframe;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-pressed", String(active));
+      });
+    }
 
-      const step = this._fvTimeStepSeconds();
-      const history = Math.max(step * 8, Number(this._fvHistorySeconds) || 5 * 86400);
-      const from = Math.floor((cursor - history) / step) * step;
-      const to = Math.ceil((cursor + Math.max(86400, step * 32)) / step) * step;
-      if (!force && this._fvTimeAxisStart === from && this._fvTimeAxisEnd != null && cursor < this._fvTimeAxisEnd - step * 16) return;
+    _fvCursor() {
+      return Number(this._fvRawBars.at(-1)?.t ?? this.bars?.at(-1)?.time);
+    }
 
-      const points = [];
-      for (let t = from; t <= to; t += step) points.push({ time: t });
-      this._fvTimeAxisSeries.setData(points);
-      this._fvTimeAxisStart = from;
-      this._fvTimeAxisEnd = to;
+    _fvStepSeconds() {
+      if (this._fvTimeframe === "1D") return 86400;
+      return Math.max(60, Number(this._fvTimeframe || "5") * 60);
+    }
+
+    _fvRefreshRangeBoundaries() {
+      const cursor = this._fvCursor();
+      if (!Number.isFinite(cursor)) return;
+      const seconds = Math.max(this._fvStepSeconds(), Number(this._fvHistorySeconds) || 5 * 86400);
+      const from = cursor - seconds;
+      const to = cursor + this._fvStepSeconds() * 2;
+      this._fvRangeBoundarySeries.setData([{ time: from }, { time: to }]);
     }
 
     _fvSetTimeDomain(seconds) {
       const value = Number(seconds);
       if (!Number.isFinite(value) || value <= 0) return;
       this._fvHistorySeconds = value;
-      this._fvRefreshTimeAxis(true);
+      this._fvRefreshRangeBoundaries();
     }
 
-    _fvSetTimeframe(timeframe) {
-      const changed = String(timeframe) !== String(this._fvTimeframe);
-      super._fvSetTimeframe(timeframe);
-      if (changed) this._fvRefreshTimeAxis(true);
+    _fvSetHistoryRange(seconds) {
+      this._fvSetTimeDomain(seconds);
+      const cursor = this._fvCursor();
+      if (!Number.isFinite(cursor)) return;
+      try { this._fvNativeSetVisibleRange({ from: cursor - Number(seconds), to: cursor }); } catch {}
     }
 
-    _fvLoadCachedWindow(resolution, rawBars) {
-      if (!rawBars?.length) return;
-      this._cancelDrawing?.();
-      const visible = this.chart.timeScale().getVisibleRange?.() || null;
-      this._fvTimeframe = String(resolution || this._fvTimeframe || "5");
-      this._fvSyncTimeframeUi();
+    _fvTrimRawTail() {
+      if (this._fvRawBars.length > RAW_TAIL_LIMIT) {
+        this._fvRawBars.splice(0, this._fvRawBars.length - RAW_TAIL_LIMIT);
+      }
+    }
 
-      const displayBars = rawBars.map(normalizeDisplay);
-      const partial = aggregateTail(this._fvRawBars || [], this._fvTimeframe);
-      if (partial) {
-        const last = displayBars.at(-1);
-        if (!last || partial.time > last.time) displayBars.push(partial);
-        else if (partial.time === last.time) displayBars[displayBars.length - 1] = partial;
+    _fvRebuildActiveAggregate() {
+      const raw = this._fvRawBars;
+      if (!raw.length) {
+        this._fvActiveAggregate = null;
+        return null;
+      }
+      const time = bucketTime(raw.at(-1).t, this._fvTimeframe);
+      let index = raw.length - 1;
+      while (index > 0 && bucketTime(raw[index - 1].t, this._fvTimeframe) === time) index -= 1;
+      const first = raw[index];
+      const aggregate = { time, open: first.o, high: first.h, low: first.l, close: first.c, volume: 0 };
+      for (; index < raw.length; index += 1) {
+        const bar = raw[index];
+        aggregate.high = Math.max(aggregate.high, bar.h);
+        aggregate.low = Math.min(aggregate.low, bar.l);
+        aggregate.close = bar.c;
+        aggregate.volume += bar.v;
+      }
+      this._fvActiveAggregate = aggregate;
+      return cloneBar(aggregate);
+    }
+
+    _fvProcessRaw(rawBar) {
+      const bar = normalizeRaw(rawBar);
+      if (![bar.t, bar.o, bar.h, bar.l, bar.c, bar.v].every(Number.isFinite)) return null;
+      const last = this._fvRawBars.at(-1);
+      if (last && bar.t < last.t) return null;
+      if (last && bar.t === last.t) {
+        this._fvRawBars[this._fvRawBars.length - 1] = bar;
+        return this._fvRebuildActiveAggregate();
       }
 
-      this.candles.setData(displayBars.map(candle));
-      if (this.volume) this.volume.setData(displayBars.map(volume));
-      this.bars = displayBars.map((bar) => ({ ...bar }));
-      this._refreshIndicators();
-      this._showLegend(null);
-      this._fvRefreshTimeAxis(true);
-
-      if (visible) {
-        try { this.chart.timeScale().setVisibleRange(visible); } catch {}
+      this._fvRawBars.push(bar);
+      this._fvTrimRawTail();
+      const time = bucketTime(bar.t, this._fvTimeframe);
+      if (!this._fvActiveAggregate || this._fvActiveAggregate.time !== time) {
+        this._fvActiveAggregate = {
+          time,
+          open: bar.o,
+          high: bar.h,
+          low: bar.l,
+          close: bar.c,
+          volume: bar.v,
+        };
+      } else {
+        const current = this._fvActiveAggregate;
+        current.high = Math.max(current.high, bar.h);
+        current.low = Math.min(current.low, bar.l);
+        current.close = bar.c;
+        current.volume += bar.v;
       }
+      return cloneBar(this._fvActiveAggregate);
+    }
+
+    _fvUpdateIndicatorsForLastBar() {
+      const bar = this.bars.at(-1);
+      if (!bar) return;
+      const periods = { sma5: 5, sma10: 10, sma20: 20, sma60: 60 };
+      for (const [key, period] of Object.entries(periods)) {
+        if (this.bars.length < period) continue;
+        let sum = 0;
+        for (let i = this.bars.length - period; i < this.bars.length; i += 1) sum += Number(this.bars[i].close);
+        this.indicators[key]?.update({ time: bar.time, value: sum / period });
+      }
+
+      const session = sessionStart(bar.time);
+      let priceVolume = 0;
+      let totalVolume = 0;
+      for (let i = this.bars.length - 1; i >= 0; i -= 1) {
+        const item = this.bars[i];
+        if (sessionStart(item.time) !== session) break;
+        const itemVolume = Number(item.volume) || 0;
+        priceVolume += ((Number(item.high) + Number(item.low) + Number(item.close)) / 3) * itemVolume;
+        totalVolume += itemVolume;
+      }
+      if (totalVolume > 0) this.indicators.vwap?.update({ time: bar.time, value: priceVolume / totalVolume });
     }
 
     _fvEmitDisplayBar(displayBar) {
       this._fvNativeCandleUpdate(candle(displayBar));
       this._fvNativeVolumeUpdate?.(volume(displayBar));
-      const replaced = this._appendNormalized(displayBar);
-      if (replaced) this._refreshIndicators();
-      else this._updateIndicatorsForLastBar();
+      this._appendNormalized(displayBar);
+      this._fvUpdateIndicatorsForLastBar();
     }
 
-    _fvApplyRaw(rawBar) {
-      const bar = normalizeRaw(rawBar);
-      const raw = this._fvRawBars || (this._fvRawBars = []);
-      const last = raw.at(-1);
-      if (last && bar.t === last.t) raw[raw.length - 1] = bar;
-      else if (!last || bar.t > last.t) raw.push(bar);
-      else return;
-
-      const displayBar = aggregateTail(raw, this._fvTimeframe || "5");
-      if (!displayBar) return;
-      this._fvEmitDisplayBar(displayBar);
-      this._fvRefreshTimeAxis(false);
+    _fvSetDisplayData(displayBars) {
+      this._fvNativeCandleSetData(displayBars.map(candle));
+      this._fvNativeVolumeSetData?.(displayBars.map(volume));
+      this.bars = displayBars.map((bar) => ({ ...bar }));
+      this._refreshIndicators();
       this._showLegend(null);
+    }
+
+    _fvSetTimeframe(timeframe) {
+      const value = String(timeframe);
+      if (!TIMEFRAMES.has(value) || value === this._fvTimeframe) return;
+      this._cancelDrawing?.();
+      const visible = this.chart.timeScale().getVisibleRange?.() || null;
+      this._fvTimeframe = value;
+      this._fvSyncTimeframeUi();
+      this._fvRebuildActiveAggregate();
+      this._fvSetDisplayData(aggregateAll(this._fvRawBars, value));
+      this._fvRefreshRangeBoundaries();
+      if (visible) {
+        try { this._fvNativeSetVisibleRange(visible); } catch {}
+      }
+    }
+
+    _fvLoadCachedWindow(resolution, rawBars) {
+      if (!rawBars?.length || String(resolution) !== this._fvTimeframe) return false;
+      this._cancelDrawing?.();
+      const visible = this.chart.timeScale().getVisibleRange?.() || null;
+      const displayBars = rawBars.map(normalizeDisplay).filter((bar) => Number.isFinite(bar.time));
+      const partial = this._fvRebuildActiveAggregate();
+      if (partial) {
+        const last = displayBars.at(-1);
+        if (!last || partial.time > last.time) displayBars.push(partial);
+        else if (partial.time === last.time) displayBars[displayBars.length - 1] = partial;
+      }
+      this._fvSetDisplayData(displayBars);
+      this._fvRefreshRangeBoundaries();
+
+      if (this._fvAutoFitPending) {
+        this._fvAutoFitPending = false;
+        requestAnimationFrame(() => this.fit());
+      } else if (visible) {
+        try { this._fvNativeSetVisibleRange(visible); } catch {}
+      }
+      return true;
+    }
+
+    reset(rawBars) {
+      this._cancelDrawing?.();
+      this._fvRawBars = (rawBars || []).map(normalizeRaw).filter((bar) => Number.isFinite(bar.t));
+      this._fvTrimRawTail();
+      this._fvRebuildActiveAggregate();
+      this._fvSetDisplayData(aggregateAll(this._fvRawBars, this._fvTimeframe));
+      this._fvRefreshRangeBoundaries();
+      this._fvAutoFitPending = true;
     }
 
     append(rawBar) {
-      this._fvApplyRaw(rawBar);
+      const displayBar = this._fvProcessRaw(rawBar);
+      if (!displayBar) return;
+      this._fvEmitDisplayBar(displayBar);
+      this._fvRefreshRangeBoundaries();
+      this._showLegend(null);
     }
 
     appendMany(rawBars) {
-      const raw = this._fvRawBars || (this._fvRawBars = []);
-      let changedFrom = null;
+      const pending = [];
+      for (const rawBar of rawBars || []) {
+        const displayBar = this._fvProcessRaw(rawBar);
+        if (!displayBar) continue;
+        const last = pending.at(-1);
+        if (last?.time === displayBar.time) pending[pending.length - 1] = displayBar;
+        else pending.push(displayBar);
+      }
+      for (const displayBar of pending) this._fvEmitDisplayBar(displayBar);
+      if (pending.length) {
+        this._fvRefreshRangeBoundaries();
+        this._showLegend(null);
+      }
+    }
 
-      for (const item of rawBars || []) {
-        const bar = normalizeRaw(item);
-        const last = raw.at(-1);
-        if (last && bar.t === last.t) {
-          raw[raw.length - 1] = bar;
-          if (changedFrom == null) changedFrom = raw.length - 1;
-        } else if (!last || bar.t > last.t) {
-          raw.push(bar);
-          if (changedFrom == null) changedFrom = raw.length - 1;
-        }
+    fit() {
+      const bars = this.bars || [];
+      if (!bars.length) return;
+      const first = Number(bars[0].time);
+      const last = Number(bars.at(-1).time);
+      if (Number.isFinite(first) && Number.isFinite(last)) {
+        const step = this._fvStepSeconds();
+        const span = Math.max(step, last - first);
+        const pad = Math.max(step, span * 0.02);
+        try { this._fvNativeSetVisibleRange({ from: first - pad, to: last + pad }); } catch {}
       }
 
-      if (changedFrom == null) return;
-      const displayBars = aggregateSuffix(raw, this._fvTimeframe || "5", changedFrom);
-      for (const displayBar of displayBars) this._fvEmitDisplayBar(displayBar);
-      this._fvRefreshTimeAxis(false);
-      this._showLegend(null);
+      const priceScale = this.candles.priceScale();
+      const volumeScale = this.volume?.priceScale?.();
+      try { priceScale.applyOptions({ autoScale: true }); } catch {}
+      if (volumeScale) { try { volumeScale.applyOptions({ autoScale: true }); } catch {} }
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        try { priceScale.applyOptions({ autoScale: false }); } catch {}
+        if (volumeScale) { try { volumeScale.applyOptions({ autoScale: false }); } catch {}
+      }));
     }
   };
 })();
