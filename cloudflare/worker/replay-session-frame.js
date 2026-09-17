@@ -136,7 +136,10 @@ export class ReplaySession extends BaseReplaySession {
     const key = `${this.session?.contract || ""}:${resolution}`;
     if (this.displayShardMeta.has(key)) return this.displayShardMeta.get(key);
     const manifest = await this._manifest();
-    const value = manifest.contracts?.[this.session.contract]?.display_shards?.[resolution] ?? [];
+    const contract = manifest.contracts?.[this.session.contract];
+    let value = contract?.display_shards?.[resolution] ?? [];
+    // Manifest v6 used "1m" while v7 uses TradingView's canonical "1" resolution.
+    if (!value.length && resolution === "1") value = contract?.display_shards?.["1m"] ?? contract?.shards ?? [];
     this.displayShardMeta.set(key, value);
     return value;
   }
@@ -181,9 +184,6 @@ export class ReplaySession extends BaseReplaySession {
     const resolution = this.displayResolution;
     cursor = Number(cursor);
     if (!Number.isFinite(cursor)) return;
-
-    // Most replay ticks are far from a window edge/prefetch point. Avoid even looking
-    // at metadata on that hot path.
     if (cursor < this.displayNextCheckAt && this.displayWindowIndex >= 0) return;
 
     const shards = await this._displayShardMeta(resolution);
@@ -202,10 +202,6 @@ export class ReplaySession extends BaseReplaySession {
     const current = await this._loadDisplayWindow(index, resolution);
     if (!current) return;
     const bars = current.bars || [];
-
-    // Canonical 1m display shards are monthly and much larger than the 512-bar derived
-    // windows. Do not eagerly hold the next month in memory; historical requests load
-    // previous months only when needed.
     if (resolution !== "1") await this._loadDisplayWindow(index + 1, resolution);
 
     if (bars.length && !Number.isFinite(this.displayPrefetchAt)) {
@@ -258,7 +254,6 @@ export class ReplaySession extends BaseReplaySession {
       }
     }
 
-    // Historical windows are response-only. Keep normal forward replay memory bounded.
     this._trimDisplayWindows(center, resolution);
     return out;
   }
@@ -301,6 +296,12 @@ export class ReplaySession extends BaseReplaySession {
     const range = String(value || "5D");
     if (!HISTORY_SECONDS[range]) throw new Error(`Unsupported history range ${range}`);
     this.historyRange = range;
+    await this._broadcastDisplayWindow();
+  }
+
+  async restart() {
+    this._resetDisplayCursor();
+    await super.restart();
     await this._broadcastDisplayWindow();
   }
 
@@ -374,8 +375,6 @@ export class ReplaySession extends BaseReplaySession {
 
     const currentKey = frameKey(current.t, timeframe);
     const nextKey = frameKey(next.t, timeframe);
-    // If the current chart bar is partial, finish it. If it is already complete,
-    // advance one whole next chart bar. Never release the first minute of the bar after.
     const targetKey = nextKey === currentKey ? currentKey : nextKey;
     const released = [];
 
