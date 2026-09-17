@@ -2,6 +2,8 @@ import { ReplaySession as BaseReplaySession } from "./replay-session.js";
 
 const FRAME_RESOLUTIONS = new Set(["1", "5", "30", "240", "1D"]);
 const SPEEDS = new Set([1, 5, 10, 25, 50, 100]);
+const DISPLAY_WINDOW_BARS = 512;
+const PREFETCH_THRESHOLD = 0.75;
 const ET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   year: "numeric",
@@ -58,6 +60,13 @@ function frameKey(seconds, resolution) {
 }
 
 export class ReplaySession extends BaseReplaySession {
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.displayResolution = "5";
+    this.displayWindowIndex = -1;
+    this.displayWindows = new Map();
+  }
+
   async webSocketMessage(ws, message) {
     let command;
     try {
@@ -69,10 +78,92 @@ export class ReplaySession extends BaseReplaySession {
     try {
       if (command.type === "step_frame") await this.stepFrame(command.timeframe);
       else if (command.type === "set_speed") await this.setSpeed(command.speed);
+      else if (command.type === "set_timeframe") await this.setTimeframe(command.timeframe);
       else return super.webSocketMessage(ws, message);
     } catch (error) {
       ws.send(JSON.stringify({ type: "error", error: String(error?.message ?? error) }));
     }
+  }
+
+  async _displayShardMeta(resolution = this.displayResolution) {
+    const manifest = await this._manifest();
+    return manifest.contracts?.[this.session.contract]?.display_shards?.[resolution] ?? [];
+  }
+
+  async _loadDisplayWindow(index, resolution = this.displayResolution) {
+    if (resolution === "1") return null;
+    const key = `${resolution}:${index}`;
+    if (this.displayWindows.has(key)) return this.displayWindows.get(key);
+    const shards = await this._displayShardMeta(resolution);
+    const meta = shards[index];
+    if (!meta) return null;
+    const prefix = this._getPrefix();
+    const object = await this.env.MES_DATA.get(`${prefix}/${meta.key}`);
+    if (!object) throw new Error(`Missing display cache ${meta.key}`);
+    const stream = meta.key.endsWith(".gz") ? object.body.pipeThrough(new DecompressionStream("gzip")) : object.body;
+    const bars = JSON.parse(await new Response(stream).text());
+    const value = { index, meta, bars };
+    this.displayWindows.set(key, value);
+
+    // Keep only current/adjacent windows for the active resolution, plus one cache
+    // entry for any previously selected resolution. This bounds memory without
+    // throwing away a likely fast timeframe switch-back.
+    const activeKeys = [...this.displayWindows.keys()].filter((item) => item.startsWith(`${resolution}:`));
+    for (const activeKey of activeKeys) {
+      const activeIndex = Number(activeKey.split(":")[1]);
+      if (Math.abs(activeIndex - index) > 1) this.displayWindows.delete(activeKey);
+    }
+    if (this.displayWindows.size > 5) {
+      for (const oldKey of this.displayWindows.keys()) {
+        if (!oldKey.startsWith(`${resolution}:`)) {
+          this.displayWindows.delete(oldKey);
+          if (this.displayWindows.size <= 5) break;
+        }
+      }
+    }
+    return value;
+  }
+
+  async _ensureDisplayWindows(cursor) {
+    const resolution = this.displayResolution;
+    if (resolution === "1" || !Number.isFinite(Number(cursor))) return;
+    const shards = await this._displayShardMeta(resolution);
+    if (!shards.length) return;
+
+    let index = this.displayWindowIndex;
+    if (index < 0 || !shards[index] || Number(cursor) > Number(shards[index].last_time)) {
+      index = shards.findIndex((meta) => Number(meta.last_time) >= Number(cursor));
+      if (index < 0) index = shards.length - 1;
+      this.displayWindowIndex = index;
+    }
+
+    const current = await this._loadDisplayWindow(index, resolution);
+    if (!current) return;
+    await this._loadDisplayWindow(index + 1, resolution);
+
+    const bars = current.bars || [];
+    if (!bars.length) return;
+    let localIndex = bars.findIndex((bar) => Number(bar.t) >= Number(cursor));
+    if (localIndex < 0) localIndex = bars.length - 1;
+    const progress = bars.length > 1 ? localIndex / (bars.length - 1) : 1;
+    if (progress >= PREFETCH_THRESHOLD) await this._loadDisplayWindow(index + 2, resolution);
+  }
+
+  async setTimeframe(value) {
+    const timeframe = String(value || "5");
+    if (!FRAME_RESOLUTIONS.has(timeframe)) throw new Error(`Unsupported chart timeframe ${timeframe}`);
+    this.displayResolution = timeframe;
+    this.displayWindowIndex = -1;
+    const cursor = this.shard?.[this.session?.barIndex]?.t;
+    await this._ensureDisplayWindows(cursor);
+    this._broadcast({
+      ...this.snapshot(),
+      display_resolution: this.displayResolution,
+      display_cache: {
+        window_bars: DISPLAY_WINDOW_BARS,
+        current_window: this.displayWindowIndex,
+      },
+    });
   }
 
   async setSpeed(value) {
@@ -93,12 +184,19 @@ export class ReplaySession extends BaseReplaySession {
     this._broadcast(this.snapshot());
   }
 
+  async _release(count) {
+    const bars = await super._release(count);
+    if (bars.length) await this._ensureDisplayWindows(bars.at(-1).t);
+    return bars;
+  }
+
   async stepFrame(value) {
     if (!this.session) throw new Error("Session not initialized");
     if (this.session.state === "PLAYING") throw new Error("Pause before stepping");
 
-    const timeframe = String(value || "1");
+    const timeframe = String(value || this.displayResolution || "1");
     if (!FRAME_RESOLUTIONS.has(timeframe)) throw new Error(`Unsupported chart timeframe ${timeframe}`);
+    if (timeframe !== this.displayResolution) await this.setTimeframe(timeframe);
 
     await this._loadShard(this.session.shardIndex);
     const current = this.shard?.[this.session.barIndex];
