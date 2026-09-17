@@ -3,8 +3,6 @@
   if (!Base) return;
 
   const TIMEFRAMES = new Set(["1", "5", "30", "240", "1D"]);
-  // One futures session is ~1380 minutes. Keep a small margin so the current 1D
-  // partial bar can always be reconstructed after reconnect/timeframe changes.
   const RAW_TAIL_LIMIT = 1500;
   const etFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
@@ -72,10 +70,17 @@
     });
   }
 
+  function dailyTradingStamp(seconds) {
+    const parts = etParts(seconds);
+    const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+    if (parts.hour >= 18) day.setUTCDate(day.getUTCDate() + 1);
+    return Math.floor(day.getTime() / 1000);
+  }
+
   function bucketTime(seconds, timeframe) {
     if (timeframe === "1") return Number(seconds);
+    if (timeframe === "1D") return dailyTradingStamp(seconds);
     const start = sessionStart(seconds);
-    if (timeframe === "1D") return start;
     const minutes = Number(timeframe);
     return start + Math.floor(Math.max(0, Number(seconds) - start) / (minutes * 60)) * minutes * 60;
   }
@@ -115,6 +120,12 @@
     return bar ? { ...bar } : null;
   }
 
+  function sameRange(a, b) {
+    if (!a || !b) return false;
+    const af = Number(a.from), at = Number(a.to), bf = Number(b.from), bt = Number(b.to);
+    return [af, at, bf, bt].every(Number.isFinite) && Math.abs(af - bf) < 1e-9 && Math.abs(at - bt) < 1e-9;
+  }
+
   window.FutureViewChartTools = class FutureViewChartToolsReplayController extends Base {
     constructor(options) {
       super(options);
@@ -125,9 +136,6 @@
       this._fvAutoFitPending = false;
       this._fvUserInteractionUntil = 0;
 
-      // app.js still writes canonical 1m directly before calling the chart adapter.
-      // Make the adapter the sole writer of the candle/volume series so raw 1m never
-      // flashes through a higher-timeframe chart and reset does not duplicate setData.
       this._fvNativeCandleUpdate = this.candles.update.bind(this.candles);
       this._fvNativeCandleSetData = this.candles.setData.bind(this.candles);
       this._fvNativeVolumeUpdate = this.volume?.update?.bind(this.volume) ?? null;
@@ -139,8 +147,8 @@
         this.volume.setData = () => {};
       }
 
-      // Two whitespace boundary points are enough to make the selected calendar range
-      // addressable by setVisibleRange. Do not generate one synthetic point per minute.
+      // Only the requested range endpoints need synthetic timestamps. A dense minute-by-
+      // minute whitespace spine caused large memory use and polluted fitContent().
       this._fvRangeBoundarySeries = this.chart.addSeries(LightweightCharts.LineSeries, {
         lastValueVisible: false,
         priceLineVisible: false,
@@ -179,11 +187,13 @@
 
       ts.setVisibleRange = (range) => {
         if (blocked()) return;
+        if (sameRange(ts.getVisibleRange?.(), range)) return;
         return this._fvNativeSetVisibleRange(range);
       };
       if (this._fvNativeSetVisibleLogicalRange) {
         ts.setVisibleLogicalRange = (range) => {
           if (blocked()) return;
+          if (sameRange(ts.getVisibleLogicalRange?.(), range)) return;
           return this._fvNativeSetVisibleLogicalRange(range);
         };
       }
