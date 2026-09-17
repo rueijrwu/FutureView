@@ -13,154 +13,6 @@
 
   const NativeWebSocket = window.WebSocket;
 
-  // Keep the synthetic calendar anchors stable while replay advances. app.js preserves
-  // the viewport by logical index around each batch; sliding these anchors on every bar
-  // changes the logical-index→timestamp mapping and makes Next/Play visibly jump.
-  // Reset only when the time domain materially changes; otherwise extend the future
-  // anchor without moving the past anchor, so existing logical indices stay stable.
-  const ChartCtor = window.FutureViewChartTools;
-  if (ChartCtor?.prototype?._fvRefreshRangeBoundaries) {
-    ChartCtor.prototype._fvRefreshRangeBoundaries = function (force = false) {
-      const cursor = Number(this._fvCursor?.());
-      if (!Number.isFinite(cursor) || !this._fvRangeBoundarySeries) return;
-      const step = Math.max(60, Number(this._fvStepSeconds?.() || 60));
-      const history = Math.max(step, Number(this._fvHistorySeconds) || 5 * 86400);
-      const previousCursor = Number(this._fvBoundaryCursor);
-      const domainChanged = Number(this._fvBoundaryHistory) !== history || Number(this._fvBoundaryStep) !== step;
-      const largeJump = Number.isFinite(previousCursor) && Math.abs(cursor - previousCursor) > history / 2;
-      const reset = force || domainChanged || largeJump || !Number.isFinite(Number(this._fvBoundaryFrom)) || !Number.isFinite(Number(this._fvBoundaryTo));
-
-      if (reset) {
-        this._fvBoundaryFrom = cursor - history;
-        this._fvBoundaryTo = cursor + Math.max(86400, history / 4, step * 32);
-        this._fvBoundaryHistory = history;
-        this._fvBoundaryStep = step;
-        this._fvBoundaryCursor = cursor;
-        this._fvRangeBoundarySeries.setData([
-          { time: this._fvBoundaryFrom },
-          { time: this._fvBoundaryTo },
-        ]);
-        return;
-      }
-
-      const guard = Math.max(3600, step * 8);
-      if (cursor + guard >= this._fvBoundaryTo) {
-        this._fvBoundaryTo = cursor + Math.max(86400, history / 4, step * 32);
-        this._fvRangeBoundarySeries.setData([
-          { time: this._fvBoundaryFrom },
-          { time: this._fvBoundaryTo },
-        ]);
-      }
-      this._fvBoundaryCursor = cursor;
-    };
-  }
-
-  // Historical 1D cache bars were originally stamped at 00:00 UTC. The chart formats
-  // every timestamp in America/New_York, which made those bars appear at 19:00/20:00 on
-  // the prior date. Normalize every daily bar to midnight ET for its encoded trading day.
-  // This is also idempotent for the corrected cache format, whose UTC epoch represents
-  // 00:00 ET directly.
-  const ET_WALL_FORMATTER = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/New_York",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
-
-  function etWallParts(seconds) {
-    return Object.fromEntries(
-      ET_WALL_FORMATTER.formatToParts(new Date(Number(seconds) * 1000))
-        .filter((part) => part.type !== "literal")
-        .map((part) => [part.type, Number(part.value)]),
-    );
-  }
-
-  function etWallToEpoch(parts) {
-    const wanted = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour || 0, parts.minute || 0, 0);
-    let guess = wanted;
-    for (let i = 0; i < 4; i += 1) {
-      const shown = etWallParts(guess / 1000);
-      const shownWall = Date.UTC(shown.year, shown.month - 1, shown.day, shown.hour, shown.minute, 0);
-      const delta = wanted - shownWall;
-      guess += delta;
-      if (!delta) break;
-    }
-    return Math.floor(guess / 1000);
-  }
-
-  function normalizeDailyTime(seconds) {
-    const date = new Date(Number(seconds) * 1000);
-    return etWallToEpoch({
-      year: date.getUTCFullYear(),
-      month: date.getUTCMonth() + 1,
-      day: date.getUTCDate(),
-      hour: 0,
-      minute: 0,
-    });
-  }
-
-  function normalizeDisplayBar(raw, timeframe) {
-    const time = Number(raw?.t ?? raw?.time);
-    return {
-      time: timeframe === "1D" ? normalizeDailyTime(time) : time,
-      open: Number(raw?.o ?? raw?.open),
-      high: Number(raw?.h ?? raw?.high),
-      low: Number(raw?.l ?? raw?.low),
-      close: Number(raw?.c ?? raw?.close),
-      volume: Number(raw?.v ?? raw?.volume),
-    };
-  }
-
-  if (ChartCtor) {
-    window.FutureViewChartTools = class FutureViewChartToolsEasternDaily extends ChartCtor {
-      _fvSetDisplayData(displayBars) {
-        if (this._fvTimeframe === "1D") {
-          displayBars = (displayBars || []).map((bar) => ({ ...bar, time: normalizeDailyTime(bar.time) }));
-        }
-        return super._fvSetDisplayData(displayBars);
-      }
-
-      _fvEmitDisplayBar(displayBar) {
-        if (this._fvTimeframe === "1D" && displayBar) {
-          displayBar = { ...displayBar, time: normalizeDailyTime(displayBar.time) };
-        }
-        return super._fvEmitDisplayBar(displayBar);
-      }
-
-      append(rawBar) {
-        const resolution = rawBar?.display_resolution != null ? String(rawBar.display_resolution) : null;
-        if (resolution && resolution !== "1") {
-          if (resolution !== String(this._fvTimeframe)) return;
-          const bar = normalizeDisplayBar(rawBar, resolution);
-          if (![bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume].every(Number.isFinite)) return;
-          this._fvEmitDisplayBar(bar);
-          this._fvRefreshRangeBoundaries?.();
-          this._showLegend?.(null);
-          return;
-        }
-        return super.append(rawBar);
-      }
-
-      appendMany(rawBars) {
-        const items = rawBars || [];
-        const direct = items.length && items.every((bar) => bar?.display_resolution != null && String(bar.display_resolution) !== "1");
-        if (!direct) return super.appendMany(items);
-        for (const rawBar of items) {
-          const resolution = String(rawBar.display_resolution);
-          if (resolution !== String(this._fvTimeframe)) continue;
-          const bar = normalizeDisplayBar(rawBar, resolution);
-          if (![bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume].every(Number.isFinite)) continue;
-          this._fvEmitDisplayBar(bar);
-        }
-        this._fvRefreshRangeBoundaries?.();
-        this._showLegend?.(null);
-      }
-    };
-  }
-
   function timeframe() {
     return String(
       window.__futureViewChartTools?._fvTimeframe ||
@@ -194,6 +46,11 @@
     });
   }
 
+  function syncReplayCursor(payload) {
+    const cursor = payload?.cursor ?? payload?.snapshot?.cursor;
+    if (cursor != null) window.__futureViewChartTools?._fvSetReplayCursor?.(cursor);
+  }
+
   function send(payload) {
     if (!replaySocket || replaySocket.readyState !== NativeWebSocket.OPEN) return false;
     replaySocket.send(JSON.stringify(payload));
@@ -220,13 +77,12 @@
       this.addEventListener("message", (event) => {
         try {
           const payload = JSON.parse(event.data);
+          syncReplayCursor(payload);
           if (payload?.type === "session_snapshot" && payload.speed != null) syncSpeedUi(payload.speed);
           if (payload?.snapshot?.speed != null) syncSpeedUi(payload.snapshot.speed);
 
           if (payload?.type === "display_window") {
-            // display_window is a cache/data-plane extension, not a replay command ACK.
-            // Consume it here so legacy app.js cannot clear pendingCommand/wsSynced by
-            // treating an unknown message as an authoritative session snapshot.
+            // Cache/data-plane message: do not let legacy app.js treat it as a command ACK.
             event.stopImmediatePropagation();
             if (payload.future_data_included !== false) return;
             if (String(payload.resolution) !== timeframe()) return;
@@ -234,6 +90,7 @@
             const accepted = window.__futureViewChartTools?._fvLoadCachedWindow?.(
               payload.resolution,
               payload.bars || [],
+              payload.active_bar || null,
             );
             if (accepted && applyRangeOnNextWindow) {
               applyRangeOnNextWindow = false;
