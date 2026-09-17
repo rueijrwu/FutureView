@@ -76,8 +76,6 @@ export class ReplaySession extends DisplayReplaySession {
   async _ensureDisplayAggregate() {
     const resolution = String(this.displayResolution || "1");
     if (resolution === "1") return;
-    if (resolution === "1D") return super._ensureDisplayAggregate();
-
     const current = await this._ensureReplayCursor();
     if (
       this.displayAggregate &&
@@ -98,7 +96,11 @@ export class ReplaySession extends DisplayReplaySession {
     const frameStart = Number(this.displayAggregate?.t);
     if (!Number.isFinite(frameStart)) return super._ensureDisplayAggregate();
 
-    const start = lowerBoundBarTime(warmup, frameStart);
+    // A daily display bar is stamped at midnight ET for its trading day.
+    // The CME equity-futures session for that trading day begins at 18:00 ET
+    // on the previous calendar day, exactly six elapsed hours before midnight.
+    const activeStart = resolution === "1D" ? frameStart - 6 * 60 * 60 : frameStart;
+    const start = lowerBoundBarTime(warmup, activeStart);
     let aggregate = null;
     for (let index = start; index < warmup.length; index += 1) {
       const bar = warmup[index];

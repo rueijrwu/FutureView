@@ -86,24 +86,47 @@ test("intraday reconstruction uses one timezone-aware bucket seed", async () => 
   }
 });
 
-test("1D reconstruction remains on the proven baseline path", async () => {
-  const warmup = minuteBars("2026-09-17T18:00:00-04:00", 60, 100);
+test("fast 1D active reconstruction matches baseline from 18:00 ET session open", async () => {
+  const warmup = minuteBars("2026-09-16T18:00:00-04:00", 960, 100);
+  const baseline = aggregateHarness(BaselineReplaySession, "1D", warmup);
   const fast = aggregateHarness(FastReplaySession, "1D", warmup);
 
-  const original = BaselineReplaySession.prototype._ensureDisplayAggregate;
+  await baseline._ensureDisplayAggregate();
+  await fast._ensureDisplayAggregate();
+
+  assert.deepEqual(fast.displayAggregate, baseline.displayAggregate);
+  assert.equal(fast.displayAggregateResolution, "1D");
+  assert.equal(fast.displayAggregateCursor, warmup.at(-1).t);
+  assert.equal(fast.displayAggregate.t, sec("2026-09-17T00:00:00-04:00"));
+  assert.equal(fast.displayAggregate.o, warmup[0].o);
+});
+
+test("fast 1D active reconstruction matches baseline after spring DST weekend", async () => {
+  const warmup = minuteBars("2026-03-08T18:00:00-04:00", 900, 200);
+  const baseline = aggregateHarness(BaselineReplaySession, "1D", warmup);
+  const fast = aggregateHarness(FastReplaySession, "1D", warmup);
+
+  await baseline._ensureDisplayAggregate();
+  await fast._ensureDisplayAggregate();
+
+  assert.deepEqual(fast.displayAggregate, baseline.displayAggregate);
+  assert.equal(fast.displayAggregate.t, sec("2026-03-09T00:00:00-04:00"));
+});
+
+test("1D reconstruction uses one timezone-aware daily seed", async () => {
+  const warmup = minuteBars("2026-09-16T18:00:00-04:00", 960, 100);
+  const fast = aggregateHarness(FastReplaySession, "1D", warmup);
+
+  const original = BaselineReplaySession.prototype._consumeCanonicalBars;
   let calls = 0;
-  BaselineReplaySession.prototype._ensureDisplayAggregate = async function () {
+  BaselineReplaySession.prototype._consumeCanonicalBars = function (...args) {
     calls += 1;
-    this.displayAggregate = { t: 123, o: 1, h: 2, l: 0, c: 1, v: 1 };
-    this.displayAggregateResolution = "1D";
-    this.displayAggregateCursor = 456;
+    return original.apply(this, args);
   };
   try {
     await fast._ensureDisplayAggregate();
     assert.equal(calls, 1);
-    assert.equal(fast.displayAggregateResolution, "1D");
-    assert.equal(fast.displayAggregateCursor, 456);
   } finally {
-    BaselineReplaySession.prototype._ensureDisplayAggregate = original;
+    BaselineReplaySession.prototype._consumeCanonicalBars = original;
   }
 });
