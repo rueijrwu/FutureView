@@ -27,6 +27,8 @@
           if (payload?.type === "display_window" && payload.future_data_included === false) {
             window.__futureViewChartTools?._fvLoadCachedWindow?.(payload.resolution, payload.bars || []);
             if (payload.history_range && HISTORY_RANGES[payload.history_range]) selectedRange = payload.history_range;
+            const seconds = HISTORY_RANGES[selectedRange]?.seconds;
+            if (seconds) window.__futureViewChartTools?._fvSetTimeDomain?.(seconds);
           }
         } catch {}
       });
@@ -97,6 +99,8 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     syncUi();
+    const seconds = HISTORY_RANGES[selectedRange]?.seconds;
+    if (seconds) window.__futureViewChartTools?._fvSetTimeDomain?.(seconds);
 
     const speeds = document.getElementById("speeds");
     const play = document.getElementById("play");
@@ -134,22 +138,28 @@
     constructor(options) {
       super(options);
       this._fvHistoryRange = selectedRange;
+      const seconds = HISTORY_RANGES[selectedRange]?.seconds;
+      if (seconds) this._fvSetTimeDomain?.(seconds);
       syncUi();
     }
 
     _fvSetHistoryRange(range) {
       if (!HISTORY_RANGES[range]) return;
       this._fvHistoryRange = range;
+      const seconds = HISTORY_RANGES[range].seconds;
+      this._fvSetTimeDomain?.(seconds);
+
       const raw = this._fvRawBars || [];
-      if (!raw.length) return;
-      const to = Number(raw.at(-1).t);
-      const desiredFrom = to - HISTORY_RANGES[range].seconds;
-      const from = Math.max(Number(raw[0].t), desiredFrom);
+      const to = Number(raw.at(-1)?.t ?? this.bars?.at(-1)?.time);
+      if (!Number.isFinite(to)) return;
+      const from = to - seconds;
       try { this.chart.timeScale().setVisibleRange({ from, to }); } catch {}
     }
 
     reset(rawBars) {
       super.reset(rawBars);
+      const seconds = HISTORY_RANGES[this._fvHistoryRange || selectedRange]?.seconds;
+      if (seconds) this._fvSetTimeDomain?.(seconds);
     }
   };
 })();
