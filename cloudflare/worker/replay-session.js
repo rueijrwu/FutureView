@@ -1,6 +1,37 @@
 import { ReplaySession as CoreReplaySession } from "./replay-session-core.js";
 
 export class ReplaySession extends CoreReplaySession {
+  _residentShard(contract, index) {
+    const meta = contract?.shards?.[index];
+    if (!meta || !this.shard || this.shardKey !== meta.key) return null;
+    return this.shard;
+  }
+
+  async _warmupBars(shardIndex, barIndex, count) {
+    const manifest = this.manifest ?? await this._manifest();
+    const contract = manifest.contracts[this.session.contract];
+    let remaining = count;
+    let index = shardIndex;
+    const chunks = [];
+
+    while (index >= 0 && remaining > 0) {
+      const bars = this._residentShard(contract, index)
+        ?? await this._loadShardForContract(contract, index);
+      const takeEnd = index === shardIndex ? barIndex + 1 : bars.length;
+      const takeStart = Math.max(0, takeEnd - remaining);
+      chunks.unshift(bars.slice(takeStart, takeEnd));
+      remaining -= takeEnd - takeStart;
+      index -= 1;
+    }
+
+    const current = this._residentShard(contract, shardIndex)
+      ?? await this._loadShardForContract(contract, shardIndex);
+    const cursor = current[barIndex];
+    const flattened = chunks.flat();
+    if (!flattened.length || flattened.at(-1)?.t !== cursor.t) flattened.push(cursor);
+    return flattened;
+  }
+
   async _release(count) {
     const contract = (await this._manifest()).contracts[this.session.contract];
     const released = [];

@@ -18,7 +18,7 @@ function makeBar(t, price) {
   return { t, o: price, h: price + 1, l: price - 1, c: price + 0.25, v: 10 };
 }
 
-function makeHarness({ shards, barIndex = 0, pending = false }) {
+function makeHarness({ shards, shardIndex = 0, barIndex = 0, pending = false }) {
   const instance = Object.create(ReplaySession.prototype);
   const contract = {
     contract: "MESZ6",
@@ -33,28 +33,32 @@ function makeHarness({ shards, barIndex = 0, pending = false }) {
     pendingOrders: pending ? [{ id: "pending-order" }] : [],
     fills: [],
     nextSequence: 1,
-    lastPrice: shards[0][barIndex]?.c ?? null,
+    lastPrice: shards[shardIndex][barIndex]?.c ?? null,
   };
 
   instance.manifest = { contracts: { MESZ6: contract } };
   instance.session = {
     contract: "MESZ6",
-    shardIndex: 0,
+    shardIndex,
     barIndex,
     state: "PAUSED",
     trading,
   };
-  instance.shard = shards[0];
-  instance.shardKey = "s0";
+  instance.shard = shards[shardIndex];
+  instance.shardKey = `s${shardIndex}`;
   instance._manifest = async () => instance.manifest;
   instance._trading = () => trading;
 
-  const metrics = { loaded: [], fillCalls: 0, fillBars: [] };
+  const metrics = { loaded: [], warmupLoads: [], fillCalls: 0, fillBars: [] };
   instance._loadShard = async (index) => {
     metrics.loaded.push(index);
     instance.shard = shards[index] ?? null;
     instance.shardKey = instance.shard ? `s${index}` : null;
     return instance.shard;
+  };
+  instance._loadShardForContract = async (_contract, index) => {
+    metrics.warmupLoads.push(index);
+    return shards[index] ?? null;
   };
 
   instance._fillPendingOrders = async (bar) => {
@@ -105,4 +109,26 @@ test("pending orders fill once on the first newly released canonical bar", async
   assert.deepEqual(metrics.fillBars, [160]);
   assert.equal(metrics.fillCalls, 1);
   assert.equal(trading.pendingOrders.length, 0);
+});
+
+test("warmup reuses the resident current shard", async () => {
+  const shard0 = [makeBar(100, 10), makeBar(160, 11)];
+  const shard1 = [makeBar(220, 12), makeBar(280, 13), makeBar(340, 14)];
+  const { instance, metrics } = makeHarness({ shards: [shard0, shard1], shardIndex: 1, barIndex: 1 });
+
+  const warmup = await instance._warmupBars(1, 1, 3);
+
+  assert.deepEqual(warmup.map((bar) => bar.t), [160, 220, 280]);
+  assert.deepEqual(metrics.warmupLoads, [0]);
+  assert.equal(instance.shardKey, "s1");
+});
+
+test("warmup contained in current shard performs no R2 shard loads", async () => {
+  const shard0 = [makeBar(100, 10), makeBar(160, 11), makeBar(220, 12)];
+  const { instance, metrics } = makeHarness({ shards: [shard0], shardIndex: 0, barIndex: 2 });
+
+  const warmup = await instance._warmupBars(0, 2, 2);
+
+  assert.deepEqual(warmup.map((bar) => bar.t), [160, 220]);
+  assert.deepEqual(metrics.warmupLoads, []);
 });
