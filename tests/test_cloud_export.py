@@ -71,9 +71,8 @@ def test_cloud_manifest_contains_runtime_selection_inputs(tmp_path: Path) -> Non
     with gzip.open(output / daily_meta["key"], "rt", encoding="utf-8") as f:
         daily = json.load(f)
     assert [bar["t"] for bar in daily] == [
-        int(pd.Timestamp("2024-06-10T00:00:00Z").timestamp()),
-        int(pd.Timestamp("2024-06-11T00:00:00Z").timestamp()),
-        int(pd.Timestamp("2024-06-12T00:00:00Z").timestamp()),
+        int(pd.Timestamp(day, tz="America/New_York").tz_convert("UTC").timestamp())
+        for day in ["2024-06-10", "2024-06-11", "2024-06-12"]
     ]
 
 
