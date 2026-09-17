@@ -1,6 +1,7 @@
 import { ReplaySession as FrameReplaySession } from "./replay-session-frame.js";
 
 const FRAME_RESOLUTIONS = new Set(["1", "5", "30", "240", "1D"]);
+const HISTORY_SECONDS = { "1D": 86400, "5D": 5 * 86400, "1M": 30 * 86400, "3M": 90 * 86400 };
 const MAX_PARTIAL_MINUTES = 1500;
 const ET_FORMATTER = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
@@ -48,11 +49,35 @@ function sessionStart(seconds) {
   });
 }
 
-function dailyTradingStamp(seconds) {
+function tradingDayDate(seconds) {
   const parts = etParts(seconds);
   const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
   if (parts.hour >= 18) day.setUTCDate(day.getUTCDate() + 1);
-  return Math.floor(day.getTime() / 1000);
+  return day;
+}
+
+function dailyTradingStamp(seconds) {
+  const day = tradingDayDate(seconds);
+  return wallToEpochSeconds({
+    year: day.getUTCFullYear(),
+    month: day.getUTCMonth() + 1,
+    day: day.getUTCDate(),
+    hour: 0,
+    minute: 0,
+    second: 0,
+  });
+}
+
+function activeTradingDayKey(seconds) {
+  const day = tradingDayDate(seconds);
+  return day.getUTCFullYear() * 10000 + (day.getUTCMonth() + 1) * 100 + day.getUTCDate();
+}
+
+function dailyBarTradingDayKey(seconds) {
+  // Both legacy 00:00-UTC bars and corrected 00:00-ET bars have the intended
+  // trading-day calendar date in their UTC Y/M/D fields.
+  const day = new Date(Number(seconds) * 1000);
+  return day.getUTCFullYear() * 10000 + (day.getUTCMonth() + 1) * 100 + day.getUTCDate();
 }
 
 function displayStamp(seconds, resolution) {
@@ -72,6 +97,28 @@ function lowerBoundShard(shards, target) {
     else lo = mid + 1;
   }
   return lo < shards.length ? lo : Math.max(0, shards.length - 1);
+}
+
+function lowerBoundLastTime(items, target) {
+  let lo = 0;
+  let hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (Number(items[mid].last_time) >= Number(target)) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo < items.length ? lo : Math.max(0, items.length - 1);
+}
+
+function lowerBoundBarTime(items, target) {
+  let lo = 0;
+  let hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (Number(items[mid].t) >= Number(target)) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo < items.length ? lo : Math.max(0, items.length - 1);
 }
 
 function indexAtOrBefore(bars, target) {
@@ -237,6 +284,44 @@ export class ReplaySession extends FrameReplaySession {
     const payload = bars.map((bar) => ({ ...bar, display_resolution: String(resolution) }));
     if (payload.length === 1) this._broadcast({ type: "bar", bar: payload[0] });
     else this._broadcast({ type: "bars_batch", bars: payload });
+  }
+
+  async _causalDisplayWindow(cursor, resolution = this.displayResolution, historyRange = this.historyRange) {
+    cursor = Number(cursor);
+    if (!Number.isFinite(cursor)) return [];
+    await this._ensureDisplayWindows(cursor);
+    const center = this.displayWindowIndex;
+    if (center < 0) return [];
+
+    const seconds = HISTORY_SECONDS[historyRange] ?? HISTORY_SECONDS["5D"];
+    const historyFrom = cursor - seconds;
+    const shards = await this._displayShardMeta(resolution);
+    if (!shards.length) return [];
+    const firstNeeded = Math.max(0, Math.min(center, lowerBoundLastTime(shards, historyFrom)));
+    const out = [];
+    const cutoff = resolution === "1D" ? null : displayStamp(cursor, resolution);
+    const activeDay = resolution === "1D" ? activeTradingDayKey(cursor) : null;
+
+    for (let index = firstNeeded; index <= center; index += 1) {
+      const window = await this._loadDisplayWindow(index, resolution);
+      if (!window) continue;
+      const bars = window.bars || [];
+      let start = lowerBoundBarTime(bars, historyFrom);
+      if (start < 0) start = 0;
+      for (let i = start; i < bars.length; i += 1) {
+        const bar = bars[i];
+        const t = Number(bar.t);
+        if (resolution === "1D") {
+          if (dailyBarTradingDayKey(t) >= activeDay) break;
+        } else if (t >= cutoff) {
+          break;
+        }
+        if (t >= historyFrom) out.push(bar);
+      }
+    }
+
+    this._trimDisplayWindows(center, resolution);
+    return out;
   }
 
   async setTimeframe(value, historyRange = this.historyRange) {
