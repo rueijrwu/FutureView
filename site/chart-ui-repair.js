@@ -82,6 +82,30 @@
     return { time: t, open: first.o, high, low, close: last.c, volume };
   }
 
+  function aggregateSuffix(raw, timeframe, startIndex) {
+    if (!raw.length || startIndex == null) return [];
+    startIndex = Math.max(0, Math.min(raw.length - 1, startIndex));
+    const firstBucket = bucketTime(raw[startIndex].t, timeframe);
+    while (startIndex > 0 && bucketTime(raw[startIndex - 1].t, timeframe) === firstBucket) startIndex -= 1;
+
+    const out = [];
+    let current = null;
+    for (let i = startIndex; i < raw.length; i += 1) {
+      const bar = raw[i];
+      const t = bucketTime(bar.t, timeframe);
+      if (!current || current.time !== t) {
+        current = { time: t, open: bar.o, high: bar.h, low: bar.l, close: bar.c, volume: bar.v };
+        out.push(current);
+      } else {
+        current.high = Math.max(current.high, bar.h);
+        current.low = Math.min(current.low, bar.l);
+        current.close = bar.c;
+        current.volume += bar.v;
+      }
+    }
+    return out;
+  }
+
   function candle(bar) {
     return { time: bar.time, open: bar.open, high: bar.high, low: bar.low, close: bar.close };
   }
@@ -125,6 +149,15 @@
       window.__futureViewChartTools = this;
     }
 
+    _fvEmitDisplayBar(displayBar) {
+      this._fvNativeCandleUpdate(candle(displayBar));
+      this._fvNativeVolumeUpdate?.(volume(displayBar));
+      this._appendNormalized(displayBar);
+      // All live changes only affect the current last display bar or append new bars,
+      // so an incremental indicator update is sufficient; avoid full-history rebuilds.
+      this._updateIndicatorsForLastBar();
+    }
+
     _fvApplyRaw(rawBar) {
       const bar = normalizeRaw(rawBar);
       const raw = this._fvRawBars || (this._fvRawBars = []);
@@ -135,13 +168,7 @@
 
       const displayBar = aggregateTail(raw, this._fvTimeframe || "5");
       if (!displayBar) return;
-
-      this._fvNativeCandleUpdate(candle(displayBar));
-      this._fvNativeVolumeUpdate?.(volume(displayBar));
-
-      const replaced = this._appendNormalized(displayBar);
-      if (replaced) this._refreshIndicators();
-      else this._updateIndicatorsForLastBar();
+      this._fvEmitDisplayBar(displayBar);
       this._showLegend(null);
     }
 
@@ -150,7 +177,25 @@
     }
 
     appendMany(rawBars) {
-      for (const rawBar of rawBars || []) this._fvApplyRaw(rawBar);
+      const raw = this._fvRawBars || (this._fvRawBars = []);
+      let changedFrom = null;
+
+      for (const item of rawBars || []) {
+        const bar = normalizeRaw(item);
+        const last = raw.at(-1);
+        if (last && bar.t === last.t) {
+          raw[raw.length - 1] = bar;
+          if (changedFrom == null) changedFrom = raw.length - 1;
+        } else if (!last || bar.t > last.t) {
+          raw.push(bar);
+          if (changedFrom == null) changedFrom = raw.length - 1;
+        }
+      }
+
+      if (changedFrom == null) return;
+      const displayBars = aggregateSuffix(raw, this._fvTimeframe || "5", changedFrom);
+      for (const displayBar of displayBars) this._fvEmitDisplayBar(displayBar);
+      this._showLegend(null);
     }
   };
 })();
