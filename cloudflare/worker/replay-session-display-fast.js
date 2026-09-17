@@ -2,6 +2,7 @@ import { ReplaySession as DisplayReplaySession } from "./replay-session-display.
 
 const FRAME_RESOLUTIONS = new Set(["1", "5", "30", "240", "1D"]);
 const LONG_GAP_SECONDS = 6 * 60 * 60;
+const PREFETCH_THRESHOLD = 0.75;
 
 function newAggregate(bar, stamp) {
   return {
@@ -36,6 +37,17 @@ function lowerBoundBarTime(bars, target, start = 0) {
   return lo;
 }
 
+function lowerBoundLastTime(items, target) {
+  let lo = 0;
+  let hi = items.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (Number(items[mid].last_time) >= Number(target)) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo < items.length ? lo : items.length - 1;
+}
+
 export class ReplaySession extends DisplayReplaySession {
   async _ensureReplayCursor() {
     const session = this.session;
@@ -56,6 +68,58 @@ export class ReplaySession extends DisplayReplaySession {
       }
     }
     return super._ensureReplayCursor();
+  }
+
+  async _ensureDisplayWindows(cursor) {
+    const resolution = this.displayResolution;
+    cursor = Number(cursor);
+    if (!Number.isFinite(cursor)) return;
+    if (cursor < this.displayNextCheckAt && this.displayWindowIndex >= 0) return;
+
+    const shards = await this._displayShardMeta(resolution);
+    if (!shards.length) return;
+
+    let index = this.displayWindowIndex;
+    const meta = shards[index];
+    if (index < 0 || !meta || cursor < Number(meta.first_time) || cursor > Number(meta.last_time)) {
+      index = lowerBoundLastTime(shards, cursor);
+      if (index < 0) return;
+      this.displayWindowIndex = index;
+      this.displayPrefetchedIndex = -1;
+      this.displayPrefetchAt = -Infinity;
+    }
+
+    let current;
+    if (resolution === "1") {
+      current = await this._loadDisplayWindow(index, resolution);
+    } else {
+      [current] = await Promise.all([
+        this._loadDisplayWindow(index, resolution),
+        this._loadDisplayWindow(index + 1, resolution),
+      ]);
+    }
+    if (!current) return;
+    const bars = current.bars || [];
+
+    if (bars.length && !Number.isFinite(this.displayPrefetchAt)) {
+      const thresholdIndex = Math.min(bars.length - 1, Math.floor((bars.length - 1) * PREFETCH_THRESHOLD));
+      this.displayPrefetchAt = Number(bars[thresholdIndex].t);
+    }
+
+    if (
+      resolution !== "1" &&
+      cursor >= this.displayPrefetchAt &&
+      this.displayPrefetchedIndex !== index + 2
+    ) {
+      await this._loadDisplayWindow(index + 2, resolution);
+      this.displayPrefetchedIndex = index + 2;
+    }
+
+    const edge = Number(current.meta.last_time) + 1;
+    this.displayNextCheckAt = resolution === "1" || this.displayPrefetchedIndex === index + 2
+      ? edge
+      : Math.min(edge, this.displayPrefetchAt);
+    this._trimDisplayWindows(index, resolution);
   }
 
   _consumeCanonicalBars(rawBars, resolution = this.displayResolution) {
