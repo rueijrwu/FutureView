@@ -13,6 +13,48 @@
 
   const NativeWebSocket = window.WebSocket;
 
+  // Keep the synthetic calendar anchors stable while replay advances. app.js preserves
+  // the viewport by logical index around each batch; sliding these anchors on every bar
+  // changes the logical-index→timestamp mapping and makes Next/Play visibly jump.
+  // Reset only when the time domain materially changes; otherwise extend the future
+  // anchor without moving the past anchor, so existing logical indices stay stable.
+  const ChartCtor = window.FutureViewChartTools;
+  if (ChartCtor?.prototype?._fvRefreshRangeBoundaries) {
+    ChartCtor.prototype._fvRefreshRangeBoundaries = function (force = false) {
+      const cursor = Number(this._fvCursor?.());
+      if (!Number.isFinite(cursor) || !this._fvRangeBoundarySeries) return;
+      const step = Math.max(60, Number(this._fvStepSeconds?.() || 60));
+      const history = Math.max(step, Number(this._fvHistorySeconds) || 5 * 86400);
+      const previousCursor = Number(this._fvBoundaryCursor);
+      const domainChanged = Number(this._fvBoundaryHistory) !== history || Number(this._fvBoundaryStep) !== step;
+      const largeJump = Number.isFinite(previousCursor) && Math.abs(cursor - previousCursor) > history / 2;
+      const reset = force || domainChanged || largeJump || !Number.isFinite(Number(this._fvBoundaryFrom)) || !Number.isFinite(Number(this._fvBoundaryTo));
+
+      if (reset) {
+        this._fvBoundaryFrom = cursor - history;
+        this._fvBoundaryTo = cursor + Math.max(86400, history / 4, step * 32);
+        this._fvBoundaryHistory = history;
+        this._fvBoundaryStep = step;
+        this._fvBoundaryCursor = cursor;
+        this._fvRangeBoundarySeries.setData([
+          { time: this._fvBoundaryFrom },
+          { time: this._fvBoundaryTo },
+        ]);
+        return;
+      }
+
+      const guard = Math.max(3600, step * 8);
+      if (cursor + guard >= this._fvBoundaryTo) {
+        this._fvBoundaryTo = cursor + Math.max(86400, history / 4, step * 32);
+        this._fvRangeBoundarySeries.setData([
+          { time: this._fvBoundaryFrom },
+          { time: this._fvBoundaryTo },
+        ]);
+      }
+      this._fvBoundaryCursor = cursor;
+    };
+  }
+
   function timeframe() {
     return String(
       window.__futureViewChartTools?._fvTimeframe ||
