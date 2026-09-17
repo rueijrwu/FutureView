@@ -1,82 +1,16 @@
 import { ReplaySession as BaseReplaySession } from "./replay-session.js";
+import {
+  FRAME_RESOLUTIONS,
+  dailyBarTradingDayKey,
+  displayStamp,
+  frameKey,
+  tradingDayKey,
+} from "./replay-time.js";
 
-const FRAME_RESOLUTIONS = new Set(["1", "5", "30", "240", "1D"]);
 const SPEEDS = new Set([1, 5, 10, 25, 50, 100]);
 const HISTORY_SECONDS = { "1D": 86400, "5D": 5 * 86400, "1M": 30 * 86400, "3M": 90 * 86400 };
 const DISPLAY_WINDOW_BARS = 512;
 const PREFETCH_THRESHOLD = 0.75;
-const ET_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/New_York",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hourCycle: "h23",
-});
-
-function etParts(seconds) {
-  return Object.fromEntries(
-    ET_FORMATTER.formatToParts(new Date(Number(seconds) * 1000))
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, Number(part.value)]),
-  );
-}
-
-function wallToEpochSeconds(parts) {
-  const wanted = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second || 0);
-  let guess = wanted;
-  for (let i = 0; i < 4; i += 1) {
-    const shown = etParts(guess / 1000);
-    const shownWall = Date.UTC(shown.year, shown.month - 1, shown.day, shown.hour, shown.minute, shown.second || 0);
-    const delta = wanted - shownWall;
-    guess += delta;
-    if (!delta) break;
-  }
-  return Math.floor(guess / 1000);
-}
-
-function sessionStart(seconds) {
-  const parts = etParts(seconds);
-  const localDate = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-  if (parts.hour < 18) localDate.setUTCDate(localDate.getUTCDate() - 1);
-  return wallToEpochSeconds({
-    year: localDate.getUTCFullYear(),
-    month: localDate.getUTCMonth() + 1,
-    day: localDate.getUTCDate(),
-    hour: 18,
-    minute: 0,
-    second: 0,
-  });
-}
-
-function frameStart(seconds, resolution) {
-  const start = sessionStart(seconds);
-  if (resolution === "1D") return start;
-  if (resolution === "1") return Number(seconds);
-  const minutes = Number(resolution);
-  return start + Math.floor(Math.max(0, Number(seconds) - start) / (minutes * 60)) * minutes * 60;
-}
-
-function frameKey(seconds, resolution) {
-  const start = sessionStart(seconds);
-  if (resolution === "1D") return `D:${start}`;
-  const minutes = Number(resolution);
-  const bucket = Math.floor(Math.max(0, Number(seconds) - start) / (minutes * 60));
-  return `${start}:${minutes}:${bucket}`;
-}
-
-function dailyTradingStamp(seconds) {
-  const parts = etParts(seconds);
-  const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-  if (parts.hour >= 18) day.setUTCDate(day.getUTCDate() + 1);
-  return Math.floor(day.getTime() / 1000);
-}
-
-function displayCutoff(seconds, resolution) {
-  return resolution === "1D" ? dailyTradingStamp(seconds) : frameStart(seconds, resolution);
-}
 
 function lowerBoundLastTime(items, target) {
   let lo = 0;
@@ -175,9 +109,8 @@ export class ReplaySession extends BaseReplaySession {
     const keep = new Set(keepIndices.map((index) => `${resolution}:${index}`));
     for (const key of [...this.displayWindows.keys()]) {
       if (key.startsWith(`${resolution}:`) && !keep.has(key)) this.displayWindows.delete(key);
+      else if (!key.startsWith(`${resolution}:`)) this.displayWindows.delete(key);
     }
-    const foreign = [...this.displayWindows.keys()].filter((key) => !key.startsWith(`${resolution}:`));
-    for (let i = 1; i < foreign.length; i += 1) this.displayWindows.delete(foreign[i]);
   }
 
   async _ensureDisplayWindows(cursor) {
@@ -232,13 +165,14 @@ export class ReplaySession extends BaseReplaySession {
     const center = this.displayWindowIndex;
     if (center < 0) return [];
 
-    const cutoff = displayCutoff(cursor, resolution);
     const seconds = HISTORY_SECONDS[historyRange] ?? HISTORY_SECONDS["5D"];
     const historyFrom = cursor - seconds;
     const shards = await this._displayShardMeta(resolution);
     if (!shards.length) return [];
     const firstNeeded = Math.max(0, Math.min(center, lowerBoundLastTime(shards, historyFrom)));
     const out = [];
+    const cutoff = resolution === "1D" ? null : displayStamp(cursor, resolution);
+    const activeDay = resolution === "1D" ? tradingDayKey(cursor) : null;
 
     for (let index = firstNeeded; index <= center; index += 1) {
       const window = await this._loadDisplayWindow(index, resolution);
@@ -249,7 +183,11 @@ export class ReplaySession extends BaseReplaySession {
       for (let i = start; i < bars.length; i += 1) {
         const bar = bars[i];
         const t = Number(bar.t);
-        if (t >= cutoff) break;
+        if (resolution === "1D") {
+          if (dailyBarTradingDayKey(t) >= activeDay) break;
+        } else if (t >= cutoff) {
+          break;
+        }
         if (t >= historyFrom) out.push(bar);
       }
     }
@@ -387,8 +325,8 @@ export class ReplaySession extends BaseReplaySession {
       if (released.length > 2000) throw new Error("Chart-frame step exceeded safety bound");
     }
 
-    if (released.length === 1) this._broadcast({ type: "bar", bar: released[0] });
-    else if (released.length > 1) this._broadcast({ type: "bars_batch", bars: released });
+    if (released.length === 1) this._broadcast({ type: "bar", bar: released[0], cursor: Number(released[0].t) });
+    else if (released.length > 1) this._broadcast({ type: "bars_batch", bars: released, cursor: Number(released.at(-1).t) });
     await this._persist(false);
     this._broadcast(this.snapshot());
   }
