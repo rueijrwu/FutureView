@@ -168,3 +168,57 @@ test("VWAP resets at the 18:00 ET futures-session rollover", () => {
   assert.ok(globalThis.__fvEtPartsCalls > 0);
   assert.ok(Math.abs(lastVwap().value - typical) < 1e-12);
 });
+
+
+function fullSma(bars, period) {
+  if (bars.length < period) return null;
+  let sum = 0;
+  for (let i = bars.length - period; i < bars.length; i += 1) sum += Number(bars[i].close);
+  return sum / period;
+}
+
+function smaHarness(bars) {
+  const instance = Object.create(ChartTools.prototype);
+  instance.bars = bars.map((bar) => ({ ...bar }));
+  instance._fvSmaState = null;
+  instance._fvVwapState = { start: -Infinity, end: Infinity, priceVolume: 0, volume: 0, lastTime: null, lastPriceVolume: 0, lastVolume: 0 };
+  const updates = {};
+  instance.indicators = {
+    sma5: { update(value) { updates.sma5 = value; } },
+    sma10: { update(value) { updates.sma10 = value; } },
+    sma20: { update(value) { updates.sma20 = value; } },
+    sma60: { update(value) { updates.sma60 = value; } },
+    vwap: { update() {} },
+  };
+  instance._fvSyncSmaState();
+  return { instance, updates };
+}
+
+test("SMA live append uses rolling sums with exact values", () => {
+  const bars = [];
+  for (let i = 0; i < 70; i += 1) {
+    bars.push(chartBar(`2026-09-17T${String(9 + Math.floor((30 + i) / 60)).padStart(2, "0")}:${String((30 + i) % 60).padStart(2, "0")}:00-04:00`, 100+i, 101+i, 99+i, 100.5+i, 10));
+  }
+  const { instance, updates } = smaHarness(bars);
+  const next = { ...instance.bars.at(-1), time: instance.bars.at(-1).time + 60, close: 250 };
+  instance.bars.push(next);
+  instance._fvUpdateIndicatorsForLastBar();
+
+  for (const [key, period] of Object.entries({ sma5: 5, sma10: 10, sma20: 20, sma60: 60 })) {
+    assert.ok(Math.abs(updates[key].value - fullSma(instance.bars, period)) < 1e-12);
+  }
+});
+
+test("SMA same-timestamp replacement adjusts rolling sums by delta", () => {
+  const bars = [];
+  for (let i = 0; i < 70; i += 1) {
+    bars.push({ time: sec("2026-09-17T09:30:00-04:00") + i * 60, open: 100+i, high: 101+i, low: 99+i, close: 100.5+i, volume: 10 });
+  }
+  const { instance, updates } = smaHarness(bars);
+  instance.bars[instance.bars.length - 1] = { ...instance.bars.at(-1), close: 333 };
+  instance._fvUpdateIndicatorsForLastBar();
+
+  for (const [key, period] of Object.entries({ sma5: 5, sma10: 10, sma20: 20, sma60: 60 })) {
+    assert.ok(Math.abs(updates[key].value - fullSma(instance.bars, period)) < 1e-12);
+  }
+});

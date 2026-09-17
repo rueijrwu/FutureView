@@ -136,6 +136,7 @@
       this._fvAutoFitPending = false;
       this._fvUserInteractionUntil = 0;
       this._fvVwapState = null;
+      this._fvSmaState = null;
 
       this._fvNativeCandleUpdate = this.candles.update.bind(this.candles);
       this._fvNativeCandleSetData = this.candles.setData.bind(this.candles);
@@ -307,6 +308,30 @@
       return cloneBar(this._fvActiveAggregate);
     }
 
+    _fvSyncSmaState() {
+      const bar = this.bars.at(-1);
+      if (!bar) {
+        this._fvSmaState = null;
+        return null;
+      }
+      const periods = { sma5: 5, sma10: 10, sma20: 20, sma60: 60 };
+      const sums = {};
+      for (const [key, period] of Object.entries(periods)) {
+        let sum = 0;
+        const start = Math.max(0, this.bars.length - period);
+        for (let index = start; index < this.bars.length; index += 1) {
+          sum += Number(this.bars[index].close);
+        }
+        sums[key] = sum;
+      }
+      this._fvSmaState = {
+        lastTime: Number(bar.time),
+        lastClose: Number(bar.close),
+        sums,
+      };
+      return this._fvSmaState;
+    }
+
     _fvRebuildVwapState() {
       const bar = this.bars.at(-1);
       if (!bar) {
@@ -367,15 +392,40 @@
     _fvUpdateIndicatorsForLastBar() {
       const bar = this.bars.at(-1);
       if (!bar) return;
+      const timestamp = Number(bar.time);
+      const close = Number(bar.close);
       const periods = { sma5: 5, sma10: 10, sma20: 20, sma60: 60 };
-      for (const [key, period] of Object.entries(periods)) {
-        if (this.bars.length < period) continue;
-        let sum = 0;
-        for (let i = this.bars.length - period; i < this.bars.length; i += 1) sum += Number(this.bars[i].close);
-        this.indicators[key]?.update({ time: bar.time, value: sum / period });
+
+      let smaState = this._fvSmaState;
+      let seeded = false;
+      if (!smaState || !Number.isFinite(smaState.lastTime) || timestamp < smaState.lastTime) {
+        smaState = this._fvSyncSmaState();
+        seeded = true;
+      }
+      if (smaState) {
+        if (!seeded) {
+          if (smaState.lastTime === timestamp) {
+            const delta = close - Number(smaState.lastClose);
+            for (const key of Object.keys(periods)) smaState.sums[key] += delta;
+          } else {
+            const length = this.bars.length;
+            for (const [key, period] of Object.entries(periods)) {
+              smaState.sums[key] += close;
+              if (length > period) {
+                smaState.sums[key] -= Number(this.bars[length - period - 1].close);
+              }
+            }
+          }
+          smaState.lastTime = timestamp;
+          smaState.lastClose = close;
+        }
+
+        for (const [key, period] of Object.entries(periods)) {
+          if (this.bars.length < period) continue;
+          this.indicators[key]?.update({ time: bar.time, value: smaState.sums[key] / period });
+        }
       }
 
-      const timestamp = Number(bar.time);
       let state = this._fvVwapState;
       if (!state) state = this._fvRebuildVwapState();
       if (!state) return;
@@ -429,6 +479,7 @@
       this.bars = displayBars.map((bar) => ({ ...bar }));
       this._refreshIndicators();
       this._fvSyncVwapStateFromBase();
+      this._fvSyncSmaState();
       this._showLegend(null);
     }
 
