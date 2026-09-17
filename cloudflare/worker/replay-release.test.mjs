@@ -165,3 +165,78 @@ test("binary bar lookup matches first canonical bar at or after start", () => {
   assert.equal(instance._findBarAtOrAfter(bars, 220), 2);
   assert.equal(instance._findBarAtOrAfter(bars, 281), -1);
 });
+
+
+function makeInitHarness({ contract, shards }) {
+  const instance = Object.create(ReplaySession.prototype);
+  instance.manifest = { contracts: { MESZ6: contract } };
+  instance._manifest = async () => instance.manifest;
+  const contractLoads = [];
+  let residentLoads = 0;
+  instance._loadShardForContract = async (_contract, index) => {
+    contractLoads.push(index);
+    return shards[index] ?? null;
+  };
+  instance._loadShard = async () => {
+    residentLoads += 1;
+    throw new Error("init should reuse the shard already loaded for start resolution");
+  };
+  instance._persist = async () => {};
+  instance._persistTradingSummary = async () => {};
+  instance._warmupBars = async () => [];
+  instance.snapshot = () => ({ type: "session_snapshot", cursor: instance.shard?.[instance.session?.barIndex]?.t ?? null });
+  return { instance, contractLoads, residentLoads: () => residentLoads };
+}
+
+test("init reuses the shard loaded to resolve the replay start", async () => {
+  const bars = [makeBar(100, 10), makeBar(160, 11), makeBar(220, 12)];
+  const contract = {
+    contract: "MESZ6",
+    shards: [{ key: "s0", first_time: 100, last_time: 220 }],
+  };
+  const { instance, contractLoads, residentLoads } = makeInitHarness({ contract, shards: [bars] });
+
+  const result = await instance.init({
+    product: "MES",
+    contract: "MESZ6",
+    session_id: "session-1",
+    start: new Date(160 * 1000).toISOString(),
+    warmup: 10,
+  });
+
+  assert.deepEqual(contractLoads, [0]);
+  assert.equal(residentLoads(), 0);
+  assert.equal(instance.shard, bars);
+  assert.equal(instance.shardKey, "s0");
+  assert.equal(instance.session.shardIndex, 0);
+  assert.equal(instance.session.barIndex, 1);
+  assert.equal(result.cursor, 160);
+});
+
+test("init keeps the next shard resident when start falls into a metadata gap", async () => {
+  const shard0 = [makeBar(100, 10), makeBar(160, 11)];
+  const shard1 = [makeBar(220, 12), makeBar(280, 13)];
+  const contract = {
+    contract: "MESZ6",
+    shards: [
+      { key: "s0", first_time: 100, last_time: 200 },
+      { key: "s1", first_time: 220, last_time: 280 },
+    ],
+  };
+  const { instance, contractLoads, residentLoads } = makeInitHarness({ contract, shards: [shard0, shard1] });
+
+  await instance.init({
+    product: "MES",
+    contract: "MESZ6",
+    session_id: "session-2",
+    start: new Date(190 * 1000).toISOString(),
+    warmup: 10,
+  });
+
+  assert.deepEqual(contractLoads, [0, 1]);
+  assert.equal(residentLoads(), 0);
+  assert.equal(instance.shard, shard1);
+  assert.equal(instance.shardKey, "s1");
+  assert.equal(instance.session.shardIndex, 1);
+  assert.equal(instance.session.barIndex, 0);
+});

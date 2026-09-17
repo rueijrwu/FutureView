@@ -119,12 +119,13 @@ export class ReplaySession extends DurableObject {
     const shardIndex = this._findShardAtOrAfter(contract, start);
     if (shardIndex < 0) throw new Error("No bar exists at or after requested start");
     const shard = await this._loadShardForContract(contract, shardIndex, product);
-    let barIndex = this._findBarAtOrAfter(shard, start);
+    let resolvedBars = shard;
+    let barIndex = this._findBarAtOrAfter(resolvedBars, start);
     let resolvedShard = shardIndex;
     if (barIndex < 0) {
       resolvedShard += 1;
-      const next = await this._loadShardForContract(contract, resolvedShard, product);
-      if (!next) throw new Error("No bar exists at or after requested start");
+      resolvedBars = await this._loadShardForContract(contract, resolvedShard, product);
+      if (!resolvedBars) throw new Error("No bar exists at or after requested start");
       barIndex = 0;
     }
     this.session = {
@@ -143,9 +144,8 @@ export class ReplaySession extends DurableObject {
       startTs: start,
       trading: this._blankTrading(),
     };
-    this.shard = null;
-    this.shardKey = null;
-    await this._loadShard(resolvedShard);
+    this.shard = resolvedBars;
+    this.shardKey = contract.shards[resolvedShard]?.key ?? null;
     const current = this.shard[this.session.barIndex];
     this.session.trading.lastPrice = current?.c ?? current?.o ?? null;
     await this._persist(true);
