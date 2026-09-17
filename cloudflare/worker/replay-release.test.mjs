@@ -285,3 +285,100 @@ test("timestamp-bounded release fills pending order on first released bar", asyn
   assert.equal(metrics.fillCalls, 1);
   assert.equal(trading.pendingOrders.length, 0);
 });
+
+
+test("canonical shard prefetch starts once after 75 percent progress", async () => {
+  const current = Array.from({ length: 1200 }, (_, index) => makeBar(100 + index * 60, 10 + index));
+  const next = Array.from({ length: 20 }, (_, index) => makeBar(100000 + index * 60, 200 + index));
+  const instance = Object.create(ReplaySession.prototype);
+  const contract = {
+    contract: "MESZ6",
+    shards: [
+      { key: "s0", first_time: current[0].t, last_time: current.at(-1).t },
+      { key: "s1", first_time: next[0].t, last_time: next.at(-1).t },
+    ],
+  };
+  instance.session = { contract: "MESZ6", shardIndex: 0, barIndex: 899 };
+  instance.shard = current;
+  instance.shardKey = "s0";
+  let loads = 0;
+  instance._loadShardForContract = async (_contract, index) => {
+    loads += 1;
+    assert.equal(index, 1);
+    return next;
+  };
+  const waited = [];
+  instance.ctx = { waitUntil(promise) { waited.push(promise); } };
+
+  instance._maybePrefetchCanonicalShard(contract);
+  instance._maybePrefetchCanonicalShard(contract);
+  await instance._fvCanonicalPrefetch.promise;
+  await Promise.all(waited);
+
+  assert.equal(loads, 1);
+  assert.equal(instance._fvCanonicalPrefetch.index, 1);
+  assert.equal(instance._fvCanonicalPrefetch.bars, next);
+});
+
+test("release consumes prefetched canonical shard without another load", async () => {
+  const current = Array.from({ length: 1200 }, (_, index) => makeBar(100 + index * 60, 10 + index));
+  const next = [makeBar(100000, 200), makeBar(100060, 201)];
+  const instance = Object.create(ReplaySession.prototype);
+  const contract = {
+    contract: "MESZ6",
+    shards: [
+      { key: "s0", first_time: current[0].t, last_time: current.at(-1).t },
+      { key: "s1", first_time: next[0].t, last_time: next.at(-1).t },
+    ],
+  };
+  instance.session = { contract: "MESZ6", shardIndex: 0, barIndex: 899 };
+  instance.shard = current;
+  instance.shardKey = "s0";
+  instance.manifest = { contracts: { MESZ6: contract } };
+  instance._manifest = async () => instance.manifest;
+  instance._trading = () => ({ pendingOrders: [], lastPrice: null });
+  instance._fillPendingOrders = async () => {};
+  let contractLoads = 0;
+  instance._loadShardForContract = async () => {
+    contractLoads += 1;
+    return next;
+  };
+  let residentLoads = 0;
+  instance._loadShard = async () => {
+    residentLoads += 1;
+    throw new Error("prefetched shard should avoid resident R2 load");
+  };
+  instance.ctx = { waitUntil() {} };
+
+  instance._maybePrefetchCanonicalShard(contract);
+  await instance._fvCanonicalPrefetch.promise;
+
+  instance.session.shardIndex = 1;
+  instance.session.barIndex = -1;
+  instance.shard = null;
+  instance.shardKey = null;
+  const bars = await instance._loadCanonicalShardForRelease(contract, 1);
+
+  assert.equal(contractLoads, 1);
+  assert.equal(residentLoads, 0);
+  assert.equal(bars, next);
+  assert.equal(instance.shard, next);
+  assert.equal(instance.shardKey, "s1");
+  assert.equal(instance._fvCanonicalPrefetch, null);
+});
+
+test("small canonical shards do not trigger speculative prefetch", () => {
+  const current = Array.from({ length: 100 }, (_, index) => makeBar(100 + index * 60, 10 + index));
+  const instance = Object.create(ReplaySession.prototype);
+  const contract = { shards: [{ key: "s0" }, { key: "s1" }] };
+  instance.session = { shardIndex: 0, barIndex: 99 };
+  instance.shard = current;
+  instance.shardKey = "s0";
+  let loads = 0;
+  instance._loadShardForContract = async () => { loads += 1; return []; };
+
+  instance._maybePrefetchCanonicalShard(contract);
+
+  assert.equal(loads, 0);
+  assert.equal(instance._fvCanonicalPrefetch, undefined);
+});

@@ -1,6 +1,68 @@
 import { ReplaySession as CoreReplaySession } from "./replay-session-core.js";
 
 export class ReplaySession extends CoreReplaySession {
+  _maybePrefetchCanonicalShard(contract) {
+    const currentIndex = Number(this.session?.shardIndex);
+    const currentBars = this.shard;
+    if (!Number.isInteger(currentIndex) || !Array.isArray(currentBars) || currentBars.length < 1024) return;
+    const threshold = Math.floor((currentBars.length - 1) * 0.75);
+    if (Number(this.session?.barIndex) < threshold) return;
+
+    const nextIndex = currentIndex + 1;
+    const nextMeta = contract?.shards?.[nextIndex];
+    if (!nextMeta) return;
+    const existing = this._fvCanonicalPrefetch;
+    if (existing?.index === nextIndex && existing?.key === nextMeta.key) return;
+
+    const entry = {
+      index: nextIndex,
+      key: nextMeta.key,
+      bars: null,
+      promise: null,
+    };
+    entry.promise = this._loadShardForContract(contract, nextIndex)
+      .then((bars) => {
+        entry.bars = bars;
+        return bars;
+      })
+      .catch((error) => {
+        if (this._fvCanonicalPrefetch === entry) this._fvCanonicalPrefetch = null;
+        throw error;
+      });
+    this._fvCanonicalPrefetch = entry;
+    this.ctx?.waitUntil?.(entry.promise.then(() => undefined, () => undefined));
+  }
+
+  async _loadCanonicalShardForRelease(contract, index) {
+    const meta = contract?.shards?.[index];
+    if (!meta) return null;
+    if (this.shard && this.shardKey === meta.key) return this.shard;
+
+    const prefetched = this._fvCanonicalPrefetch;
+    if (prefetched?.index === index && prefetched?.key === meta.key) {
+      try {
+        const bars = prefetched.bars ?? await prefetched.promise;
+        if (bars) {
+          this.shard = bars;
+          this.shardKey = meta.key;
+          if (this._fvCanonicalPrefetch === prefetched) this._fvCanonicalPrefetch = null;
+          return bars;
+        }
+      } catch {
+        if (this._fvCanonicalPrefetch === prefetched) this._fvCanonicalPrefetch = null;
+      }
+    }
+
+    return this._loadShard(index);
+  }
+
+  async init(body) {
+    const result = await super.init(body);
+    const contract = this.manifest?.contracts?.[this.session?.contract];
+    if (contract) this._maybePrefetchCanonicalShard(contract);
+    return result;
+  }
+
   _findShardAtOrAfter(contract, start) {
     const shards = contract?.shards || [];
     let lo = 0;
@@ -79,7 +141,7 @@ export class ReplaySession extends CoreReplaySession {
         break;
       }
       if (!this.shard || this.shardKey !== shardMeta.key) {
-        await this._loadShard(this.session.shardIndex);
+        await this._loadCanonicalShardForRelease(contract, this.session.shardIndex);
       }
 
       const start = this.session.barIndex + 1;
@@ -93,6 +155,7 @@ export class ReplaySession extends CoreReplaySession {
         trading.lastPrice = bar.c;
         released.push(bar);
       }
+      this._maybePrefetchCanonicalShard(contract);
 
       if (take < available) {
         throw new Error("Timestamp-bounded replay release exceeded safety bound");
@@ -129,7 +192,7 @@ export class ReplaySession extends CoreReplaySession {
       }
 
       if (!this.shard || this.shardKey !== shardMeta.key) {
-        await this._loadShard(this.session.shardIndex);
+        await this._loadCanonicalShardForRelease(contract, this.session.shardIndex);
       }
 
       const start = this.session.barIndex + 1;
@@ -143,6 +206,7 @@ export class ReplaySession extends CoreReplaySession {
           trading.lastPrice = bar.c;
           released.push(bar);
         }
+        this._maybePrefetchCanonicalShard(contract);
         continue;
       }
 
