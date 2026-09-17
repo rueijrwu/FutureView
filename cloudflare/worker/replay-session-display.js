@@ -1,92 +1,7 @@
 import { ReplaySession as FrameReplaySession } from "./replay-session-frame.js";
+import { FRAME_RESOLUTIONS, displayStamp } from "./replay-time.js";
 
-const FRAME_RESOLUTIONS = new Set(["1", "5", "30", "240", "1D"]);
-const HISTORY_SECONDS = { "1D": 86400, "5D": 5 * 86400, "1M": 30 * 86400, "3M": 90 * 86400 };
 const MAX_PARTIAL_MINUTES = 1500;
-const ET_FORMATTER = new Intl.DateTimeFormat("en-US", {
-  timeZone: "America/New_York",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hourCycle: "h23",
-});
-
-function etParts(seconds) {
-  return Object.fromEntries(
-    ET_FORMATTER.formatToParts(new Date(Number(seconds) * 1000))
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, Number(part.value)]),
-  );
-}
-
-function wallToEpochSeconds(parts) {
-  const wanted = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second || 0);
-  let guess = wanted;
-  for (let i = 0; i < 4; i += 1) {
-    const shown = etParts(guess / 1000);
-    const shownWall = Date.UTC(shown.year, shown.month - 1, shown.day, shown.hour, shown.minute, shown.second || 0);
-    const delta = wanted - shownWall;
-    guess += delta;
-    if (!delta) break;
-  }
-  return Math.floor(guess / 1000);
-}
-
-function sessionStart(seconds) {
-  const parts = etParts(seconds);
-  const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-  if (parts.hour < 18) day.setUTCDate(day.getUTCDate() - 1);
-  return wallToEpochSeconds({
-    year: day.getUTCFullYear(),
-    month: day.getUTCMonth() + 1,
-    day: day.getUTCDate(),
-    hour: 18,
-    minute: 0,
-    second: 0,
-  });
-}
-
-function tradingDayDate(seconds) {
-  const parts = etParts(seconds);
-  const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-  if (parts.hour >= 18) day.setUTCDate(day.getUTCDate() + 1);
-  return day;
-}
-
-function dailyTradingStamp(seconds) {
-  const day = tradingDayDate(seconds);
-  return wallToEpochSeconds({
-    year: day.getUTCFullYear(),
-    month: day.getUTCMonth() + 1,
-    day: day.getUTCDate(),
-    hour: 0,
-    minute: 0,
-    second: 0,
-  });
-}
-
-function activeTradingDayKey(seconds) {
-  const day = tradingDayDate(seconds);
-  return day.getUTCFullYear() * 10000 + (day.getUTCMonth() + 1) * 100 + day.getUTCDate();
-}
-
-function dailyBarTradingDayKey(seconds) {
-  // Both legacy 00:00-UTC bars and corrected 00:00-ET bars have the intended
-  // trading-day calendar date in their UTC Y/M/D fields.
-  const day = new Date(Number(seconds) * 1000);
-  return day.getUTCFullYear() * 10000 + (day.getUTCMonth() + 1) * 100 + day.getUTCDate();
-}
-
-function displayStamp(seconds, resolution) {
-  if (resolution === "1") return Number(seconds);
-  if (resolution === "1D") return dailyTradingStamp(seconds);
-  const start = sessionStart(seconds);
-  const minutes = Number(resolution);
-  return start + Math.floor(Math.max(0, Number(seconds) - start) / (minutes * 60)) * minutes * 60;
-}
 
 function lowerBoundShard(shards, target) {
   let lo = 0;
@@ -99,28 +14,6 @@ function lowerBoundShard(shards, target) {
   return lo < shards.length ? lo : Math.max(0, shards.length - 1);
 }
 
-function lowerBoundLastTime(items, target) {
-  let lo = 0;
-  let hi = items.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (Number(items[mid].last_time) >= Number(target)) hi = mid;
-    else lo = mid + 1;
-  }
-  return lo < items.length ? lo : Math.max(0, items.length - 1);
-}
-
-function lowerBoundBarTime(items, target) {
-  let lo = 0;
-  let hi = items.length;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (Number(items[mid].t) >= Number(target)) hi = mid;
-    else lo = mid + 1;
-  }
-  return lo < items.length ? lo : Math.max(0, items.length - 1);
-}
-
 function indexAtOrBefore(bars, target) {
   let lo = 0;
   let hi = bars.length;
@@ -129,7 +22,18 @@ function indexAtOrBefore(bars, target) {
     if (Number(bars[mid].t) <= Number(target)) lo = mid + 1;
     else hi = mid;
   }
-  return Math.max(0, Math.min(bars.length - 1, lo - 1));
+  return lo - 1;
+}
+
+function indexAtOrAfter(bars, target) {
+  let lo = 0;
+  let hi = bars.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (Number(bars[mid].t) >= Number(target)) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo < bars.length ? lo : -1;
 }
 
 function newAggregate(bar, resolution) {
@@ -151,7 +55,7 @@ function addToAggregate(aggregate, bar) {
 }
 
 function displayBar(aggregate, resolution) {
-  return aggregate ? { ...aggregate, display_resolution: resolution } : null;
+  return aggregate ? { ...aggregate, display_resolution: String(resolution) } : null;
 }
 
 export class ReplaySession extends FrameReplaySession {
@@ -160,56 +64,90 @@ export class ReplaySession extends FrameReplaySession {
     this.displayAggregate = null;
     this.displayAggregateResolution = null;
     this.displayAggregateCursor = null;
+    this.displayAggregatePublishedStamp = null;
+  }
+
+  snapshot() {
+    const value = super.snapshot();
+    if (this.session && Number.isFinite(Number(this.session.cursorTs))) {
+      value.cursor = Number(this.session.cursorTs);
+    }
+    return value;
+  }
+
+  async init(body) {
+    const result = await super.init(body);
+    const current = this.shard?.[this.session?.barIndex];
+    if (current) {
+      this.session.cursorTs = Number(current.t);
+      this.session.originCursorTs = Number(current.t);
+      await this.ctx.storage.put("session", this.session);
+      result.cursor = Number(current.t);
+    }
+    return result;
+  }
+
+  async _locateAtOrBefore(target) {
+    const manifest = await this._manifest();
+    const shards = manifest.contracts?.[this.session.contract]?.shards || [];
+    if (!shards.length) throw new Error("Replay contract has no canonical data");
+    let shardIndex = lowerBoundShard(shards, target);
+    let shard = await this._loadShard(shardIndex);
+    if (!shard?.length) throw new Error("Replay canonical shard is empty");
+    let barIndex = indexAtOrBefore(shard, target);
+    if (barIndex < 0 && shardIndex > 0) {
+      shardIndex -= 1;
+      shard = await this._loadShard(shardIndex);
+      barIndex = shard.length - 1;
+    }
+    if (barIndex < 0) barIndex = 0;
+    return { shardIndex, barIndex, shard, bar: shard[barIndex] };
+  }
+
+  async _locateAtOrAfter(target) {
+    const manifest = await this._manifest();
+    const shards = manifest.contracts?.[this.session.contract]?.shards || [];
+    if (!shards.length) throw new Error("Replay contract has no canonical data");
+    let shardIndex = lowerBoundShard(shards, target);
+    let shard = await this._loadShard(shardIndex);
+    if (!shard?.length) throw new Error("Replay canonical shard is empty");
+    let barIndex = indexAtOrAfter(shard, target);
+    while (barIndex < 0 && shardIndex + 1 < shards.length) {
+      shardIndex += 1;
+      shard = await this._loadShard(shardIndex);
+      barIndex = shard.length ? 0 : -1;
+    }
+    if (barIndex < 0) throw new Error("Replay cursor is beyond available data");
+    return { shardIndex, barIndex, shard, bar: shard[barIndex] };
   }
 
   async _ensureReplayCursor() {
     if (!this.session) throw new Error("Session not initialized");
-    const manifest = await this._manifest();
-    const contract = manifest.contracts?.[this.session.contract];
-    const shards = contract?.shards || [];
-    if (!shards.length) throw new Error("Replay contract has no canonical data");
+    const target = Number(this.session.cursorTs);
 
-    let shardIndex = Number(this.session.shardIndex);
-    let repaired = false;
-    if (!Number.isInteger(shardIndex) || shardIndex < 0 || shardIndex >= shards.length) {
-      const target = Number(this.session.cursorTs ?? this.session.startTs ?? shards[0].first_time);
-      shardIndex = lowerBoundShard(shards, target);
-      this.session.shardIndex = shardIndex;
-      repaired = true;
-    }
-
-    let shard = await this._loadShard(shardIndex);
-    if (!shard?.length) throw new Error("Replay canonical shard is empty");
-
-    let barIndex = Number(this.session.barIndex);
-    if (!Number.isInteger(barIndex) || barIndex < 0 || barIndex >= shard.length) {
-      const cursorTs = Number(this.session.cursorTs);
-      if (Number.isFinite(cursorTs)) {
-        const targetShard = lowerBoundShard(shards, cursorTs);
-        if (targetShard !== shardIndex) {
-          shardIndex = targetShard;
-          this.session.shardIndex = shardIndex;
-          shard = await this._loadShard(shardIndex);
-        }
-        barIndex = indexAtOrBefore(shard, cursorTs);
-      } else if (Number.isInteger(barIndex) && barIndex >= shard.length) {
-        barIndex = shard.length - 1;
-      } else {
-        const target = Number(this.session.startTs ?? shard[0].t);
-        barIndex = indexAtOrBefore(shard, target);
+    const shard = await this._loadShard(Number(this.session.shardIndex));
+    const current = shard?.[Number(this.session.barIndex)];
+    if (current && (!Number.isFinite(target) || Number(current.t) === target)) {
+      if (!Number.isFinite(target)) {
+        this.session.cursorTs = Number(current.t);
+        if (!Number.isFinite(Number(this.session.originCursorTs))) this.session.originCursorTs = Number(current.t);
+        await this.ctx.storage.put("session", this.session);
       }
-      this.session.barIndex = barIndex;
-      repaired = true;
+      return current;
     }
 
-    const bar = shard[barIndex];
-    if (!bar) throw new Error("Replay cursor could not be restored");
-    if (Number(this.session.cursorTs) !== Number(bar.t)) {
-      this.session.cursorTs = Number(bar.t);
-      repaired = true;
-    }
-    if (repaired) await this.ctx.storage.put("session", this.session);
-    return bar;
+    const restoreTarget = Number.isFinite(target)
+      ? target
+      : Number(this.session.startTs);
+    const located = await this._locateAtOrBefore(restoreTarget);
+    this.session.shardIndex = located.shardIndex;
+    this.session.barIndex = located.barIndex;
+    this.session.cursorTs = Number(located.bar.t);
+    this.shard = located.shard;
+    const contract = (await this._manifest()).contracts[this.session.contract];
+    this.shardKey = contract.shards[located.shardIndex]?.key ?? this.shardKey;
+    await this.ctx.storage.put("session", this.session);
+    return located.bar;
   }
 
   async webSocketMessage(ws, message) {
@@ -224,6 +162,7 @@ export class ReplaySession extends FrameReplaySession {
     this.displayAggregate = null;
     this.displayAggregateResolution = null;
     this.displayAggregateCursor = null;
+    this.displayAggregatePublishedStamp = null;
   }
 
   async _ensureDisplayAggregate() {
@@ -251,20 +190,29 @@ export class ReplaySession extends FrameReplaySession {
     this.displayAggregate = aggregate || newAggregate(current, resolution);
     this.displayAggregateResolution = resolution;
     this.displayAggregateCursor = Number(current.t);
+    this.displayAggregatePublishedStamp = null;
   }
 
   _consumeCanonicalBars(rawBars, resolution = this.displayResolution) {
     resolution = String(resolution || "1");
-    if (resolution === "1") return (rawBars || []).map((bar) => ({ ...bar, display_resolution: "1" }));
+    if (resolution === "1") {
+      return (rawBars || []).map((bar) => ({ ...bar, display_resolution: "1" }));
+    }
+
     const completed = [];
     for (const bar of rawBars || []) {
       const stamp = displayStamp(bar.t, resolution);
       if (!this.displayAggregate || this.displayAggregateResolution !== resolution) {
         this.displayAggregate = newAggregate(bar, resolution);
         this.displayAggregateResolution = resolution;
+        this.displayAggregatePublishedStamp = null;
       } else if (this.displayAggregate.t !== stamp) {
-        completed.push(displayBar(this.displayAggregate, resolution));
+        if (this.displayAggregatePublishedStamp !== this.displayAggregate.t) {
+          completed.push(displayBar(this.displayAggregate, resolution));
+          this.displayAggregatePublishedStamp = this.displayAggregate.t;
+        }
         this.displayAggregate = newAggregate(bar, resolution);
+        this.displayAggregatePublishedStamp = null;
       } else {
         addToAggregate(this.displayAggregate, bar);
       }
@@ -273,55 +221,30 @@ export class ReplaySession extends FrameReplaySession {
     return completed;
   }
 
-  _broadcastDisplayBars(bars, resolution = this.displayResolution) {
+  async _finalizeAggregateIfComplete(completed, resolution = this.displayResolution) {
+    resolution = String(resolution || "1");
+    if (resolution === "1" || !this.displayAggregate) return completed;
+    const next = await this._peekNextReplayBar();
+    const complete = !next || displayStamp(next.t, resolution) !== this.displayAggregate.t;
+    if (complete && this.displayAggregatePublishedStamp !== this.displayAggregate.t) {
+      completed.push(displayBar(this.displayAggregate, resolution));
+      this.displayAggregatePublishedStamp = this.displayAggregate.t;
+    }
+    return completed;
+  }
+
+  _broadcastDisplayBars(bars, resolution = this.displayResolution, cursor = this.session?.cursorTs) {
     if (!bars?.length) return;
+    const replayCursor = Number(cursor);
     if (String(resolution) === "1") {
       const raw = bars.map(({ display_resolution, ...bar }) => bar);
-      if (raw.length === 1) this._broadcast({ type: "bar", bar: raw[0] });
-      else this._broadcast({ type: "bars_batch", bars: raw });
+      if (raw.length === 1) this._broadcast({ type: "bar", bar: raw[0], cursor: replayCursor });
+      else this._broadcast({ type: "bars_batch", bars: raw, cursor: replayCursor });
       return;
     }
     const payload = bars.map((bar) => ({ ...bar, display_resolution: String(resolution) }));
-    if (payload.length === 1) this._broadcast({ type: "bar", bar: payload[0] });
-    else this._broadcast({ type: "bars_batch", bars: payload });
-  }
-
-  async _causalDisplayWindow(cursor, resolution = this.displayResolution, historyRange = this.historyRange) {
-    cursor = Number(cursor);
-    if (!Number.isFinite(cursor)) return [];
-    await this._ensureDisplayWindows(cursor);
-    const center = this.displayWindowIndex;
-    if (center < 0) return [];
-
-    const seconds = HISTORY_SECONDS[historyRange] ?? HISTORY_SECONDS["5D"];
-    const historyFrom = cursor - seconds;
-    const shards = await this._displayShardMeta(resolution);
-    if (!shards.length) return [];
-    const firstNeeded = Math.max(0, Math.min(center, lowerBoundLastTime(shards, historyFrom)));
-    const out = [];
-    const cutoff = resolution === "1D" ? null : displayStamp(cursor, resolution);
-    const activeDay = resolution === "1D" ? activeTradingDayKey(cursor) : null;
-
-    for (let index = firstNeeded; index <= center; index += 1) {
-      const window = await this._loadDisplayWindow(index, resolution);
-      if (!window) continue;
-      const bars = window.bars || [];
-      let start = lowerBoundBarTime(bars, historyFrom);
-      if (start < 0) start = 0;
-      for (let i = start; i < bars.length; i += 1) {
-        const bar = bars[i];
-        const t = Number(bar.t);
-        if (resolution === "1D") {
-          if (dailyBarTradingDayKey(t) >= activeDay) break;
-        } else if (t >= cutoff) {
-          break;
-        }
-        if (t >= historyFrom) out.push(bar);
-      }
-    }
-
-    this._trimDisplayWindows(center, resolution);
-    return out;
+    if (payload.length === 1) this._broadcast({ type: "bar", bar: payload[0], cursor: replayCursor });
+    else this._broadcast({ type: "bars_batch", bars: payload, cursor: replayCursor });
   }
 
   async setTimeframe(value, historyRange = this.historyRange) {
@@ -331,11 +254,72 @@ export class ReplaySession extends FrameReplaySession {
   }
 
   async restart() {
+    if (!this.session) return;
+    this.generation += 1;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this._resetDisplayCursor();
     this._resetDisplayAggregate();
-    await super.restart();
-    const current = await this._ensureReplayCursor();
-    this.session.cursorTs = Number(current.t);
-    await this.ctx.storage.put("session", this.session);
+
+    const target = Number(this.session.originCursorTs ?? this.session.startTs);
+    const located = await this._locateAtOrAfter(target);
+    this.session.shardIndex = located.shardIndex;
+    this.session.barIndex = located.barIndex;
+    this.session.originShardIndex = located.shardIndex;
+    this.session.originBarIndex = located.barIndex;
+    this.session.cursorTs = Number(located.bar.t);
+    this.session.originCursorTs = Number(located.bar.t);
+    this.session.state = "PAUSED";
+    this.session.speed = 1;
+    this.session.trading = this._blankTrading(located.bar.c ?? located.bar.o ?? null);
+    this.shard = located.shard;
+    const contract = (await this._manifest()).contracts[this.session.contract];
+    this.shardKey = contract.shards[located.shardIndex]?.key ?? null;
+
+    const warmup = await this._warmupBars(located.shardIndex, located.barIndex, this.session.warmup);
+    await this._clearPersistedTrading();
+    await this._persist(true);
+    await this._persistTradingSummary();
+    this._broadcast({ type: "reset", warmup, snapshot: this.snapshot() });
+    await this._broadcastDisplayWindow();
+    await this._ensureDisplayAggregate();
+  }
+
+  async _release(count) {
+    const contract = (await this._manifest()).contracts[this.session.contract];
+    const released = [];
+    while (released.length < count) {
+      const item = contract.shards[this.session.shardIndex];
+      if (!item) {
+        this.session.state = "FINISHED";
+        break;
+      }
+      if (!this.shard || this.shardKey !== item.key) await this._loadShard(this.session.shardIndex);
+
+      if (this.session.barIndex + 1 < this.shard.length) {
+        this.session.barIndex += 1;
+        const bar = this.shard[this.session.barIndex];
+        if (this._trading().pendingOrders.length) await this._fillPendingOrders(bar);
+        this._trading().lastPrice = bar.c;
+        this.session.cursorTs = Number(bar.t);
+        released.push(bar);
+        continue;
+      }
+
+      if (this.session.shardIndex + 1 >= contract.shards.length) {
+        this.session.state = "FINISHED";
+        break;
+      }
+      this.session.shardIndex += 1;
+      this.session.barIndex = -1;
+      this.shard = null;
+      this.shardKey = null;
+    }
+
+    if (released.length && Number(released.at(-1).t) >= this.displayNextCheckAt) {
+      await this._ensureDisplayWindows(released.at(-1).t);
+    }
+    return released;
   }
 
   async _tick(generation) {
@@ -356,11 +340,11 @@ export class ReplaySession extends FrameReplaySession {
     }
 
     if (due > 0) {
-      const rawBars = await super._release(due);
+      const rawBars = await this._release(due);
       if (rawBars.length) {
-        this.session.cursorTs = Number(rawBars.at(-1).t);
-        const displayBars = this._consumeCanonicalBars(rawBars, this.displayResolution);
-        this._broadcastDisplayBars(displayBars, this.displayResolution);
+        let displayBars = this._consumeCanonicalBars(rawBars, this.displayResolution);
+        displayBars = await this._finalizeAggregateIfComplete(displayBars, this.displayResolution);
+        this._broadcastDisplayBars(displayBars, this.displayResolution, this.session.cursorTs);
       }
       this.ticks += 1;
       if (this.ticks % 20 === 0 || this.session.state === "FINISHED") {
@@ -401,19 +385,16 @@ export class ReplaySession extends FrameReplaySession {
     while (this.session.state !== "FINISHED") {
       const upcoming = await this._peekNextReplayBar();
       if (!upcoming || displayStamp(upcoming.t, timeframe) !== targetStamp) break;
-      const bars = await super._release(1);
+      const bars = await this._release(1);
       if (!bars.length) break;
       released.push(bars[0]);
       if (released.length > 2000) throw new Error("Chart-frame step exceeded safety bound");
     }
 
     if (released.length) {
-      this.session.cursorTs = Number(released.at(-1).t);
-      this._consumeCanonicalBars(released, timeframe);
-      const shown = timeframe === "1"
-        ? [{ ...released.at(-1), display_resolution: "1" }]
-        : [displayBar(this.displayAggregate, timeframe)];
-      this._broadcastDisplayBars(shown, timeframe);
+      let shown = this._consumeCanonicalBars(released, timeframe);
+      shown = await this._finalizeAggregateIfComplete(shown, timeframe);
+      this._broadcastDisplayBars(shown, timeframe, this.session.cursorTs);
     }
     await this._persist(false);
     this._broadcast(this.snapshot());
