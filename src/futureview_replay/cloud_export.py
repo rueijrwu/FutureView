@@ -15,6 +15,7 @@ DISPLAY_WINDOW_BARS = 512
 
 
 def _session_start_epoch(value: pd.Timestamp) -> int:
+    value = pd.Timestamp(value)
     local = value.tz_convert(DISPLAY_TIME_ZONE)
     day = local.date()
     if local.hour < SESSION_ROLL_HOUR_ET:
@@ -46,8 +47,12 @@ def _intraday_bars(frames: list[pd.DataFrame], minutes: int) -> list[dict[str, f
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
     frame = frame.sort_values("timestamp", kind="stable")
     frame["session_start"] = frame["timestamp"].map(_session_start_epoch)
-    seconds = frame["timestamp"].astype("int64") // 1_000_000_000
-    frame["bucket"] = frame["session_start"] + ((seconds - frame["session_start"]) // (minutes * 60)) * (minutes * 60)
+    # Do not depend on pandas' internal datetime unit (ns/us/ms). Explicit
+    # Timestamp.timestamp() keeps bucketing correct across pandas versions.
+    frame["epoch_seconds"] = frame["timestamp"].map(lambda value: int(pd.Timestamp(value).timestamp()))
+    frame["bucket"] = frame["session_start"] + (
+        (frame["epoch_seconds"] - frame["session_start"]) // (minutes * 60)
+    ) * (minutes * 60)
     return [_aggregate_ohlcv(group, int(bucket)) for bucket, group in frame.groupby("bucket", sort=True)]
 
 
