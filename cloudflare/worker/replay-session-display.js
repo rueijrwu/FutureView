@@ -247,6 +247,25 @@ export class ReplaySession extends FrameReplaySession {
     else this._broadcast({ type: "bars_batch", bars: payload, cursor: replayCursor });
   }
 
+  async _broadcastDisplayWindow() {
+    const current = await this._ensureReplayCursor();
+    await this._ensureDisplayAggregate();
+    const cursor = Number(current.t);
+    const bars = await this._causalDisplayWindow(cursor, this.displayResolution, this.historyRange);
+    const activeBar = String(this.displayResolution) === "1"
+      ? { ...current, display_resolution: "1" }
+      : displayBar(this.displayAggregate, this.displayResolution);
+    this._broadcast({
+      type: "display_window",
+      resolution: this.displayResolution,
+      history_range: this.historyRange,
+      bars,
+      active_bar: activeBar,
+      cursor,
+      future_data_included: false,
+    });
+  }
+
   async setTimeframe(value, historyRange = this.historyRange) {
     this._resetDisplayAggregate();
     await super.setTimeframe(value, historyRange);
