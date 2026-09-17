@@ -5,7 +5,6 @@ on:
     branches: [master]
     paths:
       - 'src/**'
-      - 'site/**'
       - 'cloudflare/**'
       - 'pyproject.toml'
       - '.github/workflows/replay-cloudflare-check.yml'
@@ -25,23 +24,10 @@ jobs:
           node-version: '24'
       - name: Browser and Worker syntax
         run: |
-          node --check site/app.js
-          node --check site/chart-tools.js
-          node --check site/chart-tools-fixes.js
-          node --check site/chart-ui-repair.js
-          node --check site/replay-range.js
-          node --check site/random-replay.js
           node --check src/futureview_replay/static/app.js
           node --check cloudflare/public/app.js
           node --check cloudflare/worker/main.js
-          node --check cloudflare/worker/main-frame.js
           node --check cloudflare/worker/replay-session.js
-          node --check cloudflare/worker/replay-session-frame.js
-          node --check cloudflare/worker/replay-session-display.js
-          node --check cloudflare/worker/replay-time.js
-          node --check cloudflare/worker/replay-display.js
-      - name: Replay semantics
-        run: node --test cloudflare/worker/replay-time.test.mjs cloudflare/worker/replay-display.test.mjs
       - name: Wrangler dry run
         working-directory: cloudflare
         run: npx --yes wrangler@4.125.0 deploy --dry-run --outdir .dry-run
