@@ -91,7 +91,7 @@ export class ReplaySession extends BaseReplaySession {
   }
 
   async _loadDisplayWindow(index, resolution = this.displayResolution) {
-    if (resolution === "1") return null;
+    if (resolution === "1" || index < 0) return null;
     const key = `${resolution}:${index}`;
     if (this.displayWindows.has(key)) return this.displayWindows.get(key);
     const shards = await this._displayShardMeta(resolution);
@@ -104,24 +104,22 @@ export class ReplaySession extends BaseReplaySession {
     const bars = JSON.parse(await new Response(stream).text());
     const value = { index, meta, bars };
     this.displayWindows.set(key, value);
-
-    // Keep only current/adjacent windows for the active resolution, plus one cache
-    // entry for any previously selected resolution. This bounds memory without
-    // throwing away a likely fast timeframe switch-back.
-    const activeKeys = [...this.displayWindows.keys()].filter((item) => item.startsWith(`${resolution}:`));
-    for (const activeKey of activeKeys) {
-      const activeIndex = Number(activeKey.split(":")[1]);
-      if (Math.abs(activeIndex - index) > 1) this.displayWindows.delete(activeKey);
-    }
-    if (this.displayWindows.size > 5) {
-      for (const oldKey of this.displayWindows.keys()) {
-        if (!oldKey.startsWith(`${resolution}:`)) {
-          this.displayWindows.delete(oldKey);
-          if (this.displayWindows.size <= 5) break;
-        }
-      }
-    }
     return value;
+  }
+
+  _trimDisplayWindows(centerIndex, resolution = this.displayResolution) {
+    const keep = new Set([
+      `${resolution}:${centerIndex - 1}`,
+      `${resolution}:${centerIndex}`,
+      `${resolution}:${centerIndex + 1}`,
+      `${resolution}:${centerIndex + 2}`,
+    ]);
+    for (const key of [...this.displayWindows.keys()]) {
+      if (key.startsWith(`${resolution}:`) && !keep.has(key)) this.displayWindows.delete(key);
+    }
+    // Keep at most one old-resolution window for quick switch-back.
+    const foreign = [...this.displayWindows.keys()].filter((key) => !key.startsWith(`${resolution}:`));
+    for (let i = 1; i < foreign.length; i += 1) this.displayWindows.delete(foreign[i]);
   }
 
   async _ensureDisplayWindows(cursor) {
@@ -142,11 +140,13 @@ export class ReplaySession extends BaseReplaySession {
     await this._loadDisplayWindow(index + 1, resolution);
 
     const bars = current.bars || [];
-    if (!bars.length) return;
-    let localIndex = bars.findIndex((bar) => Number(bar.t) >= Number(cursor));
-    if (localIndex < 0) localIndex = bars.length - 1;
-    const progress = bars.length > 1 ? localIndex / (bars.length - 1) : 1;
-    if (progress >= PREFETCH_THRESHOLD) await this._loadDisplayWindow(index + 2, resolution);
+    if (bars.length) {
+      let localIndex = bars.findIndex((bar) => Number(bar.t) >= Number(cursor));
+      if (localIndex < 0) localIndex = bars.length - 1;
+      const progress = bars.length > 1 ? localIndex / (bars.length - 1) : 1;
+      if (progress >= PREFETCH_THRESHOLD) await this._loadDisplayWindow(index + 2, resolution);
+    }
+    this._trimDisplayWindows(index, resolution);
   }
 
   async setTimeframe(value) {
