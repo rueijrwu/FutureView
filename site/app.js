@@ -96,10 +96,10 @@
   function renderTradeMarkers(){
     if(!tradeMarkers)return;
     const fills=lastTrading?.fills||[];
-    const signature=fills.map(f=>`${f.id}:${f.filled_at_ts}:${f.side}:${f.quantity}`).join("|");
+    const signature=`${chartTools._fvTimeframe||"1"}|${fills.map(f=>`${f.id}:${f.filled_at_ts}:${f.side}:${f.quantity}`).join("|")}`;
     if(signature===lastMarkerSignature)return;
     lastMarkerSignature=signature;
-    preserveChartViewport(()=>{tradeMarkers.setMarkers(fills.map(f=>({time:Number(f.filled_at_ts),position:f.side==="buy"?"belowBar":"aboveBar",color:f.side==="buy"?cssVar("--chart-up","#26a69a"):cssVar("--chart-down","#ef5350"),shape:f.side==="buy"?"arrowUp":"arrowDown",text:`${f.side==="buy"?"B":"S"}${f.quantity}`,id:f.id,size:1}))) });
+    preserveChartViewport(()=>{tradeMarkers.setMarkers(fills.map(f=>({time:Number(chartTools._fvDisplayTimeForCanonical?.(f.filled_at_ts)??f.filled_at_ts),position:f.side==="buy"?"belowBar":"aboveBar",color:f.side==="buy"?cssVar("--chart-up","#26a69a"):cssVar("--chart-down","#ef5350"),shape:f.side==="buy"?"arrowUp":"arrowDown",text:`${f.side==="buy"?"B":"S"}${f.quantity}`,id:f.id,size:1}))) });
   }
   function renderTrading(){
     const t=derivedTrading();
@@ -125,13 +125,13 @@
     const before=Number(fill.filled_at_ts)-3600,after=Number(fill.filled_at_ts)+3600;try{chart.timeScale().setVisibleRange({from:before,to:after})}catch{}
   }
 
-  function render(b){
-    preserveChartViewport(()=>{candles.update(candle(b));volume.update(vol(b));chartTools.append(b)});
-    lastMarkPrice=Number(b.c);$("time-status").textContent=displaySeconds(b.t);renderTrading();
+  function render(b,cursor=null){
+    candles.update(candle(b));volume.update(vol(b));chartTools.append(b);
+    lastMarkPrice=Number(b.c);$("time-status").textContent=displaySeconds(cursor??b.t);renderTrading();
   }
-  function renderMany(bs){
-    preserveChartViewport(()=>{bs.forEach(b=>{candles.update(candle(b));volume.update(vol(b))});chartTools.appendMany(bs)});
-    if(bs.length){lastMarkPrice=Number(bs[bs.length-1].c);$("time-status").textContent=displaySeconds(bs[bs.length-1].t);renderTrading()}
+  function renderMany(bs,cursor=null){
+    bs.forEach(b=>{candles.update(candle(b));volume.update(vol(b))});chartTools.appendMany(bs);
+    if(bs.length){lastMarkPrice=Number(bs[bs.length-1].c);$("time-status").textContent=displaySeconds(cursor??bs[bs.length-1].t);renderTrading()}
   }
   function reset(bs){chartTools._cancelDrawing?.();candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chartTools.fit();lastMarkPrice=bs.length?Number(bs[bs.length-1].c):null;selectedFillId=null;lastMarkerSignature=null;clearConsole();renderTradeMarkers()}
   function error(m=""){$("error").textContent=m}
@@ -150,8 +150,8 @@
     thisWs.onmessage=e=>{
       if(ws!==thisWs)return;
       const x=JSON.parse(e.data);
-      if(x.type==="bar")render(x.bar);
-      else if(x.type==="bars_batch")renderMany(x.bars);
+      if(x.type==="bar")render(x.bar,x.cursor);
+      else if(x.type==="bars_batch")renderMany(x.bars,x.cursor);
       else if(x.type==="fills"){setTrading(x.trading);error()}
       else if(x.type==="order_accepted"){recordAcceptedOrder(x.order);setTrading(x.trading);error(`Order queued: ${x.order.side.toUpperCase()} ${x.order.quantity} · fills at next bar open`)}
       else if(x.type==="trading_cleared"){clearConsole();setTrading(x.trading);error("Trading record cleared")}
