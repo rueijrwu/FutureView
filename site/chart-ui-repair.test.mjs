@@ -222,3 +222,56 @@ test("SMA same-timestamp replacement adjusts rolling sums by delta", () => {
     assert.ok(Math.abs(updates[key].value - fullSma(instance.bars, period)) < 1e-12);
   }
 });
+
+
+test("hidden indicators skip full historical point-array rebuild", () => {
+  const instance = Object.create(ChartTools.prototype);
+  instance.toolbar = { querySelector() { return null; } };
+  instance._fvNativeCandleSetData = () => {};
+  instance._fvNativeVolumeSetData = () => {};
+  instance._showLegend = () => {};
+  let refreshCalls = 0;
+  let vwapSeeds = 0;
+  let smaSeeds = 0;
+  instance._refreshIndicators = () => { refreshCalls += 1; };
+  instance._fvRebuildVwapState = () => { vwapSeeds += 1; return {}; };
+  instance._fvSyncSmaState = () => { smaSeeds += 1; return {}; };
+
+  const bars = [
+    chartBar("2026-09-17T09:30:00-04:00", 100, 101, 99, 100.5, 10),
+    chartBar("2026-09-17T09:35:00-04:00", 101, 102, 100, 101.5, 20),
+  ];
+  instance._fvSetDisplayData(bars);
+
+  assert.equal(refreshCalls, 0);
+  assert.equal(vwapSeeds, 1);
+  assert.equal(smaSeeds, 1);
+  assert.equal(instance.bars.length, 2);
+});
+
+test("active indicator preserves full historical refresh on setData", () => {
+  const activeButton = {};
+  const instance = Object.create(ChartTools.prototype);
+  instance.toolbar = {
+    querySelector(selector) {
+      return selector.includes('sma20') ? activeButton : null;
+    },
+  };
+  instance._fvNativeCandleSetData = () => {};
+  instance._fvNativeVolumeSetData = () => {};
+  instance._showLegend = () => {};
+  let refreshCalls = 0;
+  let vwapSyncs = 0;
+  let smaSyncs = 0;
+  instance._refreshIndicators = () => { refreshCalls += 1; };
+  instance._fvSyncVwapStateFromBase = () => { vwapSyncs += 1; };
+  instance._fvSyncSmaState = () => { smaSyncs += 1; };
+
+  instance._fvSetDisplayData([
+    chartBar("2026-09-17T09:30:00-04:00", 100, 101, 99, 100.5, 10),
+  ]);
+
+  assert.equal(refreshCalls, 1);
+  assert.equal(vwapSyncs, 1);
+  assert.equal(smaSyncs, 1);
+});

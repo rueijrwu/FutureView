@@ -473,12 +473,34 @@
       this._fvUpdateIndicatorsForLastBar();
     }
 
+    _fvIndicatorActive(name) {
+      return !!this.toolbar?.querySelector?.(`button[data-tool="${name}"].active`);
+    }
+
+    _fvAnyIndicatorActive() {
+      return ["sma5", "sma10", "sma20", "sma60", "vwap"].some((name) => this._fvIndicatorActive(name));
+    }
+
+    _toggleIndicator(name, button) {
+      const activating = !button?.classList?.contains?.("active");
+      super._toggleIndicator(name, button);
+      if (!activating || !this.bars?.length) return;
+      const data = this._indicatorData();
+      this.indicators[name]?.setData(data[name] || []);
+      this._fvSyncVwapStateFromBase();
+      this._fvSyncSmaState();
+    }
+
     _fvSetDisplayData(displayBars) {
       this._fvNativeCandleSetData(displayBars.map(candle));
       this._fvNativeVolumeSetData?.(displayBars.map(volume));
       this.bars = displayBars.map((bar) => ({ ...bar }));
-      this._refreshIndicators();
-      this._fvSyncVwapStateFromBase();
+      if (this._fvAnyIndicatorActive()) {
+        this._refreshIndicators();
+        this._fvSyncVwapStateFromBase();
+      } else {
+        this._fvRebuildVwapState();
+      }
       this._fvSyncSmaState();
       this._showLegend(null);
     }
