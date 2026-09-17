@@ -20,7 +20,7 @@ class BarStore:
         self._cache: dict[str, list[Bar]] = {}
         self._session_volumes: dict[date, dict[str, float]] | None = None
         for entry in self.manifest["files"]:
-            path = self.root / str(entry["five_minute"])
+            path = self.root / str(entry["one_minute"])
             for symbol in entry["symbols"]:
                 if symbol not in self._paths:
                     self._paths[symbol] = []
@@ -47,7 +47,7 @@ class BarStore:
             if not frame.empty:
                 frames.append(frame)
         if not frames:
-            raise ValueError(f"No 5m bars for {contract}")
+            raise ValueError(f"No 1m bars for {contract}")
         frame = pd.concat(frames, ignore_index=True)
         frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
         frame = frame.drop_duplicates(["symbol", "timestamp"], keep="last").sort_values("timestamp")
