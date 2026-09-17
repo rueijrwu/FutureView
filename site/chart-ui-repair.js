@@ -435,7 +435,7 @@
       if (volumeScale) { try { volumeScale.applyOptions({ autoScale: true }); } catch {} }
       requestAnimationFrame(() => requestAnimationFrame(() => {
         try { priceScale.applyOptions({ autoScale: false }); } catch {}
-        if (volumeScale) { try { volumeScale.applyOptions({ autoScale: false }); } catch {}
+        if (volumeScale) { try { volumeScale.applyOptions({ autoScale: false }); } catch {} }
       }));
     }
   };
