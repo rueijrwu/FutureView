@@ -3,8 +3,167 @@
   if (!Ctor) return;
   const p = Ctor.prototype;
   const DRAW_TOOLS = { trend: "trend-line", ray: "ray", hline: "horizontal-line", vline: "vertical-line", rect: "rectangle", fib: "fib-retracement", text: "text-annotation" };
+  const TIMEFRAMES = new Set(["1", "5", "30", "240", "1D"]);
   const originalPreviewMove = p._handlePreviewMove;
   const originalClear = p._clearDrawings;
+  const originalReset = p.reset;
+  const originalAppend = p.append;
+  const originalAppendMany = p.appendMany;
+
+  const etFormatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+
+  function normalizeRaw(raw) {
+    return {
+      t: Number(raw.t ?? raw.time),
+      o: Number(raw.o ?? raw.open),
+      h: Number(raw.h ?? raw.high),
+      l: Number(raw.l ?? raw.low),
+      c: Number(raw.c ?? raw.close),
+      v: Number(raw.v ?? raw.volume),
+    };
+  }
+
+  function etParts(seconds) {
+    return Object.fromEntries(
+      etFormatter.formatToParts(new Date(seconds * 1000))
+        .filter((part) => part.type !== "literal")
+        .map((part) => [part.type, Number(part.value)]),
+    );
+  }
+
+  function wallToEpochSeconds(parts) {
+    const wanted = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0);
+    let guess = wanted;
+    for (let i = 0; i < 4; i += 1) {
+      const shown = etParts(guess / 1000);
+      const shownWall = Date.UTC(shown.year, shown.month - 1, shown.day, shown.hour, shown.minute, 0);
+      const delta = wanted - shownWall;
+      guess += delta;
+      if (!delta) break;
+    }
+    return Math.floor(guess / 1000);
+  }
+
+  function sessionStart(seconds) {
+    const p = etParts(seconds);
+    const local = new Date(Date.UTC(p.year, p.month - 1, p.day));
+    if (p.hour < 18) local.setUTCDate(local.getUTCDate() - 1);
+    return wallToEpochSeconds({
+      year: local.getUTCFullYear(),
+      month: local.getUTCMonth() + 1,
+      day: local.getUTCDate(),
+      hour: 18,
+      minute: 0,
+    });
+  }
+
+  function bucketTime(seconds, timeframe) {
+    if (timeframe === "1") return seconds;
+    if (timeframe === "1D") return sessionStart(seconds);
+    const minutes = Number(timeframe);
+    const start = sessionStart(seconds);
+    const elapsed = Math.max(0, seconds - start);
+    return start + Math.floor(elapsed / (minutes * 60)) * minutes * 60;
+  }
+
+  function aggregate(rawBars, timeframe) {
+    if (timeframe === "1") return rawBars.map((bar) => ({ ...bar }));
+    const out = [];
+    let current = null;
+    for (const bar of rawBars) {
+      const t = bucketTime(bar.t, timeframe);
+      if (!current || current.t !== t) {
+        current = { t, o: bar.o, h: bar.h, l: bar.l, c: bar.c, v: bar.v };
+        out.push(current);
+      } else {
+        current.h = Math.max(current.h, bar.h);
+        current.l = Math.min(current.l, bar.l);
+        current.c = bar.c;
+        current.v += bar.v;
+      }
+    }
+    return out;
+  }
+
+  function candle(bar) {
+    return { time: bar.t, open: bar.o, high: bar.h, low: bar.l, close: bar.c };
+  }
+
+  function volume(bar) {
+    return {
+      time: bar.t,
+      value: bar.v,
+      color: bar.c >= bar.o ? "rgba(38,166,154,.46)" : "rgba(239,83,80,.46)",
+    };
+  }
+
+  p._fvSyncTimeframeUi = function () {
+    this.toolbar.querySelectorAll("button[data-timeframe]").forEach((button) => {
+      const active = button.dataset.timeframe === this._fvTimeframe;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  };
+
+  p._fvRenderTimeframe = function ({ preserveRange = true, fitVolume = false } = {}) {
+    const ts = this.chart.timeScale();
+    const visible = preserveRange ? ts.getVisibleRange?.() : null;
+    const bars = aggregate(this._fvRawBars || [], this._fvTimeframe || "5");
+    this.candles.setData(bars.map(candle));
+    if (this.volume) this.volume.setData(bars.map(volume));
+    originalReset.call(this, bars);
+    if (visible) {
+      try { ts.setVisibleRange(visible); } catch {}
+    }
+    if (fitVolume && this.volume) {
+      const scale = this.volume.priceScale();
+      try { scale.applyOptions({ autoScale: true }); } catch {}
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        try { scale.applyOptions({ autoScale: false }); } catch {}
+      }));
+    }
+  };
+
+  p._fvSetTimeframe = function (timeframe) {
+    if (!TIMEFRAMES.has(timeframe) || timeframe === this._fvTimeframe) return;
+    this._fvTimeframe = timeframe;
+    this._fvSyncTimeframeUi();
+    this._fvRenderTimeframe({ preserveRange: true, fitVolume: true });
+  };
+
+  p.reset = function (rawBars) {
+    this._fvRawBars = (rawBars || []).map(normalizeRaw);
+    this._fvRenderTimeframe({ preserveRange: false, fitVolume: false });
+  };
+
+  p.append = function (rawBar) {
+    const bar = normalizeRaw(rawBar);
+    const raw = this._fvRawBars || (this._fvRawBars = []);
+    const last = raw.at(-1);
+    if (last && bar.t === last.t) raw[raw.length - 1] = bar;
+    else if (!last || bar.t > last.t) raw.push(bar);
+    else return originalAppend.call(this, rawBar);
+    this._fvRenderTimeframe({ preserveRange: true, fitVolume: false });
+  };
+
+  p.appendMany = function (rawBars) {
+    const raw = this._fvRawBars || (this._fvRawBars = []);
+    for (const item of rawBars || []) {
+      const bar = normalizeRaw(item);
+      const last = raw.at(-1);
+      if (last && bar.t === last.t) raw[raw.length - 1] = bar;
+      else if (!last || bar.t > last.t) raw.push(bar);
+    }
+    this._fvRenderTimeframe({ preserveRange: true, fitVolume: false });
+  };
 
   p._syncDrawToolUi = function () {
     this.toolbar.querySelectorAll("button[data-tool]").forEach((button) => {
@@ -41,7 +200,7 @@
   p._handleDrawClick = function (param) {
     if (this.editorEl || !this.activeDrawTool || !param?.point) return;
     const tool = this.activeDrawTool;
-    if (tool === "hline" || tool === "vline") return; // handled directly by container click below
+    if (tool === "hline" || tool === "vline") return;
     const registryType = DRAW_TOOLS[tool];
     if (!registryType) return;
     const anchor = this._anchorAtPoint(param.point);
@@ -120,6 +279,8 @@
     constructor(options) {
       super(options);
       this.pendingAnchors = [];
+      this._fvTimeframe = "5";
+      this._fvRawBars = [];
 
       try {
         this.chart.applyOptions({
@@ -133,10 +294,15 @@
         });
       } catch {}
 
-      // Lightweight Charts uses normal axis drag for scaling. Add an independent
-      // translation gesture for the volume axis without taking scaling away:
-      // Shift+left-drag or middle-drag the visible LEFT axis to pan its range.
-      // Price on the right axis is unaffected.
+      this.toolbar.addEventListener("click", (event) => {
+        const button = event.target.closest?.("button[data-timeframe]");
+        if (!button) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this._fvSetTimeframe(button.dataset.timeframe);
+      }, true);
+      this._fvSyncTimeframeUi();
+
       let volumePan = null;
       const stopVolumePan = (event) => {
         if (!volumePan) return;
@@ -155,13 +321,12 @@
         if (width <= 0 || x < 0 || x > width) return;
         const range = scale.getVisibleRange?.();
         if (!range || !Number.isFinite(range.from) || !Number.isFinite(range.to)) return;
-        const paneHeight = Math.max(1, rect.height);
         volumePan = {
           pointerId: event.pointerId,
           startY: event.clientY,
           from: Number(range.from),
           to: Number(range.to),
-          paneHeight,
+          paneHeight: Math.max(1, rect.height),
         };
         try { scale.setAutoScale?.(false); } catch {}
         try { scale.applyOptions({ autoScale: false }); } catch {}
@@ -174,20 +339,14 @@
         if (!volumePan || event.pointerId !== volumePan.pointerId || !this.volume) return;
         const span = volumePan.to - volumePan.from;
         if (!(span > 0)) return;
-        // Dragging upward moves the visible value window downward, so the rendered
-        // volume bars move upward with the pointer; dragging downward does the reverse.
         const delta = ((event.clientY - volumePan.startY) / volumePan.paneHeight) * span;
-        const scale = this.volume.priceScale();
-        try { scale.setVisibleRange({ from: volumePan.from + delta, to: volumePan.to + delta }); } catch {}
+        try { this.volume.priceScale().setVisibleRange({ from: volumePan.from + delta, to: volumePan.to + delta }); } catch {}
         event.preventDefault();
         event.stopPropagation();
       }, true);
       this.container.addEventListener("pointerup", stopVolumePan, true);
       this.container.addEventListener("pointercancel", stopVolumePan, true);
 
-      // One-anchor tools are placed directly from the DOM click before Lightweight
-      // Charts' subscribeClick callback runs. This avoids intermittent lost clicks/state
-      // desynchronization observed with H-Line/V-Line while still using candle coordinates.
       this.container.addEventListener("click", (event) => {
         const tool = this.activeDrawTool;
         if (tool !== "hline" && tool !== "vline") return;
@@ -199,8 +358,6 @@
         this._cancelDrawing();
       }, true);
 
-      // Ensure draw buttons have one authoritative state transition even if the base
-      // toolbar listener also sees the click later in bubbling order.
       this.toolbar.addEventListener("click", (event) => {
         const button = event.target.closest?.("button[data-tool]");
         const tool = button?.dataset.tool;
