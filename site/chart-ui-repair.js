@@ -137,6 +137,12 @@
       this._fvUserInteractionUntil = 0;
       this._fvVwapState = null;
       this._fvSmaState = null;
+      this._fvIndicatorVisible = Object.fromEntries(
+        ["sma5", "sma10", "sma20", "sma60", "vwap"].map((name) => [
+          name,
+          !!this.toolbar?.querySelector?.(`button[data-tool="${name}"].active`),
+        ]),
+      );
 
       this._fvNativeCandleUpdate = this.candles.update.bind(this.candles);
       this._fvNativeCandleSetData = this.candles.setData.bind(this.candles);
@@ -476,6 +482,9 @@
     }
 
     _fvIndicatorActive(name) {
+      if (this._fvIndicatorVisible && Object.hasOwn(this._fvIndicatorVisible, name)) {
+        return !!this._fvIndicatorVisible[name];
+      }
       if (!this.toolbar?.querySelector) return true;
       return !!this.toolbar.querySelector(`button[data-tool="${name}"].active`);
     }
@@ -487,6 +496,7 @@
     _toggleIndicator(name, button) {
       const activating = !button?.classList?.contains?.("active");
       super._toggleIndicator(name, button);
+      (this._fvIndicatorVisible ??= {})[name] = activating;
       if (!activating || !this.bars?.length) return;
       const data = this._indicatorData();
       this.indicators[name]?.setData(data[name] || []);

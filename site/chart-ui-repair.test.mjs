@@ -349,3 +349,27 @@ test("live indicator updates touch only active chart series", () => {
 
   assert.deepEqual(updates.sort(), ["sma20", "vwap"]);
 });
+
+
+test("cached indicator visibility avoids DOM queries on the live path", () => {
+  const instance = Object.create(ChartTools.prototype);
+  instance._fvIndicatorVisible = {
+    sma5: true,
+    sma10: false,
+    sma20: false,
+    sma60: false,
+    vwap: true,
+  };
+  let queryCalls = 0;
+  instance.toolbar = {
+    querySelector() {
+      queryCalls += 1;
+      throw new Error("cached visibility should bypass the DOM");
+    },
+  };
+
+  assert.equal(instance._fvIndicatorActive("sma5"), true);
+  assert.equal(instance._fvIndicatorActive("sma10"), false);
+  assert.equal(instance._fvIndicatorActive("vwap"), true);
+  assert.equal(queryCalls, 0);
+});
