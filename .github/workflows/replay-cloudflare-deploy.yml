@@ -68,3 +68,20 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
         run: npx --yes wrangler@4.125.0 deploy --config .wrangler.deploy.json
+
+      - name: Verify live Worker API and Pages CORS
+        run: |
+          set -euo pipefail
+          API="https://futureview.rueijrwu.workers.dev"
+          curl -fsS --retry 8 --retry-delay 2 --retry-all-errors \
+            "$API/api/auth/status" -o /tmp/auth-status.json
+          jq -e 'has("registration_open")' /tmp/auth-status.json >/dev/null
+
+          curl -fsS --retry 8 --retry-delay 2 --retry-all-errors \
+            -D /tmp/cors-headers.txt -o /dev/null -X OPTIONS \
+            "$API/api/replay/range?product=MES" \
+            -H 'Origin: https://futureview.pages.dev' \
+            -H 'Access-Control-Request-Method: GET' \
+            -H 'Access-Control-Request-Headers: authorization'
+          tr -d '\r' </tmp/cors-headers.txt | grep -qi '^access-control-allow-origin: https://futureview.pages.dev$'
+          echo "live Worker API and Pages CORS are healthy"
