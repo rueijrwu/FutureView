@@ -9,7 +9,7 @@ baselineSource = baselineSource.replace(
 );
 const baselineUrl = `data:text/javascript;base64,${Buffer.from(baselineSource).toString("base64")}`;
 
-let fastSource = await fs.readFile(new URL("./replay-session-display-fast.js", import.meta.url), "utf8");
+const { ReplaySession: BaselineReplaySession } = await import(baselineUrl);\n\nlet fastSource = await fs.readFile(new URL("./replay-session-display-fast.js", import.meta.url), "utf8");
 fastSource = fastSource.replace("./replay-session-display.js", baselineUrl);
 const fastUrl = `data:text/javascript;base64,${Buffer.from(fastSource).toString("base64")}`;
 const { ReplaySession } = await import(fastUrl);
@@ -78,4 +78,35 @@ test("preload is a no-op for a non-selected resolution", async () => {
   await instance._preloadDisplayHistory(799, "30", "3M");
 
   assert.deepEqual(calls, []);
+});
+
+
+test("causal history consumes preloaded windows without async loader calls", async () => {
+  const instance = Object.create(BaselineReplaySession.prototype);
+  instance.displayResolution = "1";
+  instance.historyRange = "3M";
+  instance.displayWindowIndex = 2;
+  const metas = [
+    { key: "w0", first_time: 0, last_time: 99 },
+    { key: "w1", first_time: 100, last_time: 199 },
+    { key: "w2", first_time: 200, last_time: 299 },
+  ];
+  instance.displayWindows = new Map([
+    ["1:0", { index: 0, meta: metas[0], bars: [{ t: 10 }, { t: 90 }] }],
+    ["1:1", { index: 1, meta: metas[1], bars: [{ t: 110 }, { t: 190 }] }],
+    ["1:2", { index: 2, meta: metas[2], bars: [{ t: 210 }, { t: 290 }] }],
+  ]);
+  instance._ensureDisplayWindows = async () => {};
+  instance._displayShardMeta = async () => metas;
+  instance._trimDisplayWindows = () => {};
+  let loaderCalls = 0;
+  instance._loadDisplayWindow = async () => {
+    loaderCalls += 1;
+    throw new Error("preloaded window should not hit loader");
+  };
+
+  const bars = await instance._causalDisplayWindow(299, "1", "3M");
+
+  assert.equal(loaderCalls, 0);
+  assert.deepEqual(bars.map((bar) => bar.t), [10, 90, 110, 190, 210, 290]);
 });

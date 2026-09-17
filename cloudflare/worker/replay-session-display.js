@@ -303,7 +303,7 @@ export class ReplaySession extends FrameReplaySession {
     const activeDay = resolution === "1D" ? activeTradingDayKey(cursor) : null;
 
     for (let index = firstNeeded; index <= center; index += 1) {
-      const window = await this._loadDisplayWindow(index, resolution);
+      const cacheKey = `${resolution}:${index}`;\n      const window = this.displayWindows?.get(cacheKey) ?? await this._loadDisplayWindow(index, resolution);
       if (!window) continue;
       const bars = window.bars || [];
       let start = lowerBoundBarTime(bars, historyFrom);
