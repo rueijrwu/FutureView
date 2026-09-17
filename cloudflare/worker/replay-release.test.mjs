@@ -55,6 +55,7 @@ function makeHarness({ shards, barIndex = 0, pending = false }) {
 
   const fillBars = [];
   instance._fillPendingOrders = async (bar) => {
+    if (!trading.pendingOrders.length) return;
     fillBars.push(bar.t);
     trading.pendingOrders.length = 0;
   };
