@@ -329,9 +329,14 @@ export class ReplaySession extends DurableObject {
     this._broadcast({ type: "reset", warmup, snapshot: this.snapshot() });
   }
 
+  _tickDelayMs() {
+    if (this.session?.speed === "max") return 100;
+    return Number(this.session?.speed) >= 50 ? 100 : 50;
+  }
+
   _schedule(generation) {
     if (this.timer) clearTimeout(this.timer);
-    this.timer = setTimeout(() => this._tick(generation), 50);
+    this.timer = setTimeout(() => this._tick(generation), this._tickDelayMs());
   }
 
   async _tick(generation) {
@@ -340,8 +345,10 @@ export class ReplaySession extends DurableObject {
     const elapsed = Math.max(0, (now - this.lastTick) / 1000);
     this.lastTick = now;
     let due;
-    if (this.session.speed === "max") due = 250;
-    else {
+    if (this.session.speed === "max") {
+      // Preserve the previous ~5000 logical bars/s ceiling while halving timer/websocket churn.
+      due = this._tickDelayMs() >= 100 ? 500 : 250;
+    } else {
       this.credit += elapsed * Number(this.session.speed);
       due = Math.floor(this.credit);
       this.credit -= due;
