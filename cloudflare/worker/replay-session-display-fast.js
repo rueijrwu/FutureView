@@ -6,6 +6,7 @@ const PREFETCH_THRESHOLD = 0.75;
 const MAX_PARTIAL_MINUTES = 1500;
 const HISTORY_SECONDS = { "1D": 86400, "5D": 5 * 86400, "1M": 30 * 86400, "3M": 90 * 86400 };
 const HISTORY_LOAD_CONCURRENCY = 4;
+const DISPLAY_WINDOW_CHUNK_BARS = 4096;
 
 function newAggregate(bar, stamp) {
   return {
@@ -217,6 +218,40 @@ export class ReplaySession extends DisplayReplaySession {
   async _causalDisplayWindow(cursor, resolution = this.displayResolution, historyRange = this.historyRange) {
     await this._preloadDisplayHistory(cursor, resolution, historyRange);
     return super._causalDisplayWindow(cursor, resolution, historyRange);
+  }
+
+  async _broadcastDisplayWindow() {
+    const cursor = Number(this.shard?.[this.session?.barIndex]?.t ?? this.session?.cursorTs);
+    if (!Number.isFinite(cursor)) return;
+    const bars = await this._causalDisplayWindow(cursor, this.displayResolution, this.historyRange);
+    if (!bars.length) return;
+
+    const base = {
+      type: "display_window",
+      resolution: this.displayResolution,
+      history_range: this.historyRange,
+      cursor,
+      future_data_included: false,
+    };
+    if (bars.length <= DISPLAY_WINDOW_CHUNK_BARS) {
+      this._broadcast({ ...base, bars });
+      return;
+    }
+
+    this._fvDisplayTransferSequence = (Number(this._fvDisplayTransferSequence) || 0) + 1;
+    const transferId = `${this.session?.id || "replay"}:${this._fvDisplayTransferSequence}`;
+    const chunkCount = Math.ceil(bars.length / DISPLAY_WINDOW_CHUNK_BARS);
+    for (let chunkIndex = 0; chunkIndex < chunkCount; chunkIndex += 1) {
+      const start = chunkIndex * DISPLAY_WINDOW_CHUNK_BARS;
+      this._broadcast({
+        ...base,
+        transfer_id: transferId,
+        chunk_index: chunkIndex,
+        chunk_count: chunkCount,
+        total_bars: bars.length,
+        bars: bars.slice(start, start + DISPLAY_WINDOW_CHUNK_BARS),
+      });
+    }
   }
 
   _consumeCanonicalBars(rawBars, resolution = this.displayResolution) {

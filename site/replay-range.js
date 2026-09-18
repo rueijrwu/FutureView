@@ -10,6 +10,9 @@
   let selectedRange = HISTORY_RANGES[localStorage.getItem(STORAGE_KEY)] ? localStorage.getItem(STORAGE_KEY) : "5D";
   let replaySocket = null;
   let applyRangeOnNextWindow = false;
+  const displayWindowAssembler = window.FutureViewDisplayWindowAssembler
+    ? new window.FutureViewDisplayWindowAssembler()
+    : null;
 
   const NativeWebSocket = window.WebSocket;
 
@@ -208,6 +211,7 @@
 
       this.addEventListener("open", () => {
         applyRangeOnNextWindow = false;
+        displayWindowAssembler?.reset();
         try {
           this.send(JSON.stringify({
             type: "set_timeframe",
@@ -231,9 +235,14 @@
             if (payload.future_data_included !== false) return;
             if (String(payload.resolution) !== timeframe()) return;
             if (payload.history_range && payload.history_range !== selectedRange) return;
+            const assembled = displayWindowAssembler?.accept(payload) ?? {
+              complete: true,
+              bars: payload.bars || [],
+            };
+            if (!assembled.complete) return;
             const accepted = window.__futureViewChartTools?._fvLoadCachedWindow?.(
               payload.resolution,
-              payload.bars || [],
+              assembled.bars || [],
             );
             if (accepted && applyRangeOnNextWindow) {
               applyRangeOnNextWindow = false;
@@ -250,12 +259,17 @@
     selectedRange = range;
     localStorage.setItem(STORAGE_KEY, range);
     syncRangeUi();
-    window.__futureViewChartTools?._fvSetTimeDomain?.(HISTORY_RANGES[range].seconds);
+    displayWindowAssembler?.reset();
+
+    const seconds = HISTORY_RANGES[range].seconds;
+    // Change the visible calendar range immediately. Long ranges such as 3M may
+    // require multiple cache messages, so the axis must not wait for history I/O.
+    window.__futureViewChartTools?._fvSetHistoryRange?.(seconds);
 
     if (send({ type: "set_history_range", history_range: range })) {
       applyRangeOnNextWindow = true;
     } else {
-      window.__futureViewChartTools?._fvSetHistoryRange?.(HISTORY_RANGES[range].seconds);
+      applyRangeOnNextWindow = false;
     }
   }
 
@@ -263,6 +277,7 @@
     const timeframeButton = event.target.closest?.("button[data-timeframe]");
     if (timeframeButton) {
       applyRangeOnNextWindow = false;
+      displayWindowAssembler?.reset();
       send({
         type: "set_timeframe",
         timeframe: timeframeButton.dataset.timeframe,

@@ -112,3 +112,42 @@ test("causal history consumes preloaded windows without async loader calls", asy
   assert.equal(loaderCalls, 0);
   assert.deepEqual(bars.map((bar) => bar.t), [10, 90, 110, 190, 210, 290]);
 });
+
+
+test("large display history is broadcast in bounded chunks", async () => {
+  const instance = Object.create(ReplaySession.prototype);
+  instance.displayResolution = "5";
+  instance.historyRange = "3M";
+  instance.session = { id: "session-a", barIndex: 0 };
+  instance.shard = [{ t: 9000 }];
+  const bars = Array.from({ length: 9000 }, (_, index) => ({ t: index, c: index }));
+  instance._causalDisplayWindow = async () => bars;
+  const messages = [];
+  instance._broadcast = (payload) => messages.push(payload);
+
+  await instance._broadcastDisplayWindow();
+
+  assert.equal(messages.length, 3);
+  assert.deepEqual(messages.map((message) => message.chunk_index), [0, 1, 2]);
+  assert.ok(messages.every((message) => message.chunk_count === 3));
+  assert.ok(messages.every((message) => message.bars.length <= 4096));
+  assert.equal(messages.flatMap((message) => message.bars).length, 9000);
+  assert.equal(new Set(messages.map((message) => message.transfer_id)).size, 1);
+});
+
+test("small display history keeps the legacy single-message shape", async () => {
+  const instance = Object.create(ReplaySession.prototype);
+  instance.displayResolution = "5";
+  instance.historyRange = "1M";
+  instance.session = { id: "session-a", barIndex: 0 };
+  instance.shard = [{ t: 100 }];
+  instance._causalDisplayWindow = async () => [{ t: 1 }, { t: 2 }];
+  const messages = [];
+  instance._broadcast = (payload) => messages.push(payload);
+
+  await instance._broadcastDisplayWindow();
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].chunk_count, undefined);
+  assert.deepEqual(messages[0].bars, [{ t: 1 }, { t: 2 }]);
+});
