@@ -52,7 +52,197 @@ function lowerBoundLastTime(items, target) {
   return lo < items.length ? lo : items.length - 1;
 }
 
+const HISTORY_ET_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  hourCycle: "h23",
+});
+const CONTRACT_MONTH = Object.fromEntries([..."FGHJKMNQUVXZ"].map((code, index) => [code, index + 1]));
+const CONTRACT_RE = /^(.+?)([FGHJKMNQUVXZ])(\d{1,2})$/;
+
+function historyEtParts(seconds) {
+  return Object.fromEntries(
+    HISTORY_ET_FORMATTER.formatToParts(new Date(Number(seconds) * 1000))
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, Number(part.value)]),
+  );
+}
+
+function historySessionDate(seconds, daily = false) {
+  const parts = historyEtParts(seconds);
+  const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  if (!daily && parts.hour >= 18) day.setUTCDate(day.getUTCDate() + 1);
+  return day.toISOString().slice(0, 10);
+}
+
+function contractExpiryLocal(contract, referenceYear) {
+  const match = CONTRACT_RE.exec(String(contract));
+  if (!match) return null;
+  const month = CONTRACT_MONTH[match[2]];
+  const digits = match[3];
+  let year;
+  if (digits.length === 2) year = 2000 + Number(digits);
+  else {
+    const digit = Number(digits);
+    const candidates = [];
+    for (let y = referenceYear - 1; y < referenceYear + 10; y += 1) {
+      if (y % 10 === digit) candidates.push(y);
+    }
+    year = candidates.sort((a, b) => Math.abs(a - referenceYear) - Math.abs(b - referenceYear))[0];
+  }
+  const first = new Date(Date.UTC(year, month - 1, 1));
+  const firstFriday = 1 + (5 - first.getUTCDay() + 7) % 7;
+  return { year, month, day: firstFriday + 14, hour: 9, minute: 30 };
+}
+
+function compareLocalParts(a, b) {
+  for (const key of ["year", "month", "day", "hour", "minute"]) {
+    const av = Number(a?.[key] ?? 0);
+    const bv = Number(b?.[key] ?? 0);
+    if (av !== bv) return av - bv;
+  }
+  return 0;
+}
+
+function contractExpiredForSession(contract, sessionDate) {
+  const [year, month, day] = String(sessionDate).split("-").map(Number);
+  const expiry = contractExpiryLocal(contract, year);
+  if (!expiry) return false;
+  return compareLocalParts({ year, month, day, hour: 18, minute: 0 }, expiry) >= 0;
+}
+
+function selectedContractForHistorySession(manifest, sessions, sessionVolumes, sessionIndex) {
+  const sessionDate = sessions[sessionIndex];
+  const sourceSession = sessionIndex > 0 ? sessions[sessionIndex - 1] : null;
+  if (!sourceSession) return null;
+  const candidates = Object.entries(sessionVolumes[sourceSession] ?? {})
+    .map(([contract, volume]) => [contract, Number(volume)])
+    .filter(([contract, volume]) =>
+      manifest.contracts?.[contract] &&
+      Number.isFinite(volume) &&
+      volume > 0 &&
+      !contractExpiredForSession(contract, sessionDate)
+    )
+    .sort((a, b) => b[1] - a[1]);
+  return candidates[0]?.[0] ?? null;
+}
+
 export class ReplaySession extends DisplayReplaySession {
+  async _loadHistoricalContractWindow(contractName, resolution, index, meta) {
+    const cacheKey = `history:${contractName}:${resolution}:${index}`;
+    const cached = this._fvHistoricalDisplayWindows ??= new Map();
+    if (cached.has(cacheKey)) return cached.get(cacheKey);
+
+    const loads = this._fvHistoricalDisplayLoads ??= new Map();
+    if (loads.has(cacheKey)) return loads.get(cacheKey);
+    const load = (async () => {
+      const prefix = this._getPrefix();
+      const object = await this.env.MES_DATA.get(`${prefix}/${meta.key}`);
+      if (!object) throw new Error(`Missing historical display cache ${meta.key}`);
+      const stream = meta.key.endsWith(".gz")
+        ? object.body.pipeThrough(new DecompressionStream("gzip"))
+        : object.body;
+      const bars = JSON.parse(await new Response(stream).text());
+      const value = { index, meta, bars };
+      cached.set(cacheKey, value);
+      while (cached.size > 96) cached.delete(cached.keys().next().value);
+      return value;
+    })();
+    loads.set(cacheKey, load);
+    try {
+      return await load;
+    } finally {
+      if (loads.get(cacheKey) === load) loads.delete(cacheKey);
+    }
+  }
+
+  async _contractHistoryBars(contractName, resolution, historyFrom, cursor) {
+    const manifest = await this._manifest();
+    const contract = manifest.contracts?.[contractName];
+    if (!contract) return [];
+    let shards = contract.display_shards?.[resolution] ?? [];
+    if (!shards.length && resolution === "1") {
+      shards = contract.display_shards?.["1m"] ?? contract.shards ?? [];
+    }
+    if (!shards.length) return [];
+
+    const first = Math.max(0, lowerBoundLastTime(shards, historyFrom));
+    const last = Math.max(first, lowerBoundLastTime(shards, cursor));
+    const windows = [];
+    for (let index = first; index <= last; index += HISTORY_LOAD_CONCURRENCY) {
+      const group = [];
+      for (let offset = 0; offset < HISTORY_LOAD_CONCURRENCY && index + offset <= last; offset += 1) {
+        const windowIndex = index + offset;
+        group.push(this._loadHistoricalContractWindow(
+          contractName,
+          resolution,
+          windowIndex,
+          shards[windowIndex],
+        ));
+      }
+      windows.push(...await Promise.all(group));
+    }
+
+    const out = [];
+    for (const window of windows) {
+      for (const bar of window?.bars ?? []) {
+        const t = Number(bar.t);
+        if (t >= historyFrom && t <= cursor) out.push(bar);
+      }
+    }
+    return out;
+  }
+
+  async _causalContinuousHistory(cursor, resolution, historyRange) {
+    const manifest = await this._manifest();
+    const selection = manifest.contract_selection ?? {};
+    const sessionVolumes = selection.session_volumes;
+    const sessions = (Array.isArray(selection.sessions)
+      ? selection.sessions.map((item) => typeof item === "string" ? item : item?.session).filter(Boolean)
+      : Object.keys(sessionVolumes ?? {})
+    ).sort();
+    if (!sessionVolumes || !sessions.length) return null;
+
+    const seconds = HISTORY_SECONDS[historyRange] ?? HISTORY_SECONDS["5D"];
+    const historyFrom = Number(cursor) - seconds;
+    const firstSession = historySessionDate(historyFrom, resolution === "1D");
+    const lastSession = historySessionDate(cursor, resolution === "1D");
+    let firstIndex = sessions.findIndex((session) => session >= firstSession);
+    if (firstIndex < 0) return [];
+    const lastIndex = sessions.findLastIndex((session) => session <= lastSession);
+    if (lastIndex < firstIndex) return [];
+
+    const selectedBySession = new Map();
+    const contracts = new Set();
+    for (let index = firstIndex; index <= lastIndex; index += 1) {
+      const contractName = selectedContractForHistorySession(manifest, sessions, sessionVolumes, index);
+      if (!contractName) continue;
+      selectedBySession.set(sessions[index], contractName);
+      contracts.add(contractName);
+    }
+    if (!contracts.size) return null;
+
+    const contractBars = await Promise.all(
+      [...contracts].map(async (contractName) => [
+        contractName,
+        await this._contractHistoryBars(contractName, resolution, historyFrom, cursor),
+      ]),
+    );
+
+    const merged = [];
+    for (const [contractName, bars] of contractBars) {
+      for (const bar of bars) {
+        const sessionDate = historySessionDate(bar.t, resolution === "1D");
+        if (selectedBySession.get(sessionDate) === contractName) merged.push(bar);
+      }
+    }
+    merged.sort((a, b) => Number(a.t) - Number(b.t));
+    return merged;
+  }
+
   async _ensureReplayCursor() {
     const session = this.session;
     if (session && this.shard) {
@@ -216,6 +406,30 @@ export class ReplaySession extends DisplayReplaySession {
   }
 
   async _causalDisplayWindow(cursor, resolution = this.displayResolution, historyRange = this.historyRange) {
+    cursor = Number(cursor);
+    resolution = String(resolution || this.displayResolution || "5");
+    historyRange = String(historyRange || this.historyRange || "5D");
+    if (!Number.isFinite(cursor)) return [];
+
+    const continuous = await this._causalContinuousHistory(cursor, resolution, historyRange);
+    if (continuous) {
+      const cutoff = resolution === "1D"
+        ? historySessionDate(cursor, true)
+        : null;
+      if (resolution === "1D") {
+        return continuous.filter((bar) => historySessionDate(bar.t, true) < cutoff);
+      }
+      const interval = Number(resolution) * 60;
+      const activeStart = resolution === "1"
+        ? cursor
+        : Number(this.displayAggregate?.t);
+      return continuous.filter((bar) => {
+        const t = Number(bar.t);
+        if (resolution === "1") return t < cursor;
+        return !Number.isFinite(activeStart) || t < activeStart;
+      });
+    }
+
     await this._preloadDisplayHistory(cursor, resolution, historyRange);
     return super._causalDisplayWindow(cursor, resolution, historyRange);
   }
