@@ -33,9 +33,11 @@
       const largeJump = Number.isFinite(previousCursor) && Math.abs(cursor - previousCursor) > history / 2;
       const reset = force || domainChanged || largeJump || !Number.isFinite(Number(this._fvBoundaryFrom)) || !Number.isFinite(Number(this._fvBoundaryTo));
 
+      const rightPad = Math.max(step * 2, Math.min(3600, step * 8));
+
       if (reset) {
         this._fvBoundaryFrom = cursor - history;
-        this._fvBoundaryTo = cursor + Math.max(86400, history / 4, step * 32);
+        this._fvBoundaryTo = cursor + rightPad;
         this._fvBoundaryHistory = history;
         this._fvBoundaryStep = step;
         this._fvBoundaryCursor = cursor;
@@ -46,9 +48,8 @@
         return;
       }
 
-      const guard = Math.max(3600, step * 8);
-      if (cursor + guard >= this._fvBoundaryTo) {
-        this._fvBoundaryTo = cursor + Math.max(86400, history / 4, step * 32);
+      if (cursor + step >= this._fvBoundaryTo) {
+        this._fvBoundaryTo = cursor + rightPad;
         this._fvRangeBoundarySeries.setData([
           { time: this._fvBoundaryFrom },
           { time: this._fvBoundaryTo },
