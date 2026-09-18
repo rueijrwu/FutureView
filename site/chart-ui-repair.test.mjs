@@ -469,3 +469,18 @@ test("active 1D rebuild uses midnight ET during EST", () => {
   assert.equal(active.open, instance._fvRawBars[0].o);
   assert.equal(active.close, instance._fvRawBars.at(-1).c);
 });
+
+
+test("reset does not arm a later cached-window auto-fit", () => {
+  const source = fs.readFileSync(new URL("./chart-ui-repair.js", import.meta.url), "utf8");
+  const resetBlock = source.slice(source.indexOf("    reset(rawBars) {"), source.indexOf("    append(rawBar) {"));
+  assert.match(resetBlock, /this\._fvAutoFitPending = false;/);
+  assert.doesNotMatch(resetBlock, /this\._fvAutoFitPending = true;/);
+});
+
+test("cached window only fits when explicitly armed", () => {
+  const source = fs.readFileSync(new URL("./chart-ui-repair.js", import.meta.url), "utf8");
+  const loadBlock = source.slice(source.indexOf("    _fvLoadCachedWindow("), source.indexOf("    reset(rawBars) {"));
+  assert.match(loadBlock, /if \(this\._fvAutoFitPending\)/);
+  assert.match(loadBlock, /else if \(visible\)/);
+});

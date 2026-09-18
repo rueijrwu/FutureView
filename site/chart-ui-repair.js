@@ -600,7 +600,10 @@
       this._fvRebuildActiveAggregate();
       this._fvSetDisplayData(aggregateAll(this._fvRawBars, this._fvTimeframe));
       this._fvRefreshRangeBoundaries();
-      this._fvAutoFitPending = true;
+      // reset() is followed by one explicit fit() in app.js. Do not arm a second
+      // asynchronous fit for a later cached-history response: that response may
+      // arrive after Next/Play and would unexpectedly move the user's viewport.
+      this._fvAutoFitPending = false;
     }
 
     append(rawBar) {
