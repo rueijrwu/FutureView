@@ -5,6 +5,14 @@ Base commit: `c46ab174` (`docs: refresh FutureView optimization handoff`)
 Companion document: `HANDOFF.md` (status, invariants, history). This file is the
 forward-looking work plan; `HANDOFF.md` remains the record of what happened.
 
+**Implementation status (2026-09-19): Phase 1 and Phase 3 items 8-10 are done.**
+Everything each item below cites still describes the code as it was when this
+plan was written; a note at the top of each implemented section says what
+changed and points at the commit. Items still open: §2.3 (unreferenced Python),
+§2.5 (`step`/`step_frame`), §3 P3/P4/P6, all of §4 (both frontend-copy options
+and the worker helper extraction - both still need Ruei's decision), and Phase 4
+in full.
+
 ## 0. How to read this
 
 Every item below cites the code it came from as `file:line`. Each performance
@@ -54,6 +62,10 @@ consequence of removing work that provably happens.
 ## 2. Dead code
 
 ### 2.1 Statically unreachable worker methods — safe to delete
+
+**Done** in `6101fae` and `fa4bdd8`. All eleven methods below and the orphaned
+helper block were removed exactly as described; 76 tests passed immediately
+before and after each commit.
 
 The durable-object class is a five-level chain:
 
@@ -113,6 +125,8 @@ Delete in three commits (one per file) so any surprise bisects cleanly.
 
 ### 2.2 `main.js` exports the wrong replay class
 
+**Done** in the same pass, folded into `fa4bdd8`.
+
 `cloudflare/worker/main.js:1` imports `ReplaySession` from `replay-session.js`
 and re-exports it at `main.js:12`. That export is dead: `main-frame.js:1` binds
 the name to the `display-fast` subclass and `main-frame.js:2` takes only
@@ -138,6 +152,8 @@ in §3.5 rather than separately.
 
 ### 2.4 A dead local
 
+**Done**, folded into the P1 commit (`20af785`) since it sat inside the code that commit rewrote.
+
 `replay-session-display-fast.js:451` declares `const interval = Number(resolution) * 60;`
 inside the non-daily branch of `_causalDisplayWindow` and never reads it — the
 branch below uses `this.displayAggregate?.t`. One line.
@@ -161,6 +177,13 @@ as `stepFrame`. Do not leave it as is.
 ## 3. Performance
 
 ### P1 — Per-bar timezone conversion in continuous-history assembly (worker)
+
+**Done** in `20af785`. Measured against the real (not reconstructed) function,
+R2 stubbed so only the CPU stage is timed, output asserted identical:
+164.6 ms → 14.5 ms (5m/3M), 1,242.7 ms → 126.3 ms (1m/3M) - close to the
+estimates below. New equivalence tests sweep every hour across both DST
+transitions (2,300+ comparisons) rather than trusting the "whole-hour bucket"
+reasoning alone.
 
 **The hot loop.** `replay-session-display-fast.js:236-241`:
 
@@ -209,6 +232,13 @@ element-for-element equal to the old for a window spanning a contract roll befor
 touching the implementation.
 
 ### P2 — Per-bar timezone conversion in browser indicator rebuild
+
+**Done** in `9e4e74d`, in `site/` only. Measured against the real function:
+117.7 ms → 13.4 ms (5m/3M), 253.9 ms → 40.1 ms (1m/1M), output byte-identical.
+Per §4.1, this has **not** been copied into `cloudflare/public/` or
+`src/futureview_replay/static/` - `chart-tools.js` is currently byte-identical
+across all three, and which of §4.1's three options resolves that divergence
+is still Ruei's call, not something to default on silently.
 
 **The hot loop.** `site/chart-tools.js:848-863` (`_indicatorData`):
 
@@ -315,6 +345,12 @@ Related, smaller: `frame.js:179-180` evicts foreign-resolution windows but keeps
 that is a retained month. Make the retention explicit or drop it.
 
 ### P5 — `renderTrading()` on every bar rebuilds the whole trades table
+
+**Done** in `540dfde`. `app.js` has no test harness (a DOM-coupled IIFE with no
+exports) and none was added; the new gating logic was instead extracted and
+driven directly, confirming it renders once, skips repeated calls with
+unchanged fills, re-renders on a real fill, and re-renders once when forced by
+a selection change.
 
 **Structural.** `site/app.js:130` — `render(b)` ends with `renderTrading()`, and
 `renderTrading` (`:104`) rebuilds the fills table with
@@ -433,6 +469,14 @@ the two copies encode the same market rule and can drift apart silently.
 
 ### 4.3 No linter
 
+**Partially done** in `a92696d`. `ruff` (pyflakes rules only) runs in
+`replay-python.yml` before the unit tests; it is scoped to `select = ["F"]`
+because the full default rule set surfaces ~30 pre-existing style findings
+unrelated to this pass, and gating on those is a separate decision. The
+JS-side no-unused-vars lint for `replay-cloudflare-check.yml` is still open -
+it needs an eslint devDependency and config, a larger change than adding an
+already-installed Python extra.
+
 There is no `ruff`, `flake8`, `eslint` or equivalent in `pyproject.toml` or in
 any workflow — CI runs `node --check` (syntax only) and `pytest`. Every finding in
 §2.3 and §2.4 is something a linter reports for free.
@@ -449,6 +493,15 @@ are only partly guarded even at the syntax level.
 ---
 
 ## 5. HANDOFF.md §16 item 1 is wrong: do not change `SESSION_END_HOUR_ET`
+
+**Done** in `e1aad2f`. The value is unchanged (confirmed correct, per the
+analysis below); the constant is renamed to `REQUESTED_SESSION_END_HOUR_ET`
+with the reasoning below as an inline comment, and pinned from both sides by
+`cloudflare/worker/replay-session-boundary.test.mjs` and
+`tests/test_session_boundary.py` - one shared fixture of eleven timestamps
+(16:59/17:00/17:59/18:00/18:01 ET, in EST, in EDT, and across a DST change),
+asserted by both suites. Applying the change HANDOFF.md originally asked for
+fails seven of the JS suite's rows. `HANDOFF.md` §3, §16 and §17 are corrected.
 
 `HANDOFF.md` §3 and §16 call `SESSION_END_HOUR_ET = 17` at
 `cloudflare/worker/main.js:16` a critical bug and instruct changing it to 18.
@@ -507,6 +560,12 @@ Note that `replay-session-frame.js:43`, `replay-session-display.js:41` and
 
 The ordering is chosen so every risky change lands behind a test that already
 passes, and so nothing has to be done twice.
+
+**Addendum, 2026-09-19:** alongside this plan, a separately-reported bug was
+fixed in `24af5e4` - switching bar scale never fit the chart, because
+`_fvAutoFitPending` was initialized, read and cleared but nothing ever set it
+to `true`. Unrelated to anything in this plan; noted here only because it
+landed in the same batch of commits.
 
 **Phase 1 — make the ground safe (no behaviour change).**
 
