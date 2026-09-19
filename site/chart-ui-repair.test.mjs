@@ -478,9 +478,86 @@ test("reset does not arm a later cached-window auto-fit", async () => {
   assert.doesNotMatch(resetBlock, /this\._fvAutoFitPending = true;/);
 });
 
+// A controller stubbed just far enough to drive _fvLoadCachedWindow and
+// _fvSetTimeframe without a real chart.
+function autoFitHarness(timeframe = "5") {
+  const instance = Object.create(ChartTools.prototype);
+  const calls = { fits: 0, restored: [] };
+  const visibleRange = { from: 100, to: 200 };
+  instance._fvTimeframe = timeframe;
+  instance._fvAutoFitPending = false;
+  instance._fvRawBars = [];
+  instance.bars = [];
+  instance._cancelDrawing = () => {};
+  instance._fvSetDisplayData = () => {};
+  instance._fvRefreshRangeBoundaries = () => {};
+  instance._fvRebuildActiveAggregate = () => null;
+  instance._fvSyncTimeframeUi = () => {};
+  instance._fvNativeSetVisibleRange = (range) => calls.restored.push(range);
+  instance.fit = () => { calls.fits += 1; };
+  instance.chart = { timeScale: () => ({ getVisibleRange: () => visibleRange }) };
+  return { instance, calls, visibleRange };
+}
+
+// requestAnimationFrame is how _fvLoadCachedWindow defers its fit.
+const flushFrame = async () => { await new Promise((resolve) => setTimeout(resolve, 0)); };
+globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
+
+test("a bar-scale switch fits the cached window it armed", async () => {
+  const { instance, calls } = autoFitHarness("5");
+
+  instance._fvSetTimeframe("1D");
+  assert.equal(calls.fits, 1, "the locally aggregated view fits immediately");
+  assert.equal(instance._fvAutoFitPending, "1D", "the incoming 1D window is armed");
+
+  const accepted = instance._fvLoadCachedWindow("1D", [{ t: 1, o: 1, h: 2, l: 0, c: 1, v: 1 }]);
+  assert.equal(accepted, true);
+  assert.equal(instance._fvAutoFitPending, false, "the arm is consumed");
+  await flushFrame();
+  assert.equal(calls.fits, 2, "the authoritative window fits too");
+  assert.deepEqual(calls.restored, [], "no stale viewport is restored over the fit");
+});
+
+test("an unarmed cached window preserves the viewport", async () => {
+  const { instance, calls, visibleRange } = autoFitHarness("5");
+
+  instance._fvLoadCachedWindow("5", [{ t: 1, o: 1, h: 2, l: 0, c: 1, v: 1 }]);
+  await flushFrame();
+
+  assert.equal(calls.fits, 0, "data arrival never fits on its own");
+  assert.deepEqual(calls.restored, [visibleRange]);
+});
+
+test("an arm for one scale is not consumed by another scale's window", async () => {
+  const { instance, calls, visibleRange } = autoFitHarness("5");
+
+  instance._fvRequestAutoFit("1D");
+  instance._fvTimeframe = "1D";
+  // A 5m window still in flight from before the switch must not eat the 1D arm.
+  instance._fvLoadCachedWindow("1D", [{ t: 1, o: 1, h: 2, l: 0, c: 1, v: 1 }]);
+  await flushFrame();
+  assert.equal(calls.fits, 1);
+
+  // And once consumed, a later window does not fit again.
+  instance._fvLoadCachedWindow("1D", [{ t: 2, o: 1, h: 2, l: 0, c: 1, v: 1 }]);
+  await flushFrame();
+  assert.equal(calls.fits, 1, "the arm is one-shot");
+  assert.deepEqual(calls.restored, [visibleRange]);
+});
+
+test("re-selecting the active bar scale does not fit", () => {
+  const { instance, calls } = autoFitHarness("5");
+  instance._fvSetTimeframe("5");
+  assert.equal(calls.fits, 0);
+  assert.equal(instance._fvAutoFitPending, false);
+});
+
 test("cached window only fits when explicitly armed", async () => {
   const source = await fs.readFile(new URL("./chart-ui-repair.js", import.meta.url), "utf8");
   const loadBlock = source.slice(source.indexOf("    _fvLoadCachedWindow("), source.indexOf("    reset(rawBars) {"));
-  assert.match(loadBlock, /if \(this\._fvAutoFitPending\)/);
+  // The arm is consumed unconditionally and only honoured for its own resolution.
+  assert.match(loadBlock, /const armedFor = this\._fvAutoFitPending;/);
+  assert.match(loadBlock, /this\._fvAutoFitPending = false;/);
+  assert.match(loadBlock, /if \(armedFor && String\(armedFor\) === String\(resolution\)\)/);
   assert.match(loadBlock, /else if \(visible\)/);
 });
