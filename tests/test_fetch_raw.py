@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
 
 from futureview_replay import fetch_raw as fetch_raw_module

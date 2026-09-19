@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest>=8", "httpx>=0.28"]
+test = ["pytest>=8", "httpx>=0.28", "ruff>=0.6"]
 
 [project.scripts]
 futureview-replay = "futureview_replay.cli:main"
@@ -27,3 +27,15 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 futureview_replay = ["static/*.html", "static/*.css", "static/*.js"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.ruff.lint]
+# Scoped to pyflakes only: unreferenced imports, redefinitions and unused
+# locals/variables (F401/F811/F841 among them) - exactly what CURRENT_PLAN.md
+# sections 2.3/2.4 found by hand. E/W (style, line length) are deliberately not
+# enabled here: the existing tree has ~30 pre-existing style findings unrelated
+# to this pass, and turning those into a CI gate is a separate decision with a
+# separate diff, not something to fold into a dead-code/perf pass.
+select = ["F"]
