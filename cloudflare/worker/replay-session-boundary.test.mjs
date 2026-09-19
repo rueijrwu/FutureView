@@ -47,10 +47,10 @@ const { tradingSessionDate, REQUESTED_SESSION_END_HOUR_ET } = await loadPrivate(
   ["tradingSessionDate", "REQUESTED_SESSION_END_HOUR_ET"],
 );
 
-const { historySessionDate } = await loadPrivate(
+const { historySessionDate, historySessionDateUncached } = await loadPrivate(
   "./replay-session-display-fast.js",
   [[/import \{ ReplaySession as DisplayReplaySession \} from "\.\/replay-session-display\.js";/, "class DisplayReplaySession {}"]],
-  ["historySessionDate"],
+  ["historySessionDate", "historySessionDateUncached"],
 );
 
 test("the requested-session hour is 17, matching resolver.py requested_session_date", () => {
@@ -84,4 +84,51 @@ test("outside the halt window both questions agree", () => {
     if (hour >= 17 && hour < 18) continue;
     assert.equal(item.requested, item.session, `${item.et} should agree`);
   }
+});
+
+// historySessionDate memoises on the UTC hour. That is only sound because
+// America/New_York is offset from UTC by a whole number of hours, so one UTC hour
+// never straddles an ET calendar day or the 18:00 session boundary. Sweep every
+// hour across both DST transitions and assert the memoised answer equals the
+// direct one - if that assumption ever breaks, this fails instead of production
+// stitching history onto the wrong contract.
+test("the memoised session date matches the direct computation hour by hour", () => {
+  const spans = [
+    ["2026-03-06T00:00:00Z", 24 * 6],  // spring forward, 2026-03-08
+    ["2026-10-30T00:00:00Z", 24 * 6],  // fall back, 2026-11-01
+    ["2026-06-15T00:00:00Z", 24 * 3],  // a plain EDT week
+    ["2026-01-05T00:00:00Z", 24 * 3],  // a plain EST week
+  ];
+  let checked = 0;
+  for (const [start, hours] of spans) {
+    const base = Math.floor(Date.parse(start) / 1000);
+    for (let hour = 0; hour < hours; hour += 1) {
+      for (const offset of [0, 1, 1799, 3599]) {
+        const seconds = base + hour * 3600 + offset;
+        for (const daily of [false, true]) {
+          assert.equal(
+            historySessionDate(seconds, daily),
+            historySessionDateUncached(seconds, daily),
+            `mismatch at ${new Date(seconds * 1000).toISOString()} daily=${daily}`,
+          );
+          checked += 1;
+        }
+      }
+    }
+  }
+  assert.ok(checked > 2000, `expected a dense sweep, checked ${checked}`);
+});
+
+test("a non-finite timestamp bypasses the cache instead of poisoning it", () => {
+  // formatToParts rejects an invalid date, and it did before memoising too, so the
+  // throw is the pre-existing contract. What matters here is that NaN takes the
+  // uncached path rather than becoming a cache key.
+  assert.throws(() => historySessionDateUncached(NaN, false), RangeError);
+  assert.throws(() => historySessionDate(NaN, false), RangeError);
+  assert.throws(() => historySessionDate(Infinity, true), RangeError);
+  // A real lookup is unaffected afterwards. 17:00 ET is inside the halt, so the
+  // bar-session answer is still the 16th - this is the 18:00 question, not the
+  // requested-start one.
+  assert.equal(historySessionDate(1773694800), "2026-03-16");
+  assert.equal(historySessionDate(1773694800), historySessionDateUncached(1773694800, false));
 });
