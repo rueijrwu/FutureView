@@ -25,9 +25,6 @@ futureview-replay = "futureview_replay.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.setuptools.package-data]
-futureview_replay = ["static/*.html", "static/*.css", "static/*.js"]
-
 [tool.ruff]
 line-length = 110
 

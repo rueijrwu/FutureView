@@ -5,7 +5,7 @@ on:
   push:
     branches: [master]
     paths:
-      - 'cloudflare/public/**'
+      - 'site/**'
       - 'cloudflare/worker/**'
       - 'cloudflare/migrations/**'
       - 'cloudflare/wrangler.jsonc'

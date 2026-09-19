@@ -390,7 +390,25 @@ exporter is next touched for another reason.
 
 ### 4.1 Three frontends, one of them deployed
 
-Measured against the working tree:
+**Done.** Ruei decided: keep `site/` only. `cloudflare/public/` and
+`src/futureview_replay/static/` are deleted (13 files); the worker's
+`assets.directory` in `wrangler.jsonc` now points at `../site`, and the FastAPI
+dev server (`app.py`) mounts `site/` directly at `/` (`html=True`, registered
+last so it doesn't shadow API routes) instead of a separate `/static` mount and
+package-data copy. This is closest to option 2 above, except nothing needed
+redirecting: `site/index.html` already serves the login flow, so
+`cloudflare/public/`'s carve-out for `login.html`/`auth.js`/`auth.css` was
+unnecessary once the worker's assets binding points straight at `site/`.
+
+Verified: `npx wrangler@4.125.0 deploy --dry-run` reads 17 files from `site/`
+(91.39 KiB, 19.09 KiB gzip); a real Python 3.12 venv install + `pytest` +
+manual `TestClient` probe confirmed `/`, every asset path, `/api/health`, and
+API-route precedence over the catch-all static mount all behave correctly, and
+an unmatched path still 404s. Full suite (106 JS + 28 Python tests) green.
+Both CI workflows and `pyproject.toml` updated to drop references to the
+deleted directories.
+
+Measured against the working tree (historical, pre-consolidation):
 
 | File | `site/` ↔ `cloudflare/public/` | `cloudflare/public/` ↔ `src/futureview_replay/static/` |
 | --- | --- | --- |

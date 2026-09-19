@@ -30,11 +30,10 @@ jobs:
           node --check site/chart-tools-fixes.js
           node --check site/chart-ui-repair.js
           node --check site/chart-ui-repair.test.mjs
+          node --check site/chart-tools.test.mjs
           node --check site/replay-window-assembler.js
           node --check site/replay-window-assembler.test.mjs
           node --check site/replay-range.js
-          node --check src/futureview_replay/static/app.js
-          node --check cloudflare/public/app.js
           node --check cloudflare/worker/main.js
           node --check cloudflare/worker/main-frame.js
           node --check cloudflare/worker/replay-session-core.js
@@ -54,7 +53,7 @@ jobs:
       - name: Replay semantics
         run: node --test cloudflare/worker/replay-release.test.mjs cloudflare/worker/replay-display.test.mjs cloudflare/worker/replay-display-fast.test.mjs cloudflare/worker/replay-window-fast.test.mjs cloudflare/worker/replay-active-fast.test.mjs cloudflare/worker/replay-history-fast.test.mjs cloudflare/worker/replay-prefetch-fast.test.mjs cloudflare/worker/replay-continuous-history.test.mjs cloudflare/worker/replay-session-boundary.test.mjs
       - name: Chart hot-path semantics
-        run: node --test site/chart-ui-repair.test.mjs site/replay-window-assembler.test.mjs
+        run: node --test site/chart-ui-repair.test.mjs site/replay-window-assembler.test.mjs site/chart-tools.test.mjs
       - name: Wrangler dry run
         working-directory: cloudflare
         run: npx --yes wrangler@4.125.0 deploy --dry-run --outdir .dry-run
