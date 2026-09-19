@@ -312,3 +312,70 @@ test("1D Next at session end targets the next trading day's rollover", async () 
   assert.equal(instance.session.cursorTs, released.at(-1).t);
   assert.equal(displayBroadcasts[0].shown[0].t, sec("2026-09-18T00:00:00-04:00"));
 });
+
+
+test("timeframe change seeds active 5m bucket before history broadcast", async () => {
+  const bars = minuteBars("2026-09-17T10:15:00-04:00", 5, 100);
+  const instance = harness(FastReplaySession);
+  instance.displayResolution = "1";
+  instance.historyRange = "5D";
+  instance.session = {
+    contract: "MESZ6",
+    shardIndex: 0,
+    barIndex: 2,
+    state: "PAUSED",
+    cursorTs: bars[2].t,
+  };
+  instance.shard = bars;
+  instance.shardKey = "s0";
+  instance.manifest = {
+    contracts: {
+      MESZ6: {
+        shards: [{ key: "s0", first_time: bars[0].t, last_time: bars.at(-1).t }],
+      },
+    },
+  };
+  instance._warmupBars = async () => bars.slice(0, 3);
+  instance._ensureReplayCursor = async () => bars[2];
+  instance._resetDisplayCursor = () => {
+    instance.displayWindowIndex = -1;
+  };
+  instance.snapshot = () => ({ type: "session_snapshot" });
+
+  let aggregateAtBroadcast = null;
+  instance._broadcastDisplayWindow = async () => {
+    aggregateAtBroadcast = instance.displayAggregate ? { ...instance.displayAggregate } : null;
+  };
+  const broadcasts = [];
+  instance._broadcast = (payload) => broadcasts.push(payload);
+
+  await instance.setTimeframe("5", "5D");
+
+  assert.ok(aggregateAtBroadcast);
+  assert.equal(aggregateAtBroadcast.t, sec("2026-09-17T10:15:00-04:00"));
+  assert.equal(aggregateAtBroadcast.o, bars[0].o);
+  assert.equal(aggregateAtBroadcast.c, bars[2].c);
+  assert.equal(instance.displayAggregateCursor, bars[2].t);
+  assert.equal(broadcasts.at(-1).display_resolution, "5");
+});
+
+test("5m causal history excludes the active precomputed bucket", async () => {
+  const cursor = sec("2026-09-17T10:17:00-04:00");
+  const activeStart = sec("2026-09-17T10:15:00-04:00");
+  const instance = harness(FastReplaySession);
+  instance.displayResolution = "5";
+  instance.historyRange = "5D";
+  instance.displayAggregate = { t: activeStart, o: 100, h: 103, l: 99, c: 102, v: 30 };
+  instance.displayAggregateResolution = "5";
+  instance.displayAggregateCursor = cursor;
+  instance._causalContinuousHistory = async () => [
+    { t: sec("2026-09-17T10:10:00-04:00"), c: 99 },
+    // This full cached bar would contain 10:18 and 10:19, which are future at cursor 10:17.
+    { t: activeStart, c: 999 },
+  ];
+
+  const history = await instance._causalDisplayWindow(cursor, "5", "5D");
+
+  assert.deepEqual(history.map((bar) => bar.t), [sec("2026-09-17T10:10:00-04:00")]);
+  assert.ok(history.every((bar) => Number(bar.t) < activeStart));
+});

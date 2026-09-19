@@ -243,6 +243,35 @@ export class ReplaySession extends DisplayReplaySession {
     return merged;
   }
 
+  async setTimeframe(value, historyRange = this.historyRange) {
+    const timeframe = String(value || "5");
+    if (!FRAME_RESOLUTIONS.has(timeframe)) throw new Error(`Unsupported chart timeframe ${timeframe}`);
+    if (historyRange != null && !HISTORY_SECONDS[String(historyRange)]) {
+      throw new Error(`Unsupported history range ${historyRange}`);
+    }
+
+    this.displayResolution = timeframe;
+    if (historyRange != null) this.historyRange = String(historyRange);
+    this._resetDisplayAggregate();
+    this._resetDisplayCursor();
+
+    // Establish the causal active bucket before historical cache assembly.
+    // Otherwise the precomputed current bucket may contain unreleased future
+    // canonical minutes and can momentarily replace the live partial candle.
+    await this._ensureDisplayAggregate();
+    await this._broadcastDisplayWindow();
+
+    this._broadcast({
+      ...this.snapshot(),
+      display_resolution: this.displayResolution,
+      history_range: this.historyRange,
+      display_cache: {
+        window_bars: 512,
+        current_window: this.displayWindowIndex,
+      },
+    });
+  }
+
   async _ensureReplayCursor() {
     const session = this.session;
     if (session && this.shard) {
