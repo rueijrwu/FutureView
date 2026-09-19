@@ -2,7 +2,7 @@
 
 Last updated: 2026-09-19
 Branch: `master`
-Current head: `2c486209ebd4fe03f75da70acff10666e835e2a7`
+Forward plan: `CURRENT_PLAN.md`
 
 ## 1. Product goal
 
@@ -66,11 +66,34 @@ Futures session roll:
 
 This is a hard invariant.
 
-Important outstanding issue:
+### Two session hours, not one
 
-- `cloudflare/worker/main.js` currently still contains `SESSION_END_HOUR_ET = 17`.
-- That is inconsistent with the rest of the system and can classify 17:00-17:59 ET into the next trading session one hour too early.
-- Fix this to 18 with boundary tests (16:59, 17:00, 17:59, 18:00) before doing more contract/session logic changes.
+There are two distinct questions, and the system answers them with two different
+constants. Confusing them has already produced one wrong bug report (see below).
+
+| Question | Constant | Python | Worker |
+| --- | --- | --- | --- |
+| Which trading session does this **bar** belong to? | `SESSION_ROLL_HOUR_ET = 18` | `resolver.py session_date` | `display-fast.js historySessionDate`, `display.js sessionStart` |
+| Given a **requested start time**, what is the first session that can hold a bar at or after it? | `SESSION_END_HOUR_ET = 17` | `resolver.py requested_session_date` | `main.js tradingSessionDate` |
+
+CME equity-index futures halt 17:00-18:00 ET daily. A request at 17:30 has no bar
+left in the current session, so it must resolve to the next one - hence 17 for the
+second question. The two answers differ only inside that halt hour.
+
+**RESOLVED (was "critical bug"): `main.js`'s 17 is correct and must not be changed
+to 18.** Earlier revisions of this document called it inconsistent and asked for it
+to be raised to 18. That would have been a regression: every 17:00-17:59 ET start
+would resolve to the session that has already ended, and `resolveContract` would
+then select the contract from the wrong prior session.
+
+The constant is now named `REQUESTED_SESSION_END_HOUR_ET` and pinned from both
+sides by one shared fixture:
+
+- `cloudflare/worker/replay-session-boundary.test.mjs`
+- `tests/test_session_boundary.py`
+
+Both assert the same table at 16:59, 17:00, 17:59, 18:00 and 18:01 ET, in EST, in
+EDT, and across a DST change. Applying the old "fix" fails seven of them.
 
 ## 4. Correct restore/optimization baseline
 
@@ -419,9 +442,12 @@ Clear trading:
 
 ## 16. Current known risks / next work
 
-Highest priority:
+See `CURRENT_PLAN.md` for the full optimization and dead-code plan, its evidence,
+and its sequencing. What remains open from this document's own list:
 
-1. Fix `SESSION_END_HOUR_ET = 17` in `cloudflare/worker/main.js` to 18 and add boundary tests.
+1. ~~Fix `SESSION_END_HOUR_ET = 17` in `cloudflare/worker/main.js` to 18~~ -
+   **withdrawn, the value was already correct.** See section 3. Boundary tests
+   landed on both sides; the constant was renamed, not changed.
 2. Audit the duplicated session/expiry/contract-selection helpers now present in `main.js` and `replay-session-display-fast.js`; centralize only after tests exist.
 3. Add an end-to-end timeframe-switch test that compares visible current price across 1m/5m/30m/4h at the same cursor.
 4. Add a test around a real contract-roll boundary:
@@ -464,9 +490,11 @@ Recent critical fixes:
 73a48c15  no large fake future range anchor
 b7c19114  chunked full 3M history
 
-Critical remaining bug:
-main.js still has SESSION_END_HOUR_ET = 17.
-System invariant is 18:00 ET. Fix next with boundary tests.
+Session hours (two, deliberately):
+18:00 ET  which session a bar belongs to    (session_date / historySessionDate)
+17:00 ET  which session a requested start resolves to
+          (requested_session_date / tradingSessionDate)
+They differ only inside the 17:00-18:00 ET halt. Do not collapse them.
 
 Do not reapply the old second full-refactor wholesale.
 Continue incrementally with semantic tests + production health gates.

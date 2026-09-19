@@ -277,11 +277,20 @@
   document.addEventListener("click", (event) => {
     const timeframeButton = event.target.closest?.("button[data-timeframe]");
     if (timeframeButton) {
+      const requested = String(timeframeButton.dataset.timeframe);
       applyRangeOnNextWindow = false;
       displayWindowAssembler?.reset();
+      // A bar-scale change is an explicit request for a different view, so the
+      // window the worker sends back is allowed to fit. This handler runs on
+      // document capture, before the chart overlay's own handler, so timeframe()
+      // is still the outgoing scale here. Arming from both places covers the case
+      // where the overlay handler never runs.
+      if (requested !== timeframe()) {
+        window.__futureViewChartTools?._fvRequestAutoFit?.(requested);
+      }
       send({
         type: "set_timeframe",
-        timeframe: timeframeButton.dataset.timeframe,
+        timeframe: requested,
         history_range: selectedRange,
       });
       queueMicrotask(syncRangeUi);

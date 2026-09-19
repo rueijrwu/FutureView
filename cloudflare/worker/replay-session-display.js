@@ -325,12 +325,6 @@ export class ReplaySession extends FrameReplaySession {
     return out;
   }
 
-  async setTimeframe(value, historyRange = this.historyRange) {
-    this._resetDisplayAggregate();
-    await super.setTimeframe(value, historyRange);
-    await this._ensureDisplayAggregate();
-  }
-
   async restart() {
     this._resetDisplayAggregate();
     await super.restart();

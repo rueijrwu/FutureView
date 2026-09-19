@@ -6,6 +6,17 @@ const PRODUCT_SPECS = {
   ES: { pointValue: 50, tickSize: 0.25 },
 };
 
+// Base of the replay chain. This class is never deployed on its own: wrangler
+// ships the display-fast subclass via main-frame.js. Five methods it calls are
+// deliberately not defined here, because every implementation that ever ran was
+// the subclass override and keeping a shadowed copy only invited drift:
+//
+//   _findShardAtOrAfter / _findBarAtOrAfter   binary search, replay-session.js
+//   _warmupBars                               resident-shard reuse, replay-session.js
+//   _release                                  batched release, replay-session.js
+//   _tick                                     display aggregation, replay-session-display.js
+//
+// A subclass must supply all five.
 export class ReplaySession extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -101,14 +112,6 @@ export class ReplaySession extends DurableObject {
     return this.shard;
   }
 
-  _findShardAtOrAfter(contract, start) {
-    return contract.shards.findIndex((item) => Number(item.last_time) >= Number(start));
-  }
-
-  _findBarAtOrAfter(bars, start) {
-    return bars.findIndex((bar) => Number(bar.t) >= Number(start));
-  }
-
   async init(body) {
     const product = body.product || "MES";
     const manifest = await this._manifest(product);
@@ -162,26 +165,6 @@ export class ReplaySession extends DurableObject {
     if (!object) throw new Error(`Missing R2 shard ${item.key}`);
     const stream = item.key.endsWith(".gz") ? object.body.pipeThrough(new DecompressionStream("gzip")) : object.body;
     return JSON.parse(await new Response(stream).text());
-  }
-
-  async _warmupBars(shardIndex, barIndex, count) {
-    const contract = (await this._manifest()).contracts[this.session.contract];
-    let remaining = count;
-    let index = shardIndex;
-    const chunks = [];
-    while (index >= 0 && remaining > 0) {
-      const bars = await this._loadShardForContract(contract, index);
-      const takeEnd = index === shardIndex ? barIndex + 1 : bars.length;
-      const takeStart = Math.max(0, takeEnd - remaining);
-      chunks.unshift(bars.slice(takeStart, takeEnd));
-      remaining -= takeEnd - takeStart;
-      index -= 1;
-    }
-    const current = await this._loadShardForContract(contract, shardIndex);
-    const cursor = current[barIndex];
-    const flattened = chunks.flat();
-    if (!flattened.length || flattened.at(-1)?.t !== cursor.t) flattened.push(cursor);
-    return flattened;
   }
 
   _accountSnapshot() {
@@ -345,59 +328,6 @@ export class ReplaySession extends DurableObject {
   _schedule(generation) {
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => this._tick(generation), this._tickDelayMs());
-  }
-
-  async _tick(generation) {
-    if (!this.session || generation !== this.generation || this.session.state !== "PLAYING") return;
-    const now = Date.now();
-    const elapsed = Math.max(0, (now - this.lastTick) / 1000);
-    this.lastTick = now;
-    let due;
-    if (this.session.speed === "max") {
-      // Preserve the previous ~5000 logical bars/s ceiling while halving timer/websocket churn.
-      due = this._tickDelayMs() >= 100 ? 500 : 250;
-    } else {
-      this.credit += elapsed * Number(this.session.speed);
-      due = Math.floor(this.credit);
-      this.credit -= due;
-    }
-    if (due > 0) {
-      const bars = await this._release(due);
-      if (bars.length === 1) this._broadcast({ type: "bar", bar: bars[0] });
-      else if (bars.length > 1) this._broadcast({ type: "bars_batch", bars });
-      this.ticks += 1;
-      if (this.ticks % 20 === 0 || this.session.state === "FINISHED") await this._persist(this.session.state === "FINISHED");
-    }
-    if (this.session.state === "FINISHED") {
-      this._broadcast(this.snapshot());
-      return;
-    }
-    this._schedule(generation);
-  }
-
-  async _release(count) {
-    const contract = (await this._manifest()).contracts[this.session.contract];
-    const released = [];
-    while (released.length < count) {
-      await this._loadShard(this.session.shardIndex);
-      if (this.session.barIndex + 1 < this.shard.length) {
-        this.session.barIndex += 1;
-        const bar = this.shard[this.session.barIndex];
-        await this._fillPendingOrders(bar);
-        this._trading().lastPrice = bar.c;
-        released.push(bar);
-        continue;
-      }
-      if (this.session.shardIndex + 1 >= contract.shards.length) {
-        this.session.state = "FINISHED";
-        break;
-      }
-      this.session.shardIndex += 1;
-      this.session.barIndex = -1;
-      this.shard = null;
-      this.shardKey = null;
-    }
-    return released;
   }
 
   async _fillPendingOrders(bar) {

@@ -101,10 +101,18 @@
     lastMarkerSignature=signature;
     preserveChartViewport(()=>{tradeMarkers.setMarkers(fills.map(f=>({time:Number(f.filled_at_ts),position:f.side==="buy"?"belowBar":"aboveBar",color:f.side==="buy"?cssVar("--chart-up","#26a69a"):cssVar("--chart-down","#ef5350"),shape:f.side==="buy"?"arrowUp":"arrowDown",text:`${f.side==="buy"?"B":"S"}${f.quantity}`,id:f.id,size:1}))) });
   }
-  function renderTrading(){
-    const t=derivedTrading();
+  // A new bar can only change the P&L/mark fields: unrealized P&L, total P&L and
+  // the mark price they derive from. It cannot add or remove a fill or a console
+  // line, so rebuilding the fills table and re-serialising the console on every
+  // bar (as low as once a second at 1x) was pure waste. Split the two and gate
+  // the fills/console rebuild on a signature, the same pattern renderTradeMarkers
+  // already uses for the chart markers.
+  let lastFillsSignature=null;
+  function fillsSignature(fills){return fills.map(f=>f.id).join("|")+"|"+selectedFillId}
+  function renderPnl(t){
     if(!t){
-      $("trade-position").textContent="Flat";$("trade-avg").textContent="—";$("trade-unrealized").textContent="$0.00";$("trade-realized").textContent="$0.00";$("trade-total").textContent="$0.00";$("trade-rows").innerHTML='<tr class="trade-empty"><td colspan="5">No trades yet</td></tr>';$("trades-toggle").textContent="Trades";renderConsole();return;
+      $("trade-position").textContent="Flat";$("trade-avg").textContent="—";$("trade-unrealized").textContent="$0.00";$("trade-realized").textContent="$0.00";$("trade-total").textContent="$0.00";
+      return;
     }
     const qty=Number(t.position_qty)||0;
     $("trade-position").textContent=qty===0?"Flat":`${qty>0?"Long":"Short"} ${Math.abs(qty)}`;
@@ -112,28 +120,39 @@
     $("trade-unrealized").textContent=money(t.unrealized_pnl);applyPnlClass($("trade-unrealized"),t.unrealized_pnl);
     $("trade-realized").textContent=money(t.realized_pnl);applyPnlClass($("trade-realized"),t.realized_pnl);
     $("trade-total").textContent=money(t.total_pnl);applyPnlClass($("trade-total"),t.total_pnl);
-    const fills=t.fills||[];
+  }
+  function renderFillsAndConsole(t){
+    const fills=t?.fills||[];
+    const signature=fillsSignature(fills);
+    if(signature===lastFillsSignature)return;
+    lastFillsSignature=signature;
     $("trades-toggle").textContent=fills.length?`Trades ${fills.length}`:"Trades";
-    if(!fills.length){$("trade-rows").innerHTML='<tr class="trade-empty"><td colspan="5">No trades yet</td></tr>';renderConsole();return;}
-    $("trade-rows").innerHTML=fills.map(f=>`<tr class="trade-row${selectedFillId===f.id?" selected":""}" data-fill-id="${f.id}"><td>${f.sequence}</td><td class="${f.side==="buy"?"buy-text":"sell-text"}">${f.side==="buy"?"Buy":"Sell"}</td><td>${f.quantity}</td><td>${number(f.fill_price)}</td><td class="${Number(f.realized_delta)>0?"pnl-positive":Number(f.realized_delta)<0?"pnl-negative":""}">${money(f.realized_delta)}</td></tr>`).join("");
+    $("trade-rows").innerHTML=fills.length
+      ?fills.map(f=>`<tr class="trade-row${selectedFillId===f.id?" selected":""}" data-fill-id="${f.id}"><td>${f.sequence}</td><td class="${f.side==="buy"?"buy-text":"sell-text"}">${f.side==="buy"?"Buy":"Sell"}</td><td>${f.quantity}</td><td>${number(f.fill_price)}</td><td class="${Number(f.realized_delta)>0?"pnl-positive":Number(f.realized_delta)<0?"pnl-negative":""}">${money(f.realized_delta)}</td></tr>`).join("")
+      :'<tr class="trade-empty"><td colspan="5">No trades yet</td></tr>';
     renderConsole();
+  }
+  function renderTrading(){
+    const t=derivedTrading();
+    renderPnl(t);
+    renderFillsAndConsole(t);
   }
   function setTrading(trading){if(!trading)return;lastTrading=trading;syncFillConsole(trading);renderTrading();renderTradeMarkers();syncControls()}
   function inspectFill(fillId){
     const fill=(lastTrading?.fills||[]).find(f=>f.id===fillId);if(!fill)return;
-    selectedFillId=fill.id;renderTrading();
+    selectedFillId=fill.id;lastFillsSignature=null;renderTrading();
     const before=Number(fill.filled_at_ts)-3600,after=Number(fill.filled_at_ts)+3600;try{chart.timeScale().setVisibleRange({from:before,to:after})}catch{}
   }
 
   function render(b){
     preserveChartViewport(()=>{candles.update(candle(b));volume.update(vol(b));chartTools.append(b)});
-    lastMarkPrice=Number(b.c);$("time-status").textContent=displaySeconds(b.t);renderTrading();
+    lastMarkPrice=Number(b.c);$("time-status").textContent=displaySeconds(b.t);renderPnl(derivedTrading());
   }
   function renderMany(bs){
     preserveChartViewport(()=>{bs.forEach(b=>{candles.update(candle(b));volume.update(vol(b))});chartTools.appendMany(bs)});
-    if(bs.length){lastMarkPrice=Number(bs[bs.length-1].c);$("time-status").textContent=displaySeconds(bs[bs.length-1].t);renderTrading()}
+    if(bs.length){lastMarkPrice=Number(bs[bs.length-1].c);$("time-status").textContent=displaySeconds(bs[bs.length-1].t);renderPnl(derivedTrading())}
   }
-  function reset(bs){chartTools._cancelDrawing?.();candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chartTools.fit();lastMarkPrice=bs.length?Number(bs[bs.length-1].c):null;selectedFillId=null;lastMarkerSignature=null;clearConsole();renderTradeMarkers()}
+  function reset(bs){chartTools._cancelDrawing?.();candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chartTools.fit();lastMarkPrice=bs.length?Number(bs[bs.length-1].c):null;selectedFillId=null;lastMarkerSignature=null;lastFillsSignature=null;clearConsole();renderTradeMarkers()}
   function error(m=""){$("error").textContent=m}
   async function api(path,opts={}){const authToken=token();if(!authToken)return goLogin();const r=await fetch(`${API_ORIGIN}${path}`,{headers:{"Content-Type":"application/json","Authorization":`Bearer ${authToken}`,...(opts.headers||{})},...opts});if(r.status===401)return goLogin();if(!r.ok){let m=`HTTP ${r.status}`;try{m=(await r.json()).error||m}catch{}throw new Error(m)}return r.json()}
   async function validateAuth(){const authToken=token();if(!authToken){goLogin();return false}const r=await fetch(`${API_ORIGIN}/api/auth/me`,{cache:"no-store",headers:{"Authorization":`Bearer ${authToken}`}});if(!r.ok){goLogin();return false}return true}

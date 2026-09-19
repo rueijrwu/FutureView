@@ -4,6 +4,10 @@
 
   const TIMEFRAMES = new Set(["1", "5", "30", "240", "1D"]);
   const RAW_TAIL_LIMIT = 1500;
+  // Same four periods the base class uses, hoisted for the same reason: these loops
+  // run once per bar and Object.entries allocated a fresh array of pairs each time.
+  const SMA_ENTRIES = Object.entries({ sma5: 5, sma10: 10, sma20: 20, sma60: 60 });
+  const SMA_NAMES = SMA_ENTRIES.map(([name]) => name);
   const etFormatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric",
@@ -174,7 +178,7 @@
       this._fvVwapState = null;
       this._fvSmaState = null;
       this._fvIndicatorVisible = Object.fromEntries(
-        ["sma5", "sma10", "sma20", "sma60", "vwap"].map((name) => [
+        [...SMA_NAMES, "vwap"].map((name) => [
           name,
           !!this.toolbar?.querySelector?.(`button[data-tool="${name}"].active`),
         ]),
@@ -357,9 +361,8 @@
         this._fvSmaState = null;
         return null;
       }
-      const periods = { sma5: 5, sma10: 10, sma20: 20, sma60: 60 };
       const sums = {};
-      for (const [key, period] of Object.entries(periods)) {
+      for (const [key, period] of SMA_ENTRIES) {
         let sum = 0;
         const start = Math.max(0, this.bars.length - period);
         for (let index = start; index < this.bars.length; index += 1) {
@@ -437,7 +440,6 @@
       if (!bar) return;
       const timestamp = Number(bar.time);
       const close = Number(bar.close);
-      const periods = { sma5: 5, sma10: 10, sma20: 20, sma60: 60 };
 
       let smaState = this._fvSmaState;
       let seeded = false;
@@ -449,10 +451,10 @@
         if (!seeded) {
           if (smaState.lastTime === timestamp) {
             const delta = close - Number(smaState.lastClose);
-            for (const key of Object.keys(periods)) smaState.sums[key] += delta;
+            for (const [key] of SMA_ENTRIES) smaState.sums[key] += delta;
           } else {
             const length = this.bars.length;
-            for (const [key, period] of Object.entries(periods)) {
+            for (const [key, period] of SMA_ENTRIES) {
               smaState.sums[key] += close;
               if (length > period) {
                 smaState.sums[key] -= Number(this.bars[length - period - 1].close);
@@ -463,7 +465,7 @@
           smaState.lastClose = close;
         }
 
-        for (const [key, period] of Object.entries(periods)) {
+        for (const [key, period] of SMA_ENTRIES) {
           if (this.bars.length < period) continue;
           if (this._fvIndicatorActive(key)) {
             this.indicators[key]?.update({ time: bar.time, value: smaState.sums[key] / period });
@@ -527,7 +529,7 @@
     }
 
     _fvAnyIndicatorActive() {
-      return ["sma5", "sma10", "sma20", "sma60", "vwap"].some((name) => this._fvIndicatorActive(name));
+      return [...SMA_NAMES, "vwap"].some((name) => this._fvIndicatorActive(name));
     }
 
     _toggleIndicator(name, button) {
@@ -555,19 +557,31 @@
       this._showLegend(null);
     }
 
+    // Arm a one-shot fit for the next cached window that arrives at `timeframe`.
+    // Tagging the arm with its resolution means a window for some other timeframe,
+    // or a later history-range response, can never consume it. That is what keeps
+    // 532f18bc's rule intact: nothing fits except on an explicit request.
+    _fvRequestAutoFit(timeframe = this._fvTimeframe) {
+      this._fvAutoFitPending = String(timeframe);
+    }
+
     _fvSetTimeframe(timeframe) {
       const value = String(timeframe);
       if (!TIMEFRAMES.has(value) || value === this._fvTimeframe) return;
       this._cancelDrawing?.();
-      const visible = this.chart.timeScale().getVisibleRange?.() || null;
       this._fvTimeframe = value;
       this._fvSyncTimeframeUi();
       this._fvRebuildActiveAggregate();
       this._fvSetDisplayData(aggregateAll(this._fvRawBars, value));
       this._fvRefreshRangeBoundaries();
-      if (visible) {
-        try { this._fvNativeSetVisibleRange(visible); } catch {}
-      }
+      // Changing the bar scale is an explicit request for a different view of the
+      // data, so it may fit. Restoring the pre-switch time range instead leaves the
+      // viewport sized for the old scale: 1m -> 1D shows a fraction of one candle,
+      // 1D -> 1m shows months of whitespace around a few minutes of bars.
+      // Fit the locally aggregated view now and arm the authoritative window the
+      // worker sends back, so the final data is fitted too.
+      this._fvRequestAutoFit(value);
+      this.fit();
     }
 
     _fvLoadCachedWindow(resolution, rawBars) {
@@ -584,8 +598,9 @@
       this._fvSetDisplayData(displayBars);
       this._fvRefreshRangeBoundaries();
 
-      if (this._fvAutoFitPending) {
-        this._fvAutoFitPending = false;
+      const armedFor = this._fvAutoFitPending;
+      this._fvAutoFitPending = false;
+      if (armedFor && String(armedFor) === String(resolution)) {
         requestAnimationFrame(() => this.fit());
       } else if (visible) {
         try { this._fvNativeSetVisibleRange(visible); } catch {}

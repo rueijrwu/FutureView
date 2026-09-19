@@ -25,7 +25,7 @@ def test_health_and_index(tmp_path: Path) -> None:
         assert started.json()["contract"] == "MESM24"
         index=c.get("/")
         assert index.status_code==200
-        assert "/static/chart-tools.js" in index.text
+        assert "/chart-tools.js" in index.text
         assert 'data-tool="sma20"' in index.text
         assert 'data-tool="hline"' in index.text
         assert 'id="random-btn"' in index.text

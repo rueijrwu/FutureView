@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -56,10 +55,16 @@ def create_app(runtime_dir: str | Path = "runtime") -> FastAPI:
                 pass
 
     engine = ReplayEngine(stores)
-    static = Path(__file__).with_name("static")
+    # The dev server serves the same frontend the Cloudflare Worker and Pages
+    # deploy from - site/ at the repo root - rather than a separate packaged
+    # copy. site/index.html references its own assets (chart-tools.js,
+    # style.css, ...) at the origin root, not under /static, so the mount below
+    # is registered at "/" and added last, after every API route: Starlette
+    # matches routes in registration order, and a root mount is a catch-all
+    # that would otherwise shadow the API paths registered after it.
+    site_dir = Path(__file__).resolve().parents[2] / "site"
     app = FastAPI(title="FutureView Replay", version="0.3.0")
     app.state.engine = engine
-    app.mount("/static", StaticFiles(directory=static), name="static")
 
     def get_store(product: str | None = None) -> BarStore:
         if not stores:
@@ -70,10 +75,6 @@ def create_app(runtime_dir: str | Path = "runtime") -> FastAPI:
         if prod not in stores:
             raise HTTPException(404, f"Product {product} not found. Available products: {list(stores.keys())}")
         return stores[prod]
-
-    @app.get("/")
-    async def index() -> FileResponse:
-        return FileResponse(static / "index.html")
 
     @app.get("/api/health")
     async def health(product: str | None = None) -> dict[str, Any]:
@@ -155,5 +156,10 @@ def create_app(runtime_dir: str | Path = "runtime") -> FastAPI:
             pass
         finally:
             engine.unsubscribe(q)
+
+    # html=True serves index.html for "/" and for any unmatched sub-path, so
+    # this single mount replaces the old separate /static mount plus the
+    # explicit "/" route.
+    app.mount("/", StaticFiles(directory=site_dir, html=True), name="site")
 
     return app
