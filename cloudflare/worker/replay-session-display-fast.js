@@ -448,7 +448,6 @@ export class ReplaySession extends DisplayReplaySession {
       if (resolution === "1D") {
         return continuous.filter((bar) => historySessionDate(bar.t, true) < cutoff);
       }
-      const interval = Number(resolution) * 60;
       const activeStart = resolution === "1"
         ? cursor
         : Number(this.displayAggregate?.t);

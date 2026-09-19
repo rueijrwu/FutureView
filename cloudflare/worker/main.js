@@ -1,4 +1,3 @@
-import { ReplaySession } from "./replay-session.js";
 import {
   authenticate,
   createSession as createAuthSession,
@@ -9,11 +8,26 @@ import {
   registrationOpen,
 } from "./auth.js";
 
-export { ReplaySession };
-
 const PAGES_ORIGIN = "https://futureview.pages.dev";
 const DISPLAY_TIME_ZONE = "America/New_York";
-const SESSION_END_HOUR_ET = 17;
+// 17, not 18, and deliberately so. This mirrors resolver.py's
+// requested_session_date, NOT its session_date. The two answer different
+// questions and Python defines a separate constant for each:
+//
+//   session_date (SESSION_ROLL_HOUR_ET = 18)
+//     "which trading session does this bar belong to?"  -> the 18:00 ET roll,
+//     the hard invariant, and what builds the manifest's session list.
+//
+//   requested_session_date (SESSION_END_HOUR_ET = 17)
+//     "given a requested start time, what is the first session that can hold a
+//     bar at or after it?"
+//
+// CME equity-index futures halt 17:00-18:00 ET daily, so a request at 17:30 has
+// no bar left in the current session and must resolve to the next one. Raising
+// this to 18 would make any 17:00-17:59 ET start resolve to the session that has
+// already ended, and resolveContract would then pick the contract from the wrong
+// prior session. replay-session-boundary.test.mjs pins this against Python.
+const REQUESTED_SESSION_END_HOUR_ET = 17;
 const EXPIRY_HOUR_ET = 9;
 const EXPIRY_MINUTE_ET = 30;
 const MONTH_NUMBER = Object.fromEntries([..."FGHJKMNQUVXZ"].map((code, index) => [code, index + 1]));
@@ -54,7 +68,7 @@ function localParts(value) {
 function tradingSessionDate(value) {
   const parts = localParts(value);
   const localDate = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-  if (parts.hour >= SESSION_END_HOUR_ET) localDate.setUTCDate(localDate.getUTCDate() + 1);
+  if (parts.hour >= REQUESTED_SESSION_END_HOUR_ET) localDate.setUTCDate(localDate.getUTCDate() + 1);
   return localDate.toISOString().slice(0, 10);
 }
 
