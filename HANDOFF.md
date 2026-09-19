@@ -1,462 +1,473 @@
-# FutureView Replay Handoff
+# FutureView Handoff
 
-Last updated: 2026-09-17
-Primary branch: `master`
+Last updated: 2026-09-19
+Branch: `master`
+Current head: `2c486209ebd4fe03f75da70acff10666e835e2a7`
 
-## 1. Current goal
+## 1. Product goal
 
-FutureView is a historical futures replay/trading simulator with causal replay, manual simulated trading, chart annotation tools, and persistent trading state.
+FutureView is a causal historical futures replay/trading simulator.
 
-Core rule: the browser must never receive data after the replay cursor. The backend/Durable Object remains authoritative for replay and trading state.
+Core rule:
 
-Public frontend:
+> The browser must never receive information from after the replay cursor.
 
-```text
-https://futureview.pages.dev/
-```
+Backend/Durable Object is authoritative for replay state, order execution, contract identity, and timestamp progression.
 
-Backend Worker:
+Production:
 
-```text
-https://futureview.rueijrwu.workers.dev/
-```
+- Frontend: https://futureview.pages.dev
+- Worker: https://futureview.rueijrwu.workers.dev
 
-## 2. Important files
+Do not use deployment-specific `xxxx.futureview.pages.dev` URLs for production debugging. Worker CORS is intentionally keyed to the canonical Pages origin.
 
-```text
-site/index.html                 main replay/trading UI
-site/style.css                  layout and trading panel styling
-site/app.js                     replay + trading client behavior
-site/chart-tools.js             chart indicators/drawing/view tools
-site/chart-tools-fixes.js       active patch layer for drawing + fit + scale behavior
-src/futureview_replay/prepare.py
-src/futureview_replay/store.py
-src/futureview_replay/cloud_export.py
-cloudflare/worker/replay-session.js
-cloudflare/worker/main.js
-.github/workflows/replay-pages-deploy.yml
-.github/workflows/replay-cloudflare-deploy.yml
-.github/workflows/replay-data-publish.yml
-HANDOFF.md
-```
+## 2. Current architecture
 
-## 3. Replay/data invariants
+Canonical replay/trading timeline:
 
-Keep these unless explicitly changed:
+- 1-minute actual-contract bars
+- timestamp authoritative; array indexes are accelerators only
+- market orders fill at the next released canonical 1-minute bar open
+- high-speed playback may batch work but cannot skip logical 1-minute bars
 
-1. Browser never receives bars after the replay cursor.
-2. Durable Object owns authoritative replay state.
-3. Actual futures contract identity/prices are execution truth.
-4. Canonical replay/runtime resolution is now **1 minute**.
-5. User-facing time is `America/New_York`; protocol/storage timestamps are UTC.
-6. Replay input is product + time; user does not preselect the actual contract.
-7. Contract selection remains causal.
-8. High replay speed may batch work but must not skip logical 1-minute bars.
-9. Play/Pause/Next remain deterministic.
-10. A market order requested at the current cursor fills only at the next released 1-minute bar open.
+Display resolutions:
 
-Current replay speed buttons:
+- 1m
+- 5m
+- 30m
+- 4h
+- 1D
 
-```text
-1  5  10  50  100  Max
-```
+Display/cache is separate from canonical trading state.
 
-Default replay time is `08:30` ET.
+Current native/precomputed display cache:
 
-## 4. Multi-timeframe display data
+- 1m
+- 5m
+- 30m
+- 4h
+- 1D
 
-Requested chart resolutions:
+Higher-timeframe current/incomplete bars must always be constructed from released canonical 1m bars only.
 
-```text
-1m
-5m
-30m
-4h
-1D
-```
+## 3. Time/session invariants
 
-The chart timeframe is a display concern and must not change replay/trading state.
+User-facing display time:
 
-Native published data:
+- `America/New_York`
 
-```text
-1m  -> canonical replay/display source
-1D  -> explicitly generated futures-session daily bars
-```
+Protocol/storage timestamps:
 
-TradingView Advanced Charts can rebuild larger intraday bars from native 1-minute data, so 5m/30m/4h do not need duplicated stored datasets.
+- UTC epoch seconds
 
-The daily resolution is different: TradingView cannot rebuild daily bars from intraday data, therefore `cloud_export.py` now publishes native `1D` bars as well.
+Futures session roll:
 
-Cloud manifest version 6 advertises:
+- **18:00 ET**
 
-```text
-supported_display_resolutions = ["1", "5", "30", "240", "1D"]
-native_display_resolutions    = ["1", "1D"]
-intraday_multipliers          = ["1"]
-daily_multipliers             = ["1"]
-```
+This is a hard invariant.
 
-Per-contract manifest data keeps:
+Important outstanding issue:
 
-```text
-shards                  authoritative 1m replay shards used by Durable Object
-display_shards["1m"]    native 1m chart data
-display_shards["1D"]    native daily chart data
-```
+- `cloudflare/worker/main.js` currently still contains `SESSION_END_HOUR_ET = 17`.
+- That is inconsistent with the rest of the system and can classify 17:00-17:59 ET into the next trading session one hour too early.
+- Fix this to 18 with boundary tests (16:59, 17:00, 17:59, 18:00) before doing more contract/session logic changes.
 
-Daily OHLCV is grouped by the futures trading-session date, using the existing 17:00 ET session roll rule. The exported daily timestamp is 00:00 UTC for that trading day, as required by TradingView.
+## 4. Correct restore/optimization baseline
 
-### Current chart-library caveat
+The rollback to `5e741988` was too early.
 
-Production `site/index.html` currently loads **TradingView Lightweight Charts 5.2.1**, not Advanced Charts. Lightweight Charts does not provide the Advanced Charts resolution selector/datafeed contract automatically.
+The correct pre-second-review optimized checkpoint was:
 
-The data side is now prepared correctly for Advanced Charts: 1m and 1D are native; 5m/30m/4h can be rebuilt from 1m. When the Advanced Charts widget/datafeed is connected, its `supported_resolutions`, `intraday_multipliers`, `daily_multipliers`, and `getBars` implementation should consume this manifest rather than create separate duplicated 5m/30m/4h archives.
+- `dbf4c23d141e52b9b623c70b2c9e1062e564ab87`
+  - `feat(replay): activate selected-timeframe display worker`
 
-Changing chart resolution must NOT:
+It was restored through:
 
-```text
-restart replay
-move replay cursor
-clear trades
-change selected actual contract
-reveal future data
-change order execution resolution
-```
+- `ca54e1a2`
+  - `revert: restore pre-second-review optimized state`
 
-## 5. Viewport / auto-fit policy — critical
+Everything after that was re-optimized incrementally with regression tests.
 
-Automatic fit/scale is allowed only when a new replay session starts or when explicitly requested:
-
-```text
-Start Replay
-Random
-Restart
-Fit
-```
+Do not repeat the large second-review refactor wholesale.
 
-Normal actions must NOT move or auto-scale the user's chart:
+## 5. Critical production outage lesson
 
-```text
-Play
-Pause
-Next
-speed changes
-Buy
-Sell
-Trades toggle
-Console toggle
-Clear trading
-incoming replay bars
-trade marker updates
-horizontal panning
-```
+A previous refactor replaced the working auth path and queried:
 
-`site/app.js` uses `shiftVisibleRangeOnNewBar: false` and preserves the visible logical range around normal data/marker/layout updates.
+- `app_users`
+- `app_sessions`
 
-Current Fit behavior in `site/chart-tools-fixes.js`:
+Production D1 actually defines:
 
-```text
-fit X with fitContent()
-enable price Y autoscale
-enable volume Y autoscale
-wait for Lightweight Charts to calculate ranges
-freeze both Y scales again
-```
+- `auth_users`
+- `auth_sessions`
 
-The delayed freeze is intentional. Freezing immediately caused incorrect fitted Y ranges.
+That caused authenticated API calls to fail and Firefox surfaced:
 
-## 6. Price and volume axes
+- `NetworkError when attempting to fetch resource`
 
-Price and volume are intentionally independent:
+The correct production auth path is the original `auth.js` implementation using the `auth_*` tables.
 
-```text
-Price  -> right Y-axis
-Volume -> left Y-axis
-```
+Do not reintroduce the inline `app_users/app_sessions` auth rewrite.
 
-Expected behavior:
+## 6. Deployment guards now required
 
-```text
-manual right-axis scaling affects price only
-manual left-axis scaling affects volume only
-Fit fits both once, then freezes both
-horizontal pan does not autoscale either
-```
+Cloudflare deploy workflow must verify:
 
-### Volume-axis panning
+- live Worker `/api/auth/status`
+- browser CORS preflight from `https://futureview.pages.dev`
 
-The left volume axis now supports both scaling and vertical panning.
+Pages deploy workflow must verify:
 
-Normal left-axis drag keeps Lightweight Charts' native scale/zoom behavior.
+- project production branch = `master`
+- canonical `https://futureview.pages.dev/` returns the FutureView page
 
-To vertically pan/translate the volume range without changing its span:
+Do not treat a successful unique Pages deployment URL as proof production is healthy.
 
-```text
-Shift + left-drag on the left volume axis
-or
-middle-button drag on the left volume axis
-```
+## 7. Viewport / auto-fit policy
 
-Implementation uses Lightweight Charts 5.2 price-scale `getVisibleRange()` / `setVisibleRange()` and leaves the right price axis untouched. Autoscale remains disabled after manual volume panning.
+Allowed to fit automatically:
 
-Volume retains its lower-chart margin:
+- Start Replay
+- Random
+- Restart
+- explicit Fit
 
-```text
-top: 0.8
-bottom: 0
-```
+Must preserve viewport:
 
-## 7. Chart tools
+- Play
+- Pause
+- Next
+- speed changes
+- incoming bars/batches
+- timeframe data updates
+- cached history arrival
+- trade marker updates
+- Buy/Sell
+- Clear trading
+- Trades/Console layout toggles
 
-Current feature set:
+Recent fix:
 
-```text
-candles
-volume
-OHLCV legend
-SMA 5/10/20/60
-VWAP
-magnet crosshair
-trend line
-ray
-horizontal line
-vertical line
-rectangle
-Fibonacci retracement
-text annotation
-undo / clear drawings
-zoom in/out
-Fit
-Latest
-linear/log scale
-```
+- `532f18bc` — `fix(chart): never auto-fit after Next data`
+- `1a51f4d5` — test-only correction
 
-Drawing rendering/hit testing comes from `lightweight-charts-drawing`, while local code provides interaction glue.
+Root cause was duplicate fit behavior:
 
-### H-Line / V-Line special path
+- `app.js reset()` already explicitly calls `chartTools.fit()`
+- `chartTools.reset()` also armed `_fvAutoFitPending = true`
+- a later cached window could consume that flag during Next/Play and unexpectedly fit
 
-H-Line/V-Line placement bypasses `chart.subscribeClick()` and uses a capture-phase container click because the normal callback was unreliable for one-anchor tools.
+Current rule:
 
-Multi-point tools continue using the existing chart callback path.
+- reset gets one explicit fit only
+- `_fvAutoFitPending` must not remain armed after reset
 
-## 8. Annotation lifecycle
+## 8. History-range behavior
+
+History-range buttons:
+
+- 1D
+- 5D
+- 1M
+- 3M
+
+3M = 90 calendar days.
+
+Recent 3M fixes:
+
+### `b7c19114` — stream and apply full 3M history
+
+Problem:
+
+- Worker sent the entire 3M display window as one WebSocket message
+- 5m 3M can be ~15k-18k bars
+- visible 90-day range was not applied until history response arrived
+
+Fix:
+
+- visible axis switches to requested history immediately
+- large display-history payloads are chunked at 4096 bars
+- browser assembles chunks in `site/replay-window-assembler.js`
+- chart `setData()` is called once after complete assembly
+- small 1M/etc responses keep legacy single-message behavior
+
+### `73a48c15` — keep history range anchored at replay cursor
+
+Problem:
+
+- synthetic right boundary used `cursor + max(1 day, history/4, ...)`
+- 3M therefore created ~22.5 fake future days
+
+Fix:
+
+- left anchor = `cursor - history`
+- right anchor = only a small selected-timeframe pad
+- no multi-day future whitespace
+
+## 9. Historical contract selection / volume
+
+Recent fix:
+
+- `636bb01a` — `fix(replay): stitch causal front-contract history`
+
+Problem:
+
+- long display history originally used `this.session.contract` for the whole range
+- when looking months backward, that contract might not yet have been front/active
+- early historical volume therefore looked abnormally tiny
 
 Current behavior:
 
-```text
-Start Replay -> clear all drawings first
-Random       -> clear all drawings first
-Restart      -> does not explicitly clear drawings
-```
+- historical display is stitched by trading session
+- each session selects a contract using **previous-session volume only**
+- same-session/future volume is never used
+- current live replay remains on the actual cursor-selected contract
+- no R2 republish was needed; existing per-contract display caches are reused
 
-Start/Random clearing is implemented in `site/chart-tools-fixes.js` before the new session begins.
+Important consequence:
 
-## 9. Trading engine
+- this is an **unadjusted front-contract continuous display**
+- raw contract rolls can contain real price gaps
+- do not silently back-adjust unless explicitly designed/approved
+- if visual roll gaps become undesirable, add an explicit display mode rather than modifying execution truth
 
-Current execution model:
+## 10. Timeframe switching / price-jump bug
 
-```text
-market orders only
-Buy/Sell quantity 1..100
-request at current replay cursor
-fill at NEXT released 1m bar OPEN
-multiple pending orders supported
-scaling supported
-partial exits supported
-reversals supported
-```
+Most recent fix:
+
+- `2c486209ebd4fe03f75da70acff10666e835e2a7`
+- `fix(replay): seed active frame before timeframe history`
+
+Observed symptom:
+
+- switching 1m -> 5m could make price jump
+- switching through another scale could make it disappear
+
+Root cause:
+
+The Worker used this order:
+
+1. clear selected-timeframe active aggregate
+2. broadcast precomputed history
+3. rebuild active partial candle
+
+During step 2 there was no active-frame cutoff. The precomputed history could therefore include the **full current 5m candle**, including canonical 1m minutes after the replay cursor.
+
+That leaked future data into the timeframe-change display path and could expose the wrong close.
+
+Current order:
+
+1. set new timeframe
+2. reset aggregate + display cursor
+3. build the causal active partial candle from released 1m data
+4. establish active bucket timestamp
+5. broadcast historical bars strictly before that bucket
+6. send snapshot
+
+Regression tests now cover:
+
+- switching to 5m mid-bucket
+- active 5m OHLC ends at actual replay cursor
+- full cached current bucket is excluded from history
+
+This is a critical causality invariant.
+
+## 11. Incremental optimization work already applied
+
+Important performance commits after the correct restore point include:
+
+- `f961608b` — remove per-minute async release overhead
+- `f3b84665` — reuse resident shard for warmup
+- `da5021b0` — avoid per-minute timezone aggregation work
+- `b17414eb` — batch selected-frame Next release
+- `e9c3a32e` — fast-path resident cursor validation
+- `5de489a4` — parallelize display window prefetch
+- `e3f04447` — seed active frame aggregation once
+- `7293fc53` — preload long history windows in parallel
+- `d77e90fd` — dedupe/background display prefetch
+- `8e81f4c9` — avoid repeated timezone conversion in VWAP scan
+- `1938811b` — incremental VWAP updates
+- `65ac541a` — rolling SMA updates
+- `38d8a7c2` / `190357a8` — consume preloaded history synchronously + syntax fix
+- `31699d29` — binary-search replay start position
+- `6d6202a9` — defer hidden indicator history
+- `b2c6b46b` — skip hidden live indicator updates
+- `b390d890` — reuse resolved startup shard
+- `6dced814` — rebuild daily active frame arithmetically
+- `b4aea530` — batch daily Next release
+- `54fb1a86` — cache indicator visibility
+- `2a748bdd` — fast-path warmup aggregation
+- `2f1258a1` — align raw daily stamps to Eastern midnight
+- `fa453c8e` — prefetch next canonical shard
+
+Optimization strategy must remain:
+
+- one contained change at a time
+- pin semantics with tests first
+- do not touch auth/chart/transport simultaneously
+- production API/CORS probe must stay green
+
+## 12. Current transport/display implementation
+
+Key files:
+
+- `cloudflare/worker/replay-session-core.js`
+  - stable core replay engine
+- `cloudflare/worker/replay-session.js`
+  - optimized wrapper around canonical release/warmup
+- `cloudflare/worker/replay-session-frame.js`
+  - selected-timeframe/window layer
+- `cloudflare/worker/replay-session-display.js`
+  - timestamp-authoritative selected-frame logic
+- `cloudflare/worker/replay-session-display-fast.js`
+  - current optimized display subclass
+- `cloudflare/worker/main-frame.js`
+  - exports current display replay class
+- `site/chart-ui-repair.js`
+  - browser chart controller
+- `site/replay-range.js`
+  - history range/timeframe WebSocket interception + range behavior
+- `site/replay-window-assembler.js`
+  - chunked long-history reassembly
+- `site/app.js`
+  - main replay/trading client
+
+## 13. app.js editing warning
+
+Do not use a connector path that replaces `site/app.js` without verifying full content; this previously truncated the file while still producing a successful commit/deploy.
+
+Safe procedure:
+
+1. fetch complete current `site/app.js`
+2. modify in memory
+3. `create_blob`
+4. `create_tree` using current master tree
+5. `create_commit`
+6. `update_ref`
+7. fetch edited region and EOF tail
+8. verify final `})();`
+
+Prefer Git Data API primitives for `site/app.js`.
+
+## 14. Trading behavior
+
+Current model:
+
+- market orders only
+- quantity 1..100
+- request at current replay cursor
+- fill at next released canonical 1m bar open
+- multiple pending orders
+- scale in/out
+- reversals
+- persisted trading state
 
 Point values:
 
-```text
-MES = $5 / point / contract
-ES  = $50 / point / contract
-```
+- MES = $5 / point / contract
+- ES = $50 / point / contract
 
-Accounting tracks:
+Clear trading:
 
-```text
-position quantity
-average price
-realized P&L
-unrealized P&L
-total P&L
-commission (currently zero)
-slippage (currently zero)
-pending orders
-fills
-```
+- clears position/pending/fills/P&L/console
+- does not restart replay
+- does not move cursor
+- does not fit chart
 
-When flat:
+## 15. Required smoke tests after every relevant change
 
-```text
-Avg        = —
-Unrealized = $0.00
-```
+### Production/connectivity
 
-## 10. Restart vs Clear
+1. canonical `futureview.pages.dev` loads
+2. login/auth works
+3. Worker `/api/auth/status` reachable
+4. CORS preflight from canonical Pages origin succeeds
+5. replay WebSocket stays connected
 
-Restart:
+### Replay causality
 
-```text
-restart replay state/cursor
-clear trading state
-fit chart
-```
+6. browser never gets a canonical bar after cursor
+7. 1m Next advances exactly one 1m bar
+8. 5m Next advances exactly one selected 5m display frame while processing underlying 1m bars
+9. pending order fills at first newly released 1m bar open
+10. changing timeframe does not move replay cursor
+11. current incomplete higher-TF candle contains only released 1m bars
+12. cached current higher-TF bucket is never exposed as completed history
 
-Clear:
+### Viewport
 
-```text
-clear trading only
-clear pending orders/fills
-reset position/avg/P&L
-clear persisted current-session trading records
-clear Console history
-DO NOT change replay cursor/time/state
-DO NOT fit/move chart
-```
+13. Start/Random/Restart/Fit may fit
+14. Next never fits
+15. Play never fits
+16. incoming cache/data never fits
+17. timeframe change preserves viewport unless explicitly requested otherwise
 
-Backend command:
+### History
 
-```text
-clear_trading
-```
+18. 1D/5D/1M/3M buttons change requested visible domain
+19. 3M does not show fake future days
+20. chunked 3M history reassembles exactly once
+21. historical contract stitching uses prior-session volume only
+22. no same-session/future volume drives historical contract choice
 
-Do not implement Clear by calling Restart.
+### Time
 
-## 11. Console and queued-order status
+23. all display labels ET
+24. protocol/storage UTC
+25. futures session roll = 18:00 ET
 
-Console is a trading activity log, hidden by default.
+## 16. Current known risks / next work
 
-It records:
+Highest priority:
 
-```text
-ORDER when an order is accepted/queued
-FILL  when the order executes
-```
+1. Fix `SESSION_END_HOUR_ET = 17` in `cloudflare/worker/main.js` to 18 and add boundary tests.
+2. Audit the duplicated session/expiry/contract-selection helpers now present in `main.js` and `replay-session-display-fast.js`; centralize only after tests exist.
+3. Add an end-to-end timeframe-switch test that compares visible current price across 1m/5m/30m/4h at the same cursor.
+4. Add a test around a real contract-roll boundary:
+   - current cursor contract
+   - stitched historical front contract
+   - active partial candle
+   - no accidental price substitution
+5. Decide whether front-contract historical display should remain raw/unadjusted or offer an explicit back-adjusted visualization mode. Never alter execution truth.
+6. Continue optimization only after the above correctness checks.
 
-Temporary queued status must disappear when the fill event arrives while permanent ORDER/FILL history remains.
-
-## 12. app.js editing warning — highest priority
-
-The GitHub file-replacement connector previously truncated `site/app.js`, producing successful commits/deployments with a broken site.
-
-Known bad commits included:
+## 17. Short handoff
 
 ```text
-5749e860
-72adcd2c
-```
+HEAD = 2c486209ebd4fe03f75da70acff10666e835e2a7
 
-Current known-good `site/app.js` blob:
+Production:
+https://futureview.pages.dev
+https://futureview.rueijrwu.workers.dev
 
-```text
-cb4a45259ad5efaa83c1359ab3699ca109f7c61a
-```
-
-Safe procedure for future `site/app.js` edits:
-
-```text
-1. fetch COMPLETE current blob
-2. modify in memory
-3. create_blob
-4. create_tree using current master tree as base
-5. create_commit with current master as parent
-6. update_ref master
-7. fetch modified region AND EOF tail
-8. verify initialization and final `})();`
-```
-
-Do NOT use the truncating full-file replacement path for `site/app.js` until proven safe.
-
-## 13. Recent implementation commits
-
-```text
-957ccf25  use 1m bars as canonical replay store
-2d8fbaea  publish canonical 1m cloud bars
-c7f9d800  exercise canonical 1m engine data
-fa6bac59  validate 1m cloud manifest resolutions
-86a68e93  align app fixture with 1m replay data
-465d848e  allow independent volume-axis panning
-e637b980  publish native 1m and futures-session 1D bars
-c2764c4e  validate native 1m and 1D display shards
-```
-
-Earlier chart fixes still relevant:
-
-```text
-c7872d02  correct one-shot Fit timing
-7b187078  independent visible volume Y-axis on left
-8fa0bea3  clear annotations on Start Replay and Random
-39600bfe  synchronize draw-tool toolbar state
-e8eb875b  direct H-Line/V-Line placement path
-```
-
-## 14. Immediate smoke-test checklist
-
-```text
-1. Production page loads and login/start replay works.
-2. Replay advances one minute per logical step.
-3. Market order fills at next released 1m bar open.
-4. No future 1m bar is exposed.
-5. Start/Random fit and clear annotations as intended.
-6. Play/Pause/Next do not move/scale viewport.
-7. Right price-axis scaling affects price only.
-8. Left volume-axis scaling affects volume only.
-9. Shift+drag left volume axis vertically pans volume without changing price scale.
-10. Middle-drag left volume axis does the same.
-11. Fit restores/fits both scales once and freezes them.
-12. H-Line/V-Line repeated arm/place cycles work.
-13. Trend/Ray/Rect/Fib/Text still work.
-14. Buy/Sell queued status appears and clears on fill.
-15. Clear resets trading only and leaves replay cursor/view intact.
-16. Republished R2 manifest reports version 6, resolution 1m, native 1m + 1D.
-17. 1D bars use futures session dates and 00:00 UTC timestamps.
-```
-
-## 15. Recommended next work
-
-```text
-1. Finish/verify the Advanced Charts widget/datafeed integration.
-2. Datafeed advertises supported resolutions 1, 5, 30, 240, 1D.
-3. Datafeed serves native 1m and 1D only.
-4. Allow TradingView to rebuild 5m/30m/4h from 1m.
-5. Ensure realtime partial higher-timeframe bars remain causal.
-6. Add JS syntax validation to CI for every file in site/.
-7. Add browser smoke tests for viewport and volume-axis panning.
-8. Keep regression tests for drawing tools and trading state.
-```
-
-## 16. Short handoff summary
-
-```text
-MASTER = FutureView historical futures replay + manual trading simulator.
-
-Replay truth:
+Canonical replay/trading:
 1-minute actual-contract bars.
-No future data may pass the replay cursor.
 
-Display resolutions:
+Display:
 1m / 5m / 30m / 4h / 1D.
-Native data = 1m + 1D.
-TradingView should rebuild 5m/30m/4h from 1m.
+Current higher-TF bar is always reconstructed from released 1m only.
 
-Trading:
-market Buy/Sell; fill at next released 1m bar open.
-
-Axes:
-price = independent right Y-axis.
-volume = independent left Y-axis.
-left-axis normal drag scales; Shift+drag or middle-drag pans vertically.
+History:
+1D / 5D / 1M / 3M.
+3M uses chunked WebSocket history.
+Historical display is causally stitched across front contracts using prior-session volume.
 
 Viewport:
-new replay / Restart / Fit may auto-fit.
-Normal replay/trading actions preserve the view.
+Start / Random / Restart / Fit may fit.
+Next / Play / data / cache / timeframe updates must not auto-fit.
 
-Critical engineering risk:
-do not use the unsafe full-file replacement path for site/app.js.
+Recent critical fixes:
+636bb01a  causal front-contract history (fixes tiny early volume)
+2c486209  active partial frame seeded before timeframe history (fixes 1m->5m price jump / future bucket leak)
+532f18bc  no delayed auto-fit after Next
+73a48c15  no large fake future range anchor
+b7c19114  chunked full 3M history
 
-Current next task:
-verify the 1m/1D R2 republish and then wire the Advanced Charts datafeed to the manifest.
+Critical remaining bug:
+main.js still has SESSION_END_HOUR_ET = 17.
+System invariant is 18:00 ET. Fix next with boundary tests.
+
+Do not reapply the old second full-refactor wholesale.
+Continue incrementally with semantic tests + production health gates.
 ```
