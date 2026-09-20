@@ -398,51 +398,56 @@
       if (previous) { try { this._fvNativeSetVisibleRange(previous); } catch {} }
     }
 
-    // Lock holds one point, not a window: the time at the middle of the chart
-    // and the price at the middle of the price axis. A scale change is free to
-    // change how wide the window is and how much price it spans - what it may
-    // not do is drift off that point.
+    // Lock holds one point and one width, not a live window: the time and
+    // calendar-second span at the middle of the chart, and the price and
+    // dollar span at the middle of the price axis, all captured once and kept
+    // fixed. A scale change re-renders that same span at the new granularity -
+    // what it may not do is drift the centre or the span.
+    //
+    // The span has to be captured, not read fresh off the chart at recentre
+    // time: mid-switch, the axis can be showing a leftover window from the
+    // *previous* scale (the library doesn't reset it on setData), and
+    // converting that stale time span into the new scale's bar-index units
+    // produces a near-zero or wildly wrong width - the old scale's few-minute
+    // window becomes a fraction of a bar once the step is a day.
     _fvCaptureCentre() {
       const time = this.chart.timeScale().getVisibleRange?.() || null;
       if (!time) return null;
       const price = this.candles.priceScale().getVisibleRange?.() || null;
       return {
         time: (Number(time.from) + Number(time.to)) / 2,
+        span: Number(time.to) - Number(time.from),
         price: price ? (Number(price.from) + Number(price.to)) / 2 : null,
+        priceSpan: price ? Number(price.to) - Number(price.from) : null,
       };
     }
 
-    // Keep the width the new scale produced and slide it onto the locked point.
     _fvRecentreLocked() {
       const centre = this._fvLockedCentre;
       if (!this._fvViewportLocked || !centre) return false;
 
-      // Bar indices, not times: the width is whatever the new scale ended up
-      // showing, and the centre keeps its place even when half the window ends
-      // up past the last bar - being centred on the latest bar means exactly
-      // that. A time window would be clamped back onto the data instead.
+      // Bar indices, not a time range: a time range would be clamped back onto
+      // the data, but the centre keeps its place even when half the window
+      // ends up past the last bar - being centred on the latest bar means
+      // exactly that.
       const frame = this._fvLogicalFrame();
-      const visible = this.chart.timeScale().getVisibleRange?.();
-      if (frame && visible && Number.isFinite(centre.time)) {
-        const lo = this._fvLogicalIndexAt(Number(visible.from), frame);
-        const hi = this._fvLogicalIndexAt(Number(visible.to), frame);
-        const middle = this._fvLogicalIndexAt(centre.time, frame);
-        const width = hi - lo;
-        if (Number.isFinite(width) && width > 0 && Number.isFinite(middle)) {
-          this._fvApplyLogicalRange(middle - width / 2, middle + width / 2);
+      if (frame && Number.isFinite(centre.time) && Number.isFinite(centre.span) && centre.span > 0) {
+        const lo = this._fvLogicalIndexAt(centre.time - centre.span / 2, frame);
+        const hi = this._fvLogicalIndexAt(centre.time + centre.span / 2, frame);
+        if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
+          this._fvApplyLogicalRange(lo, hi);
         }
       }
 
-      if (Number.isFinite(centre.price)) {
-        const scale = this.candles.priceScale();
-        const range = scale.getVisibleRange?.();
-        const height = range ? Number(range.to) - Number(range.from) : NaN;
-        if (Number.isFinite(height) && height > 0) {
-          try {
-            scale.applyOptions({ autoScale: false });
-            scale.setVisibleRange({ from: centre.price - height / 2, to: centre.price + height / 2 });
-          } catch {}
-        }
+      if (Number.isFinite(centre.price) && Number.isFinite(centre.priceSpan) && centre.priceSpan > 0) {
+        try {
+          const scale = this.candles.priceScale();
+          scale.applyOptions({ autoScale: false });
+          scale.setVisibleRange({
+            from: centre.price - centre.priceSpan / 2,
+            to: centre.price + centre.priceSpan / 2,
+          });
+        } catch {}
       }
       return true;
     }
@@ -488,14 +493,32 @@
       };
       const end = () => {
         this._fvUserInteractionUntil = performance.now() + 180;
-        if (this._fvViewportLocked) {
-          setTimeout(() => { this._fvLockedCentre = this._fvCaptureCentre(); }, 200);
-        }
+        this._fvScheduleLockRecapture();
       };
       this.container.addEventListener("pointerdown", begin, true);
       this.container.addEventListener("pointerup", end, true);
       this.container.addEventListener("pointercancel", end, true);
-      this.container.addEventListener("wheel", () => { this._fvUserInteractionUntil = performance.now() + 180; }, { capture: true, passive: true });
+      // The wheel also pans and zooms the chart (handleScroll/handleScale),
+      // not just the pointer - a wheel-only pan that never fires pointerup
+      // used to leave the locked centre stale at wherever Lock was last
+      // engaged, so a later scale change re-centred on that old point
+      // instead of where the user had just scrolled to.
+      this.container.addEventListener("wheel", () => {
+        this._fvUserInteractionUntil = performance.now() + 180;
+        this._fvScheduleLockRecapture();
+      }, { capture: true, passive: true });
+    }
+
+    // Debounced so a run of wheel ticks or a drag-then-release only captures
+    // once the axis has actually settled, not mid-interaction.
+    _fvScheduleLockRecapture() {
+      if (!this._fvViewportLocked) return;
+      clearTimeout(this._fvRecaptureTimer);
+      this._fvRecaptureTimer = setTimeout(() => this._fvRecaptureLockedCentre(), 220);
+    }
+
+    _fvRecaptureLockedCentre() {
+      this._fvLockedCentre = this._fvCaptureCentre();
     }
 
     _fvSyncTimeframeUi() {

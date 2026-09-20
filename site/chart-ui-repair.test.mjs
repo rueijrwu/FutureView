@@ -602,29 +602,38 @@ test("with nothing carried, a cached window just preserves what was on screen", 
   assert.deepEqual(h.calls.time.at(-1), { from: T0 + 10 * DAY, to: T0 + 20 * DAY });
 });
 
-test("Lock holds the centre and lets the width change", () => {
+test("Lock captures the centre and the calendar-second span at engage time", () => {
   const h = viewportHarness();
   h.setVisible(h.at(40), h.at(50));
   h.instance._fvToggleLock();
   assert.equal(h.instance._fvViewportLocked, true);
+  assert.ok(Math.abs(h.instance._fvLockedCentre.time - h.at(45)) < 0.01);
+  assert.ok(Math.abs(h.instance._fvLockedCentre.span - 10 * DAY) < 0.01);
+});
 
-  // The new bar scale produces a window twice as wide, somewhere else entirely.
+test("Lock re-centres using the captured span, not whatever the axis shows now", () => {
+  const h = viewportHarness();
+  h.setVisible(h.at(40), h.at(50));
+  h.instance._fvToggleLock();
+
+  // Something left the axis showing an unrelated window before recentre runs -
+  // exactly what happens mid-switch, when setData doesn't reset the axis.
   h.setVisible(h.at(0), h.at(20));
   h.instance._fvRecentreLocked();
 
   const got = h.lastLogical();
   assert.ok(Math.abs((got.from + got.to) / 2 - 45) < 0.01, `centred on ${(got.from + got.to) / 2}`);
-  assert.ok(Math.abs((got.to - got.from) - 20) < 0.01, `kept the new width, got ${got.to - got.from}`);
+  assert.ok(Math.abs((got.to - got.from) - 10) < 0.01, `kept the captured span, got ${got.to - got.from} bars`);
 });
 
-test("Lock centres the price too, keeping whatever height the new scale gives", () => {
+test("Lock centres the price too, using the captured span", () => {
   const h = viewportHarness();
   h.setPrice(5580, 5620);
   h.instance._fvToggleLock();
 
   h.setPrice(0, 100);
   h.instance._fvRecentreLocked();
-  assert.deepEqual(h.calls.price.at(-1), { from: 5550, to: 5650 });
+  assert.deepEqual(h.calls.price.at(-1), { from: 5580, to: 5620 });
 });
 
 test("engaging Lock does not move the chart", () => {
@@ -636,29 +645,37 @@ test("engaging Lock does not move the chart", () => {
   assert.equal(h.calls.fits, 0);
 });
 
-test("locked, a bar-scale change re-centres rather than restoring a window", () => {
+test("locked, a bar-scale change re-centres on the captured span, not a leftover window", () => {
   const h = viewportHarness();
   h.setVisible(h.at(40), h.at(50));
   h.instance._fvToggleLock();
 
-  // The starved re-aggregation leaves a narrow window somewhere else.
+  // The starved re-aggregation leaves the axis showing a leftover window from
+  // before the switch - reading that back as "the new width" is the bug this
+  // guards: converting a few old-scale bars' worth of seconds into new-scale
+  // bar indices produces a near-zero or wildly wrong width.
   h.setVisible(h.at(2), h.at(4));
   h.instance._fvSetTimeframe("5");
 
   const got = h.lastLogical();
   assert.ok(Math.abs((got.from + got.to) / 2 - 45) < 0.01, `centred on ${(got.from + got.to) / 2}`);
-  assert.ok(Math.abs((got.to - got.from) - 2) < 0.01, `kept the narrow width, got ${got.to - got.from}`);
+  assert.ok(Math.abs((got.to - got.from) - 10) < 0.01, `kept the captured span, got ${got.to - got.from} bars`);
 });
 
 test("a centred window may run past the last bar", () => {
   const h = viewportHarness({ count: 100 });
-  h.setVisible(h.at(95), h.at(99));
+  // Centred on 99 (the last bar) with a span wide enough that half of it
+  // reaches past the data - which is what being centred on the latest bar
+  // means, so it is not pulled back onto the data. The whitespace beyond the
+  // last bar is twice as many seconds per logical unit as the candles
+  // themselves, so the mapped window is not perfectly symmetric in bar-index
+  // terms - only in the calendar time it was captured from.
+  h.setVisible(h.at(97), h.at(101));
   h.instance._fvToggleLock();
-  h.setVisible(h.at(90), h.at(100));
   h.instance._fvRecentreLocked();
   const got = h.lastLogical();
   assert.ok(got.to > 99, `centre held into the empty space, got ${got.from}..${got.to}`);
-  assert.ok(Math.abs((got.from + got.to) / 2 - 97) < 0.01, `centred on ${(got.from + got.to) / 2}`);
+  assert.ok(Math.abs((got.from + got.to) / 2 - 99) < 1.5, `centred near 99, got ${(got.from + got.to) / 2}`);
 });
 
 test("unlocked, price is never pinned and nothing is centred", () => {
@@ -685,6 +702,21 @@ test("locked, a history-range change keeps the centre", () => {
   h.instance._fvSetHistoryRange(3600);
   const got = h.lastLogical();
   assert.ok(Math.abs((got.from + got.to) / 2 - 45) < 0.01, `centred on ${(got.from + got.to) / 2}`);
+});
+
+test("a wheel pan alone (no pointer events) re-captures the locked centre", () => {
+  const h = viewportHarness();
+  h.setVisible(h.at(40), h.at(50));
+  h.instance._fvToggleLock();
+
+  // The user scrolled elsewhere with the wheel - no pointerdown/up at all.
+  // The real path debounces this through a timer; call the same recapture
+  // the timer would fire, directly, so the test needs no real delay.
+  h.setVisible(h.at(10), h.at(20));
+  h.instance._fvRecaptureLockedCentre();
+
+  assert.ok(Math.abs(h.instance._fvLockedCentre.time - h.at(15)) < 0.01,
+    `centre not updated by the wheel pan, got ${h.instance._fvLockedCentre.time}`);
 });
 
 test("Start/Random clears a carried window so its own fit stands", () => {
