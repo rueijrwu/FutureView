@@ -76,19 +76,42 @@
   }
   function appendConsole(text){consoleEvents.push(text);renderConsole()}
   function clearConsole(){consoleEvents=[];consoleOrderIds.clear();consoleFillIds.clear();consoleTriggerIds.clear();renderConsole()}
-  function orderTypeLabel(order){return ORDER_TYPE_LABELS[order?.type||"market"]||"Market"}
+  const BRACKET_ROLE_LABELS = {take_profit:"Take profit", stop_loss:"Stop loss"};
+  // A bracket leg is reported under its role (Take profit / Stop loss), not its
+  // underlying order type (limit / stop) — the role is what the user placed and
+  // what they will recognize, the type is just how it is evaluated internally.
+  function orderTypeLabel(order){
+    if(order?.bracket_role)return BRACKET_ROLE_LABELS[order.bracket_role]||orderTypeLabelForType(order?.type);
+    return orderTypeLabelForType(order?.type);
+  }
+  function orderTypeLabelForType(type){return ORDER_TYPE_LABELS[type||"market"]||"Market"}
+  function hasBracket(order){return order&&(order.take_profit_price!=null||order.stop_loss_price!=null)}
+  function bracketSummary(order){
+    if(!hasBracket(order))return "";
+    const parts=[];
+    if(order.take_profit_price!=null)parts.push(`TP ${number(order.take_profit_price)}`);
+    if(order.stop_loss_price!=null)parts.push(`SL ${number(order.stop_loss_price)}`);
+    return parts.join(" / ");
+  }
   // full: both legs of a stop-limit, for the console and the row tooltip. Without
   // it the row shows only the price the order is waiting for right now, which is
-  // the one drawn on the chart.
+  // the one drawn on the chart. A bracket entry appends its attached legs, since
+  // those do not show up anywhere else until the entry fills.
+  // The compact form is what a row shows; the full form (tooltip, console) also
+  // spells out a stop-limit's other leg and a bracket entry's attached prices,
+  // which is too much text for a table cell but exactly what a hover wants.
   function orderPriceText(order,full=false){
     if(!order)return "";
-    if(order.type==="limit")return `limit ${number(order.limit_price)}`;
-    if(order.type==="stop")return `stop ${number(order.stop_price)}`;
-    if(order.type==="stop_limit"){
-      if(full)return `stop ${number(order.stop_price)} → limit ${number(order.limit_price)}`;
-      return order.status==="triggered"?`limit ${number(order.limit_price)}`:`stop ${number(order.stop_price)}`;
-    }
-    return "next bar open";
+    let base;
+    if(order.type==="limit")base=`limit ${number(order.limit_price)}`;
+    else if(order.type==="stop")base=`stop ${number(order.stop_price)}`;
+    else if(order.type==="stop_limit"){
+      base=full?`stop ${number(order.stop_price)} → limit ${number(order.limit_price)}`
+        :(order.status==="triggered"?`limit ${number(order.limit_price)}`:`stop ${number(order.stop_price)}`);
+    }else base="next bar open";
+    if(!full)return base;
+    const bracket=bracketSummary(order);
+    return bracket?`${base} · ${bracket}`:base;
   }
   function recordAcceptedOrder(order){
     if(!order||consoleOrderIds.has(order.id))return;
@@ -106,12 +129,26 @@
       appendConsole(`${displaySeconds(order.triggered_at_ts)}  TRIGGER ${String(order.side).toUpperCase()} ${order.quantity}  stop ${number(order.stop_price)} hit, now working as limit ${number(order.limit_price)}`);
     }
   }
+  const consoleBracketIds = new Set();
+  function recordAttachedBracket(orders){
+    for(const order of orders||[]){
+      if(consoleBracketIds.has(order.id))continue;
+      consoleBracketIds.add(order.id);
+      appendConsole(`${displaySeconds(order.requested_at_ts)}  BRACKET ${orderTypeLabel(order).toUpperCase()} ${String(order.side).toUpperCase()} ${order.quantity}  ${orderPriceText(order,true)} attached`);
+    }
+  }
+  function recordOcoCancelled(orders){
+    for(const order of orders||[]){
+      appendConsole(`${displaySeconds(lastMarkTs ?? order.requested_at_ts)}  CANCEL ${orderTypeLabel(order).toUpperCase()} ${String(order.side).toUpperCase()} ${order.quantity}  ${orderPriceText(order,true)} · OCO, other leg filled`);
+    }
+  }
   function syncFillConsole(trading){
     for(const f of trading?.fills||[]){
       if(consoleFillIds.has(f.id))continue;
       consoleFillIds.add(f.id);
       const after=Number(f.position_after)===0?"Flat":`${Number(f.position_after)>0?"Long":"Short"} ${Math.abs(Number(f.position_after))} @ ${number(f.avg_price_after)}`;
-      appendConsole(`${displaySeconds(f.filled_at_ts)}  FILL   ${String(f.side).toUpperCase()} ${f.quantity} ${trading?.contract||""} @ ${number(f.fill_price)}  realized ${money(f.realized_delta)}  → ${after}`);
+      const label=f.bracket_role?BRACKET_ROLE_LABELS[f.bracket_role]?.toUpperCase()||"FILL":"FILL";
+      appendConsole(`${displaySeconds(f.filled_at_ts)}  ${label.padEnd(6)} ${String(f.side).toUpperCase()} ${f.quantity} ${trading?.contract||""} @ ${number(f.fill_price)}  realized ${money(f.realized_delta)}  → ${after}`);
     }
   }
 
@@ -199,8 +236,13 @@
   // Working orders and fills share one table: the orders are what you can still
   // act on, so they sit on top, and the fills are the history underneath.
   function orderRow(o){
-    return `<tr class="order-row${o.status==="triggered"?" triggered":""}">`
-      +`<td class="order-mark" title="${o.status==="triggered"?"Stop triggered, working as a limit":"Working order"}">${o.status==="triggered"?"▸":"○"}</td>`
+    const mark=o.status==="triggered"?"▸":(o.oco_group?"⇄":(hasBracket(o)?"◎":"○"));
+    const markTitle=o.status==="triggered"?"Stop triggered, working as a limit"
+      :o.oco_group?"Bracket leg — filling this cancels its sibling"
+      :hasBracket(o)?`Bracket entry — attaches ${bracketSummary(o)} once filled`
+      :"Working order";
+    return `<tr class="order-row${o.status==="triggered"?" triggered":""}${o.oco_group?" bracket-leg":""}">`
+      +`<td class="order-mark" title="${markTitle}">${mark}</td>`
       +`<td class="order-type">${orderTypeLabel(o)}</td>`
       +`<td class="${o.side==="buy"?"buy-text":"sell-text"}">${o.side==="buy"?"Buy":"Sell"}</td>`
       +`<td>${o.quantity}</td>`
@@ -259,7 +301,7 @@
   async function validateAuth(){const authToken=token();if(!authToken){goLogin();return false}const r=await fetch(`${API_ORIGIN}/api/auth/me`,{cache:"no-store",headers:{"Authorization":`Bearer ${authToken}`}});if(!r.ok){goLogin();return false}return true}
   async function logout(){const authToken=token();try{if(authToken)await fetch(`${API_ORIGIN}/api/auth/logout`,{method:"POST",headers:{"Authorization":`Bearer ${authToken}`}})}catch{}goLogin()}
 
-  function syncControls(){const ready=!!sessionId&&wsOpen&&wsSynced;const busy=!!pendingCommand;const finished=lastState==="FINISHED";$("play").disabled=!ready||busy||lastState==="PLAYING"||finished;$("pause").disabled=!ready||busy||lastState!=="PLAYING";$("next").disabled=!ready||busy||lastState==="PLAYING"||finished;$("restart").disabled=!ready||busy;$("buy-btn").disabled=!ready||finished;$("sell-btn").disabled=!ready||finished;$("trade-qty").disabled=!ready||finished;$("trade-type").disabled=!ready||finished;$("trade-limit").disabled=!ready||finished;$("trade-stop").disabled=!ready||finished;$("trade-clear").disabled=!ready}
+  function syncControls(){const ready=!!sessionId&&wsOpen&&wsSynced;const busy=!!pendingCommand;const finished=lastState==="FINISHED";$("play").disabled=!ready||busy||lastState==="PLAYING"||finished;$("pause").disabled=!ready||busy||lastState!=="PLAYING";$("next").disabled=!ready||busy||lastState==="PLAYING"||finished;$("restart").disabled=!ready||busy;$("buy-btn").disabled=!ready||finished;$("sell-btn").disabled=!ready||finished;$("trade-qty").disabled=!ready||finished;$("trade-type").disabled=!ready||finished;$("trade-limit").disabled=!ready||finished;$("trade-stop").disabled=!ready||finished;$("trade-bracket").disabled=!ready||finished;$("trade-take-profit").disabled=!ready||finished;$("trade-stop-loss").disabled=!ready||finished;$("trade-clear").disabled=!ready}
   function update(s,authoritative=false){if(!s)return;if(s.state)lastState=s.state;if(authoritative){wsSynced=true;pendingCommand=null;clearTimeout(commandAckTimer);commandAckTimer=null;}$("state-status").textContent=lastState;if(s.contract)$("contract-status").textContent=s.contract;if(s.cursor!=null){lastMarkTs=Number(s.cursor);$("time-status").textContent=displaySeconds(s.cursor);}else if(!sessionId)$("time-status").textContent="No session";if(s.trading)setTrading(s.trading);syncControls()}
   function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized - reconnecting…");if(wsPath)connect(wsPath);return}pendingCommand=type;if(type==="play")lastState="PLAYING";else if(type==="pause"||type==="restart")lastState="PAUSED";update({state:lastState});ws.send(JSON.stringify({type,...extra}));clearTimeout(commandAckTimer);commandAckTimer=setTimeout(()=>{if(pendingCommand===type){pendingCommand=null;wsSynced=false;error("Replay command acknowledgement timed out - resynchronizing…");syncControls();if(wsPath)connect(wsPath)}},2000)}
   function tickSize(){const size=Number(lastTrading?.tick_size);return Number.isFinite(size)&&size>0?size:0.25}
@@ -277,8 +319,11 @@
     const type=$("trade-type").value;
     $("trade-limit-field").hidden=!(type==="limit"||type==="stop_limit");
     $("trade-stop-field").hidden=!(type==="stop"||type==="stop_limit");
+    const bracket=$("trade-bracket").checked;
+    $("trade-tp-field").hidden=!bracket;
+    $("trade-sl-field").hidden=!bracket;
     const step=String(tickSize());
-    $("trade-limit").step=step;$("trade-stop").step=step;
+    $("trade-limit").step=step;$("trade-stop").step=step;$("trade-take-profit").step=step;$("trade-stop-loss").step=step;
   }
   function placeOrder(side){
     if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized");return}
@@ -289,6 +334,12 @@
     try{
       if(order_type==="limit"||order_type==="stop_limit")payload.limit_price=readPrice("trade-limit","Limit price");
       if(order_type==="stop"||order_type==="stop_limit")payload.stop_price=readPrice("trade-stop","Stop price");
+      if($("trade-bracket").checked){
+        const tpRaw=$("trade-take-profit").value,slRaw=$("trade-stop-loss").value;
+        if(tpRaw==="" && slRaw==="")throw new Error("A bracket needs a take-profit, a stop-loss, or both");
+        if(tpRaw!=="")payload.take_profit_price=readPrice("trade-take-profit","Take-profit price");
+        if(slRaw!=="")payload.stop_loss_price=readPrice("trade-stop-loss","Stop-loss price");
+      }
     }catch(e){error(e.message);return}
     error();
     ws.send(JSON.stringify(payload));
@@ -307,6 +358,8 @@
       else if(x.type==="order_accepted"){recordAcceptedOrder(x.order);setTrading(x.trading);error(`${orderTypeLabel(x.order)} order accepted: ${x.order.side.toUpperCase()} ${x.order.quantity} · ${orderPriceText(x.order,true)}`)}
       else if(x.type==="order_cancelled"){recordCancelledOrder(x.order);setTrading(x.trading);error("Order cancelled")}
       else if(x.type==="orders_triggered"){recordTriggeredOrders(x.orders);setTrading(x.trading);error()}
+      else if(x.type==="bracket_attached"){recordAttachedBracket(x.orders);setTrading(x.trading);error()}
+      else if(x.type==="orders_cancelled"){if(x.reason==="oco")recordOcoCancelled(x.orders);setTrading(x.trading);error()}
       else if(x.type==="trading_cleared"){clearConsole();setTrading(x.trading);error("Trading record cleared")}
       else if(x.type==="reset"){reset(x.warmup||[]);update(x.snapshot,true)}
       else if(x.type==="error"){pendingCommand=null;clearTimeout(commandAckTimer);error(x.error);syncControls()}
@@ -326,6 +379,7 @@
   $("speeds").onclick=e=>{const b=e.target.closest("button[data-speed]");if(!b)return;document.querySelectorAll("#speeds button").forEach(x=>x.classList.remove("active"));b.classList.add("active");speed=b.dataset.speed==="max"?"max":Number(b.dataset.speed);if(lastState==="PLAYING"&&!pendingCommand)command("play",{speed})};
   $("buy-btn").onclick=()=>placeOrder("buy");$("sell-btn").onclick=()=>placeOrder("sell");
   $("trade-type").onchange=()=>syncOrderFields();
+  $("trade-bracket").onchange=()=>syncOrderFields();
   $("trades-toggle").onclick=()=>{preserveChartViewport(()=>{const open=!$("workspace").classList.contains("trades-open");$("workspace").classList.toggle("trades-open",open);$("trades-toggle").setAttribute("aria-pressed",String(open));requestAnimationFrame(()=>chart.resize($("chart").clientWidth,$("chart").clientHeight))})};
   $("console-toggle").onclick=()=>{preserveChartViewport(()=>{const consoleEl=$("trading-console");const show=consoleEl.hidden;consoleEl.hidden=!show;$("console-toggle").setAttribute("aria-pressed",String(show));requestAnimationFrame(()=>chart.resize($("chart").clientWidth,$("chart").clientHeight))})};
   $("trade-clear").onclick=()=>clearTrading();

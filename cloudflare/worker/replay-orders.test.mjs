@@ -303,3 +303,167 @@ test("an order legacy-persisted without a type is still treated as a market orde
   assert.equal(trading.fills[0].fill_price, 5010);
   assert.equal(trading.fills[0].order_type, "market");
 });
+
+// --- bracket orders (take-profit / stop-loss, one-cancels-other) -----------
+
+test("a buy bracket attaches take-profit and stop-loss legs once the entry fills", async () => {
+  const { instance, trading } = makeSession();
+  const entry = await place(instance, {
+    order_type: "market", side: "buy", quantity: 2, take_profit_price: 5030, stop_loss_price: 4980,
+  });
+  await instance._fillPendingOrders(bar(1060, 5010, 5020, 5000, 5015));
+
+  assert.equal(trading.fills.length, 1, "only the entry fills on this bar");
+  assert.equal(trading.pendingOrders.length, 2, "both legs attach, but do not fill yet");
+  const [tp, sl] = trading.pendingOrders;
+  assert.equal(tp.bracket_role, "take_profit");
+  assert.equal(tp.type, "limit");
+  assert.equal(tp.side, "sell");
+  assert.equal(tp.limit_price, 5030);
+  assert.equal(sl.bracket_role, "stop_loss");
+  assert.equal(sl.type, "stop");
+  assert.equal(sl.side, "sell");
+  assert.equal(sl.stop_price, 4980);
+  assert.equal(tp.oco_group, entry.id);
+  assert.equal(sl.oco_group, entry.id);
+});
+
+test("bracket legs do not evaluate on the bar that filled the entry", async () => {
+  const { instance, trading } = makeSession();
+  await place(instance, {
+    order_type: "market", side: "buy", quantity: 1, take_profit_price: 5030, stop_loss_price: 4980,
+  });
+  // This bar's range would trigger the stop-loss immediately if it were live.
+  await instance._fillPendingOrders(bar(1060, 5010, 5020, 4970, 4975));
+
+  assert.equal(trading.fills.length, 1, "only the entry, the legs were not eligible yet");
+  assert.equal(trading.pendingOrders.length, 2, "both legs still working, untouched by this bar");
+});
+
+test("take-profit filling cancels the stop-loss (OCO)", async () => {
+  const { instance, trading, broadcasts } = makeSession();
+  await place(instance, {
+    order_type: "market", side: "buy", quantity: 1, take_profit_price: 5030, stop_loss_price: 4980,
+  });
+  await instance._fillPendingOrders(bar(1060, 5010, 5020, 5000, 5015));
+  await instance._fillPendingOrders(bar(1120, 5025, 5035, 5020, 5032));
+
+  assert.equal(trading.pendingOrders.length, 0);
+  assert.equal(trading.fills.length, 2);
+  assert.equal(trading.fills[1].bracket_role, "take_profit");
+  assert.equal(trading.fills[1].fill_price, 5030);
+  assert.equal(trading.positionQty, 0, "closed by the take-profit");
+  const cancelEvent = broadcasts.find((b) => b.type === "orders_cancelled");
+  assert.ok(cancelEvent);
+  assert.equal(cancelEvent.reason, "oco");
+  assert.equal(cancelEvent.orders[0].bracket_role, "stop_loss");
+});
+
+test("stop-loss filling cancels the take-profit (OCO)", async () => {
+  const { instance, trading } = makeSession();
+  await place(instance, {
+    order_type: "market", side: "buy", quantity: 1, take_profit_price: 5030, stop_loss_price: 4980,
+  });
+  await instance._fillPendingOrders(bar(1060, 5010, 5020, 5000, 5015));
+  await instance._fillPendingOrders(bar(1120, 4990, 4995, 4975, 4980));
+
+  assert.equal(trading.pendingOrders.length, 0);
+  assert.equal(trading.fills.length, 2);
+  assert.equal(trading.fills[1].bracket_role, "stop_loss");
+  assert.equal(trading.positionQty, 0, "closed by the stop-loss");
+});
+
+test("a sell bracket mirrors the buy rules", async () => {
+  const { instance, trading } = makeSession();
+  await place(instance, {
+    order_type: "market", side: "sell", quantity: 1, take_profit_price: 4970, stop_loss_price: 5020,
+  });
+  await instance._fillPendingOrders(bar(1060, 5010, 5020, 5000, 5015));
+  const [tp, sl] = trading.pendingOrders;
+  assert.equal(tp.side, "buy");
+  assert.equal(sl.side, "buy");
+  assert.equal(tp.limit_price, 4970);
+  assert.equal(sl.stop_price, 5020);
+
+  await instance._fillPendingOrders(bar(1120, 4975, 4980, 4960, 4965));
+  assert.equal(trading.fills[1].bracket_role, "take_profit");
+  assert.equal(trading.positionQty, 0);
+});
+
+test("a one-sided bracket (take-profit only) attaches just that leg", async () => {
+  const { instance, trading } = makeSession();
+  await place(instance, { order_type: "market", side: "buy", quantity: 1, take_profit_price: 5030 });
+  await instance._fillPendingOrders(bar(1060, 5010, 5020, 5000, 5015));
+
+  assert.equal(trading.pendingOrders.length, 1);
+  assert.equal(trading.pendingOrders[0].bracket_role, "take_profit");
+});
+
+test("a bracket entry that never fills never attaches legs", async () => {
+  const { instance, trading } = makeSession();
+  await place(instance, {
+    order_type: "limit", side: "buy", quantity: 1, limit_price: 4900, take_profit_price: 5030, stop_loss_price: 4890,
+  });
+  await instance._fillPendingOrders(bar(1060, 5010, 5020, 5000, 5015));
+
+  assert.equal(trading.fills.length, 0);
+  assert.equal(trading.pendingOrders.length, 1, "the entry itself, still resting");
+});
+
+test("a buy bracket with the take-profit below the entry is rejected", async () => {
+  const { instance } = makeSession({ lastPrice: 5000 });
+  await assert.rejects(
+    () => instance.placeOrder({ order_type: "market", side: "buy", quantity: 1, take_profit_price: 4990 }),
+    /Take-profit must be above the entry price/,
+  );
+});
+
+test("a buy bracket with the stop-loss above the entry is rejected", async () => {
+  const { instance } = makeSession({ lastPrice: 5000 });
+  await assert.rejects(
+    () => instance.placeOrder({ order_type: "market", side: "buy", quantity: 1, stop_loss_price: 5010 }),
+    /Stop-loss must be below the entry price/,
+  );
+});
+
+test("a sell bracket with the take-profit above the entry is rejected", async () => {
+  const { instance } = makeSession({ lastPrice: 5000 });
+  await assert.rejects(
+    () => instance.placeOrder({ order_type: "market", side: "sell", quantity: 1, take_profit_price: 5010 }),
+    /Take-profit must be below the entry price/,
+  );
+});
+
+test("a sell bracket with the stop-loss below the entry is rejected", async () => {
+  const { instance } = makeSession({ lastPrice: 5000 });
+  await assert.rejects(
+    () => instance.placeOrder({ order_type: "market", side: "sell", quantity: 1, stop_loss_price: 4990 }),
+    /Stop-loss must be above the entry price/,
+  );
+});
+
+test("manually cancelling one bracket leg leaves its sibling working", async () => {
+  const { instance, trading } = makeSession();
+  await place(instance, {
+    order_type: "market", side: "buy", quantity: 1, take_profit_price: 5030, stop_loss_price: 4980,
+  });
+  await instance._fillPendingOrders(bar(1060, 5010, 5020, 5000, 5015));
+  const [tp, sl] = trading.pendingOrders;
+
+  await instance.cancelOrder(tp.id);
+  assert.deepEqual(trading.pendingOrders.map((o) => o.id), [sl.id]);
+});
+
+test("bracket legs charge commission on their fill like any other order", async () => {
+  const { instance, trading } = makeSession();
+  await place(instance, {
+    order_type: "market", side: "buy", quantity: 2, take_profit_price: 5030, stop_loss_price: 4980,
+  });
+  await instance._fillPendingOrders(bar(1060, 5010, 5020, 5000, 5015));
+  const entryCommission = trading.commission;
+  const entrySlippage = trading.slippage;
+  await instance._fillPendingOrders(bar(1120, 5025, 5035, 5020, 5032));
+
+  assert.equal(trading.commission, entryCommission + 0.62 * 2);
+  assert.equal(trading.slippage, entrySlippage, "take-profit is a limit, so it adds no further slippage");
+});

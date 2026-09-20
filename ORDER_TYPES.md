@@ -1,6 +1,6 @@
 # Order types and fill conventions
 
-The simulator supports **market**, **limit**, **stop** and **stop-limit** orders.
+The simulator supports **market**, **limit**, **stop** and **stop-limit** orders, and any of the four can carry a **bracket** — a take-profit, a stop-loss, or both, attached to the entry.
 
 Every fill rule below is a *modelling convention*, not a lookup. The replay source is
 1-minute OHLCV (`src/futureview_replay/cloud_export.py`) — there are no tick prints, no
@@ -86,16 +86,47 @@ published in the account snapshot as `commission_per_side` and `slippage_ticks`.
   through the market is an order-entry mistake, not a stop.
 - Quantity is an integer from 1 to 100.
 
+## Bracket orders
+
+A bracket attaches a take-profit and/or a stop-loss to an entry order of any type. Both
+legs are optional independently — a take-profit alone, a stop-loss alone, or both.
+
+- **The legs do not exist until the entry fills.** Placing a bracket creates one order,
+  the entry. Its take-profit and stop-loss prices ride along on that order, unused,
+  until it fills; only then are the two exit orders created.
+- **They start eligible on the next bar, never the one that filled the entry.** Same rule
+  as a triggered stop-limit, same reason: nothing gets to react to a move it wasn't
+  resting for yet. A bar that would have hit the stop-loss instantly does not touch it if
+  that bar is also the one that filled the entry.
+- **The two legs are one-cancels-other (OCO).** A fill on either cancels the other,
+  evaluated in the same pass as the fill so both can never fill from the same bar's move.
+  Stops are still evaluated before limits within a bar (see above), so if both legs would
+  trigger on the same bar the stop-loss wins and the take-profit is cancelled unfilled.
+- **Cancelling a leg by hand does not cancel its sibling.** Only a fill triggers the OCO
+  cancellation. Cancelling one leg yourself leaves the other working, so a bracket can be
+  pared down to a single protective order on purpose.
+- **Prices are validated against the entry, not the current market**, using the entry's
+  own price for a limit or stop entry, or the last traded price for a market entry: a buy
+  bracket's take-profit must be above that reference and its stop-loss below it (mirrored
+  for a sell bracket). This catches the order backwards, not catches it too late.
+- **Quantity always matches the entry's fill.** There is no partial-fill model, so the
+  exit legs close exactly what the entry opened. A bracket does not account for a position
+  changed by other orders in the meantime — see Not implemented.
+
 ## Lifecycle
 
 Working orders rest until they fill or are cancelled, and survive across bars, pauses and
 reconnects. `Restart` and `Clear` cancel everything. There is no DAY time-in-force and no
 session-boundary expiry: an order works for as long as the replay does.
 
-Orders are persisted to D1 in `trade_orders` (migration `0006_order_types.sql`), and each
-fill records the `order_id` and `order_type` that produced it.
+Orders are persisted to D1 in `trade_orders` (migrations `0006_order_types.sql` and
+`0007_bracket_orders.sql`), and each fill records the `order_id` and `order_type` that
+produced it, plus `bracket_role` when the fill came from a bracket leg.
 
 ## Not implemented
 
-Brackets/OCO, trailing stops, reduce-only and order modification. Cancelling and
-re-placing is the current path for a change.
+Trailing stops, reduce-only, order modification, and any account-level protection against
+a bracket's legs outliving the position they were meant to close (if you flatten manually
+while a bracket is still working, its legs keep working and will trade against whatever
+position exists when they fire). Cancelling and re-placing is the current path for a
+change to any resting order, bracket legs included.

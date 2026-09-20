@@ -286,6 +286,29 @@ export class ReplaySession extends DurableObject {
       if (side === "sell" && stopPrice >= last) throw new Error("A sell stop must be below the current price");
     }
 
+    // A bracket attaches a take-profit and/or a stop-loss that only start working
+    // once this entry fills (see _fillPendingOrders). Either leg is optional, but
+    // both are validated against where we expect the entry to fill, so a bracket
+    // can never be placed backwards.
+    const hasTakeProfit = command?.take_profit_price != null;
+    const hasStopLoss = command?.stop_loss_price != null;
+    let takeProfitPrice = null;
+    let stopLossPrice = null;
+    if (hasTakeProfit || hasStopLoss) {
+      takeProfitPrice = hasTakeProfit ? this._requireTickPrice(command.take_profit_price, "Take-profit price") : null;
+      stopLossPrice = hasStopLoss ? this._requireTickPrice(command.stop_loss_price, "Stop-loss price") : null;
+      const reference = needsLimit ? limitPrice : (needsStop ? stopPrice : Number(t.lastPrice));
+      if (Number.isFinite(reference)) {
+        if (side === "buy") {
+          if (takeProfitPrice != null && takeProfitPrice <= reference) throw new Error("Take-profit must be above the entry price for a buy bracket");
+          if (stopLossPrice != null && stopLossPrice >= reference) throw new Error("Stop-loss must be below the entry price for a buy bracket");
+        } else {
+          if (takeProfitPrice != null && takeProfitPrice >= reference) throw new Error("Take-profit must be below the entry price for a sell bracket");
+          if (stopLossPrice != null && stopLossPrice <= reference) throw new Error("Stop-loss must be above the entry price for a sell bracket");
+        }
+      }
+    }
+
     const order = {
       id: crypto.randomUUID(),
       sequence: t.nextOrderSequence++,
@@ -297,6 +320,8 @@ export class ReplaySession extends DurableObject {
       status: "working",
       requested_at_ts: cursor,
       triggered_at_ts: null,
+      take_profit_price: takeProfitPrice,
+      stop_loss_price: stopLossPrice,
     };
     t.pendingOrders.push(order);
     await this.ctx.storage.put("session", this.session);
@@ -439,6 +464,53 @@ export class ReplaySession extends DurableObject {
     return this._evaluateLimit(order, open, high, low);
   }
 
+  // The two legs of a bracket, created once its entry order fills. They start
+  // eligible on the *next* bar, never the one that just filled the entry — the
+  // same rule a triggered stop-limit follows, for the same reason: nothing here
+  // gets to act on a move it wasn't resting for.
+  _bracketLegs(entry, t, filledAtTs) {
+    const legs = [];
+    const exitSide = entry.side === "buy" ? "sell" : "buy";
+    const bracketId = entry.id;
+    if (entry.take_profit_price != null) {
+      legs.push({
+        id: crypto.randomUUID(),
+        sequence: t.nextOrderSequence++,
+        type: "limit",
+        side: exitSide,
+        quantity: entry.quantity,
+        limit_price: entry.take_profit_price,
+        stop_price: null,
+        status: "working",
+        requested_at_ts: filledAtTs,
+        triggered_at_ts: null,
+        take_profit_price: null,
+        stop_loss_price: null,
+        oco_group: bracketId,
+        bracket_role: "take_profit",
+      });
+    }
+    if (entry.stop_loss_price != null) {
+      legs.push({
+        id: crypto.randomUUID(),
+        sequence: t.nextOrderSequence++,
+        type: "stop",
+        side: exitSide,
+        quantity: entry.quantity,
+        limit_price: null,
+        stop_price: entry.stop_loss_price,
+        status: "working",
+        requested_at_ts: filledAtTs,
+        triggered_at_ts: null,
+        take_profit_price: null,
+        stop_loss_price: null,
+        oco_group: bracketId,
+        bracket_role: "stop_loss",
+      });
+    }
+    return legs;
+  }
+
   async _fillPendingOrders(bar) {
     const t = this._trading();
     if (!t.pendingOrders.length) return;
@@ -451,9 +523,13 @@ export class ReplaySession extends DurableObject {
         || (a.index - b.index));
 
     const filled = new Set();
+    const cancelled = new Set();
     const fills = [];
     const triggered = [];
+    const ocoCancelled = [];
+    const bracketLegs = [];
     for (const { order } of queue) {
+      if (filled.has(order.id) || cancelled.has(order.id)) continue;
       const outcome = this._evaluateOrder(order, bar);
       if (outcome.action === "rest") continue;
       if (outcome.action === "trigger") {
@@ -466,20 +542,45 @@ export class ReplaySession extends DurableObject {
       filled.add(order.id);
       fills.push(fill);
       t.fills.push(fill);
+
+      // One-cancels-other: a fill on either bracket leg cancels its sibling.
+      // Only a fill triggers this — manually cancelling one leg leaves the other
+      // working, same as most brokers, so a bracket can be pared down on purpose.
+      if (order.oco_group) {
+        for (const sibling of t.pendingOrders) {
+          if (sibling.id === order.id || sibling.oco_group !== order.oco_group) continue;
+          if (filled.has(sibling.id) || cancelled.has(sibling.id)) continue;
+          sibling.status = "cancelled";
+          cancelled.add(sibling.id);
+          ocoCancelled.push({ ...sibling });
+        }
+      }
+
+      if (order.take_profit_price != null || order.stop_loss_price != null) {
+        bracketLegs.push(...this._bracketLegs(order, t, Number(bar.t)));
+      }
     }
 
-    if (!fills.length && !triggered.length) return;
+    if (!fills.length && !triggered.length && !bracketLegs.length) return;
 
-    if (filled.size) t.pendingOrders = t.pendingOrders.filter((order) => !filled.has(order.id));
+    if (filled.size || cancelled.size) {
+      t.pendingOrders = t.pendingOrders.filter((order) => !filled.has(order.id) && !cancelled.has(order.id));
+    }
+    if (bracketLegs.length) t.pendingOrders.push(...bracketLegs);
+
     for (const fill of fills) {
       await this._persistFill(fill);
       await this._persistOrderStatus(fill.order_id, "filled");
     }
     for (const order of triggered) await this._persistOrderStatus(order.id, "triggered", order.triggered_at_ts);
+    for (const order of ocoCancelled) await this._persistOrderStatus(order.id, "cancelled");
+    for (const leg of bracketLegs) await this._persistOrder(leg);
     await this._persistTradingSummary();
 
     const snapshot = this._accountSnapshot();
     if (triggered.length) this._broadcast({ type: "orders_triggered", orders: triggered, trading: snapshot });
+    if (bracketLegs.length) this._broadcast({ type: "bracket_attached", orders: bracketLegs, trading: snapshot });
+    if (ocoCancelled.length) this._broadcast({ type: "orders_cancelled", orders: ocoCancelled, reason: "oco", trading: snapshot });
     if (fills.length) this._broadcast({ type: "fills", fills, trading: snapshot });
   }
 
@@ -519,6 +620,7 @@ export class ReplaySession extends DurableObject {
       sequence: t.nextSequence++,
       order_id: order.id,
       order_type: order.type ?? "market",
+      bracket_role: order.bracket_role ?? null,
       side: order.side,
       quantity: order.quantity,
       limit_price: order.limit_price ?? null,
@@ -539,8 +641,8 @@ export class ReplaySession extends DurableObject {
     try {
       await this.env.DB.prepare(`
         INSERT INTO trade_orders
-          (id, replay_session_id, sequence, order_type, side, quantity, limit_price, stop_price, status, requested_at_ts, triggered_at_ts, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, replay_session_id, sequence, order_type, side, quantity, limit_price, stop_price, status, requested_at_ts, triggered_at_ts, take_profit_price, stop_loss_price, oco_group, bracket_role, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         order.id,
         this.session.id,
@@ -553,6 +655,10 @@ export class ReplaySession extends DurableObject {
         order.status,
         order.requested_at_ts,
         order.triggered_at_ts,
+        order.take_profit_price ?? null,
+        order.stop_loss_price ?? null,
+        order.oco_group ?? null,
+        order.bracket_role ?? null,
         new Date().toISOString(),
         new Date().toISOString(),
       ).run();

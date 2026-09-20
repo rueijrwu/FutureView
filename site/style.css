@@ -179,7 +179,9 @@ button:disabled { opacity: .4; cursor: default; }
 .trade-field { display: inline-flex; align-items: center; gap: 4px; }
 .trade-field[hidden] { display: none; }
 .trade-field > span { margin-right: 0; }
-#trade-limit, #trade-stop { width: 74px; }
+#trade-limit, #trade-stop, #trade-take-profit, #trade-stop-loss { width: 74px; }
+.trade-bracket-check { gap: 5px; padding-left: 4px; }
+.trade-bracket-check input[type="checkbox"] { width: 14px; height: 14px; accent-color: #668fe8; }
 #trades-toggle[aria-pressed="true"], #console-toggle[aria-pressed="true"] { border-color: #668fe8; color: #b8cbff; }
 .trade-table th:nth-child(3), .trade-table td:nth-child(3) { text-align: left; }
 /* Working orders share the fills table but are not history: they sit on top,
@@ -189,6 +191,8 @@ button:disabled { opacity: .4; cursor: default; }
 .order-row:last-of-type td { border-bottom: 1px solid #35455d; }
 .order-row .order-mark { color: #748297; }
 .order-row.triggered .order-mark { color: #e6b25a; }
+/* A bracket leg is one half of an OCO pair: filling it cancels its sibling. */
+.order-row.bracket-leg .order-mark { color: #8fb3ff; }
 .order-row .order-type, .order-row .order-price { white-space: nowrap; }
 .order-row .order-price { text-align: right; }
 .order-row td:last-child { padding-left: 0; width: 28px; }
