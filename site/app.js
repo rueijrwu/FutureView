@@ -18,11 +18,16 @@
   let lastState = "STOPPED";
   let lastTrading = null;
   let lastMarkPrice = null;
+  let lastMarkTs = null;
   let selectedFillId = null;
   let lastMarkerSignature = null;
   let consoleEvents = [];
   const consoleOrderIds = new Set();
   const consoleFillIds = new Set();
+  const consoleTriggerIds = new Set();
+  const ORDER_TYPE_LABELS = {market:"Market",limit:"Limit",stop:"Stop",stop_limit:"Stop limit"};
+  const orderPriceLines = new Map();
+  let lastOrdersSignature = null;
 
   function token(){return localStorage.getItem(TOKEN_KEY)||""}
   function clearAuth(){localStorage.removeItem(TOKEN_KEY);localStorage.removeItem(USER_KEY)}
@@ -71,11 +76,30 @@
     el.scrollTop=el.scrollHeight;
   }
   function appendConsole(text){consoleEvents.push(text);renderConsole()}
-  function clearConsole(){consoleEvents=[];consoleOrderIds.clear();consoleFillIds.clear();renderConsole()}
+  function clearConsole(){consoleEvents=[];consoleOrderIds.clear();consoleFillIds.clear();consoleTriggerIds.clear();renderConsole()}
+  function orderTypeLabel(order){return ORDER_TYPE_LABELS[order?.type||"market"]||"Market"}
+  function orderPriceText(order){
+    if(!order)return "";
+    if(order.type==="limit")return `limit ${number(order.limit_price)}`;
+    if(order.type==="stop")return `stop ${number(order.stop_price)}`;
+    if(order.type==="stop_limit")return `stop ${number(order.stop_price)} → limit ${number(order.limit_price)}`;
+    return "next bar open";
+  }
   function recordAcceptedOrder(order){
     if(!order||consoleOrderIds.has(order.id))return;
     consoleOrderIds.add(order.id);
-    appendConsole(`${displaySeconds(order.requested_at_ts)}  ORDER  ${String(order.side).toUpperCase()} ${order.quantity} ${lastTrading?.contract||""}  queued for next bar open`);
+    appendConsole(`${displaySeconds(order.requested_at_ts)}  ORDER  ${orderTypeLabel(order).toUpperCase()} ${String(order.side).toUpperCase()} ${order.quantity} ${lastTrading?.contract||""}  ${orderPriceText(order)}`);
+  }
+  function recordCancelledOrder(order){
+    if(!order)return;
+    appendConsole(`${displaySeconds(lastMarkTs ?? order.requested_at_ts)}  CANCEL ${orderTypeLabel(order).toUpperCase()} ${String(order.side).toUpperCase()} ${order.quantity}  ${orderPriceText(order)}`);
+  }
+  function recordTriggeredOrders(orders){
+    for(const order of orders||[]){
+      if(consoleTriggerIds.has(order.id))continue;
+      consoleTriggerIds.add(order.id);
+      appendConsole(`${displaySeconds(order.triggered_at_ts)}  TRIGGER ${String(order.side).toUpperCase()} ${order.quantity}  stop ${number(order.stop_price)} hit, now working as limit ${number(order.limit_price)}`);
+    }
   }
   function syncFillConsole(trading){
     for(const f of trading?.fills||[]){
@@ -111,7 +135,7 @@
   function fillsSignature(fills){return fills.map(f=>f.id).join("|")+"|"+selectedFillId}
   function renderPnl(t){
     if(!t){
-      $("trade-position").textContent="Flat";$("trade-avg").textContent="—";$("trade-unrealized").textContent="$0.00";$("trade-realized").textContent="$0.00";$("trade-total").textContent="$0.00";
+      $("trade-position").textContent="Flat";$("trade-avg").textContent="—";$("trade-unrealized").textContent="$0.00";$("trade-realized").textContent="$0.00";$("trade-costs").textContent="$0.00";$("trade-total").textContent="$0.00";
       return;
     }
     const qty=Number(t.position_qty)||0;
@@ -119,7 +143,60 @@
     $("trade-avg").textContent=qty===0?"—":number(t.avg_price);
     $("trade-unrealized").textContent=money(t.unrealized_pnl);applyPnlClass($("trade-unrealized"),t.unrealized_pnl);
     $("trade-realized").textContent=money(t.realized_pnl);applyPnlClass($("trade-realized"),t.realized_pnl);
+    // Commission and slippage are charged in their own buckets, so the cost of
+    // trading is visible instead of hidden inside the average price.
+    const costs=Number(t.commission||0)+Number(t.slippage||0);
+    $("trade-costs").textContent=costs?`−${money(costs).replace("-","")}`:"$0.00";
+    $("trade-costs").title=`Commission ${money(t.commission||0)} · slippage ${money(t.slippage||0)}`;
     $("trade-total").textContent=money(t.total_pnl);applyPnlClass($("trade-total"),t.total_pnl);
+  }
+
+  // A working order is drawn on the chart at the price it is waiting for: the stop
+  // until it triggers, the limit once it does.
+  function orderActivePrice(order){
+    if(order.type==="limit")return Number(order.limit_price);
+    if(order.type==="stop")return Number(order.stop_price);
+    if(order.type==="stop_limit")return Number(order.status==="triggered"?order.limit_price:order.stop_price);
+    return null;
+  }
+  function syncOrderPriceLines(orders){
+    const live=new Set();
+    for(const order of orders){
+      const price=orderActivePrice(order);
+      if(!Number.isFinite(price))continue;
+      live.add(order.id);
+      const existing=orderPriceLines.get(order.id);
+      if(existing&&existing.price===price)continue;
+      if(existing){try{candles.removePriceLine(existing.line)}catch{}}
+      try{
+        const line=candles.createPriceLine({
+          price,
+          color:order.side==="buy"?cssVar("--chart-up","#26a69a"):cssVar("--chart-down","#ef5350"),
+          lineWidth:1,
+          lineStyle:2,
+          axisLabelVisible:true,
+          title:`${orderTypeLabel(order)} ${order.side==="buy"?"B":"S"}${order.quantity}`,
+        });
+        orderPriceLines.set(order.id,{price,line});
+      }catch{}
+    }
+    for(const [id,entry] of orderPriceLines){
+      if(live.has(id))continue;
+      try{candles.removePriceLine(entry.line)}catch{}
+      orderPriceLines.delete(id);
+    }
+  }
+  function ordersSignature(orders){return orders.map(o=>`${o.id}:${o.status}:${o.limit_price}:${o.stop_price}`).join("|")}
+  function renderOrders(t){
+    const orders=t?.pending_orders||[];
+    const signature=ordersSignature(orders);
+    if(signature===lastOrdersSignature)return;
+    lastOrdersSignature=signature;
+    $("orders-toggle").textContent=orders.length?`Orders ${orders.length}`:"Orders";
+    $("order-rows").innerHTML=orders.length
+      ?orders.map(o=>`<tr class="order-row${o.status==="triggered"?" triggered":""}"><td>${orderTypeLabel(o)}</td><td class="${o.side==="buy"?"buy-text":"sell-text"}">${o.side==="buy"?"Buy":"Sell"}</td><td>${o.quantity}</td><td>${orderPriceText(o)}</td><td><button type="button" class="order-cancel" data-order-id="${o.id}" title="Cancel this order">✕</button></td></tr>`).join("")
+      :'<tr class="trade-empty"><td colspan="5">No working orders</td></tr>';
+    syncOrderPriceLines(orders);
   }
   function renderFillsAndConsole(t){
     const fills=t?.fills||[];
@@ -128,13 +205,14 @@
     lastFillsSignature=signature;
     $("trades-toggle").textContent=fills.length?`Trades ${fills.length}`:"Trades";
     $("trade-rows").innerHTML=fills.length
-      ?fills.map(f=>`<tr class="trade-row${selectedFillId===f.id?" selected":""}" data-fill-id="${f.id}"><td>${f.sequence}</td><td class="${f.side==="buy"?"buy-text":"sell-text"}">${f.side==="buy"?"Buy":"Sell"}</td><td>${f.quantity}</td><td>${number(f.fill_price)}</td><td class="${Number(f.realized_delta)>0?"pnl-positive":Number(f.realized_delta)<0?"pnl-negative":""}">${money(f.realized_delta)}</td></tr>`).join("")
-      :'<tr class="trade-empty"><td colspan="5">No trades yet</td></tr>';
+      ?fills.map(f=>`<tr class="trade-row${selectedFillId===f.id?" selected":""}" data-fill-id="${f.id}"><td>${f.sequence}</td><td>${ORDER_TYPE_LABELS[f.order_type||"market"]||"Market"}</td><td class="${f.side==="buy"?"buy-text":"sell-text"}">${f.side==="buy"?"Buy":"Sell"}</td><td>${f.quantity}</td><td>${number(f.fill_price)}</td><td class="${Number(f.realized_delta)>0?"pnl-positive":Number(f.realized_delta)<0?"pnl-negative":""}">${money(f.realized_delta)}</td></tr>`).join("")
+      :'<tr class="trade-empty"><td colspan="6">No trades yet</td></tr>';
     renderConsole();
   }
   function renderTrading(){
     const t=derivedTrading();
     renderPnl(t);
+    renderOrders(t);
     renderFillsAndConsole(t);
   }
   function setTrading(trading){if(!trading)return;lastTrading=trading;syncFillConsole(trading);renderTrading();renderTradeMarkers();syncControls()}
@@ -146,22 +224,53 @@
 
   function render(b){
     preserveChartViewport(()=>{candles.update(candle(b));volume.update(vol(b));chartTools.append(b)});
-    lastMarkPrice=Number(b.c);$("time-status").textContent=displaySeconds(b.t);renderPnl(derivedTrading());
+    lastMarkPrice=Number(b.c);lastMarkTs=Number(b.t);$("time-status").textContent=displaySeconds(b.t);renderPnl(derivedTrading());
   }
   function renderMany(bs){
     preserveChartViewport(()=>{bs.forEach(b=>{candles.update(candle(b));volume.update(vol(b))});chartTools.appendMany(bs)});
-    if(bs.length){lastMarkPrice=Number(bs[bs.length-1].c);$("time-status").textContent=displaySeconds(bs[bs.length-1].t);renderPnl(derivedTrading())}
+    if(bs.length){lastMarkPrice=Number(bs[bs.length-1].c);lastMarkTs=Number(bs[bs.length-1].t);$("time-status").textContent=displaySeconds(bs[bs.length-1].t);renderPnl(derivedTrading())}
   }
-  function reset(bs){chartTools._cancelDrawing?.();candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chartTools.fit();lastMarkPrice=bs.length?Number(bs[bs.length-1].c):null;selectedFillId=null;lastMarkerSignature=null;lastFillsSignature=null;clearConsole();renderTradeMarkers()}
+  function reset(bs){chartTools._cancelDrawing?.();candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chartTools.fit();lastMarkPrice=bs.length?Number(bs[bs.length-1].c):null;lastMarkTs=bs.length?Number(bs[bs.length-1].t):null;selectedFillId=null;lastOrdersSignature=null;lastMarkerSignature=null;lastFillsSignature=null;clearConsole();renderTradeMarkers()}
   function error(m=""){$("error").textContent=m}
   async function api(path,opts={}){const authToken=token();if(!authToken)return goLogin();const r=await fetch(`${API_ORIGIN}${path}`,{headers:{"Content-Type":"application/json","Authorization":`Bearer ${authToken}`,...(opts.headers||{})},...opts});if(r.status===401)return goLogin();if(!r.ok){let m=`HTTP ${r.status}`;try{m=(await r.json()).error||m}catch{}throw new Error(m)}return r.json()}
   async function validateAuth(){const authToken=token();if(!authToken){goLogin();return false}const r=await fetch(`${API_ORIGIN}/api/auth/me`,{cache:"no-store",headers:{"Authorization":`Bearer ${authToken}`}});if(!r.ok){goLogin();return false}return true}
   async function logout(){const authToken=token();try{if(authToken)await fetch(`${API_ORIGIN}/api/auth/logout`,{method:"POST",headers:{"Authorization":`Bearer ${authToken}`}})}catch{}goLogin()}
 
-  function syncControls(){const ready=!!sessionId&&wsOpen&&wsSynced;const busy=!!pendingCommand;const finished=lastState==="FINISHED";$("play").disabled=!ready||busy||lastState==="PLAYING"||finished;$("pause").disabled=!ready||busy||lastState!=="PLAYING";$("next").disabled=!ready||busy||lastState==="PLAYING"||finished;$("restart").disabled=!ready||busy;$("buy-btn").disabled=!ready||finished;$("sell-btn").disabled=!ready||finished;$("trade-qty").disabled=!ready||finished;$("trade-clear").disabled=!ready}
-  function update(s,authoritative=false){if(!s)return;if(s.state)lastState=s.state;if(authoritative){wsSynced=true;pendingCommand=null;clearTimeout(commandAckTimer);commandAckTimer=null;}$("state-status").textContent=lastState;if(s.contract)$("contract-status").textContent=s.contract;if(s.cursor!=null)$("time-status").textContent=displaySeconds(s.cursor);else if(!sessionId)$("time-status").textContent="No session";if(s.trading)setTrading(s.trading);syncControls()}
+  function syncControls(){const ready=!!sessionId&&wsOpen&&wsSynced;const busy=!!pendingCommand;const finished=lastState==="FINISHED";$("play").disabled=!ready||busy||lastState==="PLAYING"||finished;$("pause").disabled=!ready||busy||lastState!=="PLAYING";$("next").disabled=!ready||busy||lastState==="PLAYING"||finished;$("restart").disabled=!ready||busy;$("buy-btn").disabled=!ready||finished;$("sell-btn").disabled=!ready||finished;$("trade-qty").disabled=!ready||finished;$("trade-type").disabled=!ready||finished;$("trade-limit").disabled=!ready||finished;$("trade-stop").disabled=!ready||finished;$("trade-clear").disabled=!ready}
+  function update(s,authoritative=false){if(!s)return;if(s.state)lastState=s.state;if(authoritative){wsSynced=true;pendingCommand=null;clearTimeout(commandAckTimer);commandAckTimer=null;}$("state-status").textContent=lastState;if(s.contract)$("contract-status").textContent=s.contract;if(s.cursor!=null){lastMarkTs=Number(s.cursor);$("time-status").textContent=displaySeconds(s.cursor);}else if(!sessionId)$("time-status").textContent="No session";if(s.trading)setTrading(s.trading);syncControls()}
   function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized - reconnecting…");if(wsPath)connect(wsPath);return}pendingCommand=type;if(type==="play")lastState="PLAYING";else if(type==="pause"||type==="restart")lastState="PAUSED";update({state:lastState});ws.send(JSON.stringify({type,...extra}));clearTimeout(commandAckTimer);commandAckTimer=setTimeout(()=>{if(pendingCommand===type){pendingCommand=null;wsSynced=false;error("Replay command acknowledgement timed out - resynchronizing…");syncControls();if(wsPath)connect(wsPath)}},2000)}
-  function placeOrder(side){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized");return}const quantity=Number($("trade-qty").value);if(!Number.isInteger(quantity)||quantity<1||quantity>100){error("Quantity must be an integer from 1 to 100");return}error();ws.send(JSON.stringify({type:"order",side,quantity}))}
+  function tickSize(){const size=Number(lastTrading?.tick_size);return Number.isFinite(size)&&size>0?size:0.25}
+  function readPrice(id,label){
+    const raw=$(id).value;
+    if(raw==="")throw new Error(`${label} is required for this order type`);
+    const price=Number(raw);
+    if(!Number.isFinite(price)||price<=0)throw new Error(`${label} must be a positive price`);
+    const size=tickSize();
+    const ticks=price/size;
+    if(Math.abs(ticks-Math.round(ticks))>1e-9)throw new Error(`${label} must be a multiple of ${size}`);
+    return Math.round(ticks)*size;
+  }
+  function syncOrderFields(){
+    const type=$("trade-type").value;
+    $("trade-limit-field").hidden=!(type==="limit"||type==="stop_limit");
+    $("trade-stop-field").hidden=!(type==="stop"||type==="stop_limit");
+    const step=String(tickSize());
+    $("trade-limit").step=step;$("trade-stop").step=step;
+  }
+  function placeOrder(side){
+    if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized");return}
+    const quantity=Number($("trade-qty").value);
+    if(!Number.isInteger(quantity)||quantity<1||quantity>100){error("Quantity must be an integer from 1 to 100");return}
+    const order_type=$("trade-type").value;
+    const payload={type:"order",order_type,side,quantity};
+    try{
+      if(order_type==="limit"||order_type==="stop_limit")payload.limit_price=readPrice("trade-limit","Limit price");
+      if(order_type==="stop"||order_type==="stop_limit")payload.stop_price=readPrice("trade-stop","Stop price");
+    }catch(e){error(e.message);return}
+    error();
+    ws.send(JSON.stringify(payload));
+  }
+  function cancelOrder(orderId){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized");return}error();ws.send(JSON.stringify({type:"cancel_order",order_id:orderId}))}
   function clearTrading(){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized");return}selectedFillId=null;error();ws.send(JSON.stringify({type:"clear_trading"}))}
   function connect(path){
     wsPath=path;clearTimeout(wsReconnectTimer);clearTimeout(commandAckTimer);pendingCommand=null;wsSynced=false;syncControls();if(ws)ws.close();const authToken=token();if(!authToken)return goLogin();const wsOrigin=API_ORIGIN.replace(/^http/,"ws");const sep=path.includes("?")?"&":"?";const thisWs=ws=new WebSocket(`${wsOrigin}${path}${sep}access_token=${encodeURIComponent(authToken)}`);
@@ -172,7 +281,9 @@
       if(x.type==="bar")render(x.bar);
       else if(x.type==="bars_batch")renderMany(x.bars);
       else if(x.type==="fills"){setTrading(x.trading);error()}
-      else if(x.type==="order_accepted"){recordAcceptedOrder(x.order);setTrading(x.trading);error(`Order queued: ${x.order.side.toUpperCase()} ${x.order.quantity} · fills at next bar open`)}
+      else if(x.type==="order_accepted"){recordAcceptedOrder(x.order);setTrading(x.trading);error(`${orderTypeLabel(x.order)} order accepted: ${x.order.side.toUpperCase()} ${x.order.quantity} · ${orderPriceText(x.order)}`)}
+      else if(x.type==="order_cancelled"){recordCancelledOrder(x.order);setTrading(x.trading);error("Order cancelled")}
+      else if(x.type==="orders_triggered"){recordTriggeredOrders(x.orders);setTrading(x.trading);error()}
       else if(x.type==="trading_cleared"){clearConsole();setTrading(x.trading);error("Trading record cleared")}
       else if(x.type==="reset"){reset(x.warmup||[]);update(x.snapshot,true)}
       else if(x.type==="error"){pendingCommand=null;clearTimeout(commandAckTimer);error(x.error);syncControls()}
@@ -191,11 +302,14 @@
   $("play").onclick=()=>command("play",{speed});$("pause").onclick=()=>command("pause");$("next").onclick=()=>command("step");$("restart").onclick=()=>command("restart");
   $("speeds").onclick=e=>{const b=e.target.closest("button[data-speed]");if(!b)return;document.querySelectorAll("#speeds button").forEach(x=>x.classList.remove("active"));b.classList.add("active");speed=b.dataset.speed==="max"?"max":Number(b.dataset.speed);if(lastState==="PLAYING"&&!pendingCommand)command("play",{speed})};
   $("buy-btn").onclick=()=>placeOrder("buy");$("sell-btn").onclick=()=>placeOrder("sell");
+  $("trade-type").onchange=()=>syncOrderFields();
+  $("order-rows").onclick=e=>{const b=e.target.closest("button[data-order-id]");if(b)cancelOrder(b.dataset.orderId)};
+  $("orders-toggle").onclick=()=>{preserveChartViewport(()=>{const wrap=$("orders-wrap");const show=wrap.hidden;wrap.hidden=!show;$("orders-toggle").setAttribute("aria-pressed",String(show));if(show&&!$("workspace").classList.contains("trades-open"))$("trades-toggle").click()})};
   $("trades-toggle").onclick=()=>{preserveChartViewport(()=>{const open=!$("workspace").classList.contains("trades-open");$("workspace").classList.toggle("trades-open",open);$("trades-toggle").setAttribute("aria-pressed",String(open));requestAnimationFrame(()=>chart.resize($("chart").clientWidth,$("chart").clientHeight))})};
   $("console-toggle").onclick=()=>{preserveChartViewport(()=>{const consoleEl=$("trading-console");const show=consoleEl.hidden;consoleEl.hidden=!show;$("console-toggle").setAttribute("aria-pressed",String(show));requestAnimationFrame(()=>chart.resize($("chart").clientWidth,$("chart").clientHeight))})};
   $("trade-clear").onclick=()=>clearTrading();
   $("trade-rows").onclick=e=>{const row=e.target.closest("tr[data-fill-id]");if(row)inspectFill(row.dataset.fillId)};
   $("logout").onclick=()=>logout();
 
-  (async()=>{if(!(await validateAuth()))return;await loadRange();update({state:"STOPPED"});renderTrading();syncControls()})().catch(e=>error(e.message));
+  (async()=>{if(!(await validateAuth()))return;await loadRange();update({state:"STOPPED"});syncOrderFields();renderTrading();syncControls()})().catch(e=>error(e.message));
 })();

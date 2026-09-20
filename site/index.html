@@ -65,12 +65,19 @@
           <div><span>Avg</span><strong id="trade-avg">—</strong></div>
           <div><span>Unrealized</span><strong id="trade-unrealized">$0.00</strong></div>
           <div><span>Realized</span><strong id="trade-realized">$0.00</strong></div>
+          <div><span>Costs</span><strong id="trade-costs">$0.00</strong></div>
           <div><span>Total P&amp;L</span><strong id="trade-total">$0.00</strong></div>
+        </div>
+        <div class="trade-table-wrap" id="orders-wrap" hidden>
+          <table class="trade-table orders-table">
+            <thead><tr><th>Type</th><th>Side</th><th>Qty</th><th>Price</th><th></th></tr></thead>
+            <tbody id="order-rows"><tr class="trade-empty"><td colspan="5">No working orders</td></tr></tbody>
+          </table>
         </div>
         <div class="trade-table-wrap">
           <table class="trade-table">
-            <thead><tr><th>#</th><th>Side</th><th>Qty</th><th>Fill</th><th>P&amp;L</th></tr></thead>
-            <tbody id="trade-rows"><tr class="trade-empty"><td colspan="5">No trades yet</td></tr></tbody>
+            <thead><tr><th>#</th><th>Type</th><th>Side</th><th>Qty</th><th>Fill</th><th>P&amp;L</th></tr></thead>
+            <tbody id="trade-rows"><tr class="trade-empty"><td colspan="6">No trades yet</td></tr></tbody>
           </table>
         </div>
         <div class="trade-ledger-toolbar">
@@ -86,9 +93,21 @@
         <div id="speeds" class="speeds"><span>Speed</span><button data-speed="1" class="active">1</button><button data-speed="5">5</button><button data-speed="10">10</button><button data-speed="50">50</button><button data-speed="100">100</button><button data-speed="max">Max</button></div>
       </div>
       <div class="trade-entry">
-        <span>Trade</span><span>Qty</span><input id="trade-qty" type="number" min="1" max="100" value="1" inputmode="numeric">
+        <span>Trade</span>
+        <label class="trade-field"><span>Type</span>
+          <select id="trade-type">
+            <option value="market">Market</option>
+            <option value="limit">Limit</option>
+            <option value="stop">Stop</option>
+            <option value="stop_limit">Stop limit</option>
+          </select>
+        </label>
+        <label class="trade-field"><span>Qty</span><input id="trade-qty" type="number" min="1" max="100" value="1" inputmode="numeric"></label>
+        <label class="trade-field" id="trade-limit-field" hidden><span>Limit</span><input id="trade-limit" type="number" step="0.25" inputmode="decimal"></label>
+        <label class="trade-field" id="trade-stop-field" hidden><span>Stop</span><input id="trade-stop" type="number" step="0.25" inputmode="decimal"></label>
         <button id="buy-btn" class="buy" type="button">Buy</button>
         <button id="sell-btn" class="sell" type="button">Sell</button>
+        <button id="orders-toggle" type="button" aria-pressed="false">Orders</button>
         <button id="trades-toggle" type="button" aria-pressed="false">Trades</button>
       </div>
     </section>
