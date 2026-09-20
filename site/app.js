@@ -27,7 +27,6 @@
   const consoleTriggerIds = new Set();
   const ORDER_TYPE_LABELS = {market:"Market",limit:"Limit",stop:"Stop",stop_limit:"Stop limit"};
   const orderPriceLines = new Map();
-  let lastOrdersSignature = null;
 
   function token(){return localStorage.getItem(TOKEN_KEY)||""}
   function clearAuth(){localStorage.removeItem(TOKEN_KEY);localStorage.removeItem(USER_KEY)}
@@ -78,21 +77,27 @@
   function appendConsole(text){consoleEvents.push(text);renderConsole()}
   function clearConsole(){consoleEvents=[];consoleOrderIds.clear();consoleFillIds.clear();consoleTriggerIds.clear();renderConsole()}
   function orderTypeLabel(order){return ORDER_TYPE_LABELS[order?.type||"market"]||"Market"}
-  function orderPriceText(order){
+  // full: both legs of a stop-limit, for the console and the row tooltip. Without
+  // it the row shows only the price the order is waiting for right now, which is
+  // the one drawn on the chart.
+  function orderPriceText(order,full=false){
     if(!order)return "";
     if(order.type==="limit")return `limit ${number(order.limit_price)}`;
     if(order.type==="stop")return `stop ${number(order.stop_price)}`;
-    if(order.type==="stop_limit")return `stop ${number(order.stop_price)} → limit ${number(order.limit_price)}`;
+    if(order.type==="stop_limit"){
+      if(full)return `stop ${number(order.stop_price)} → limit ${number(order.limit_price)}`;
+      return order.status==="triggered"?`limit ${number(order.limit_price)}`:`stop ${number(order.stop_price)}`;
+    }
     return "next bar open";
   }
   function recordAcceptedOrder(order){
     if(!order||consoleOrderIds.has(order.id))return;
     consoleOrderIds.add(order.id);
-    appendConsole(`${displaySeconds(order.requested_at_ts)}  ORDER  ${orderTypeLabel(order).toUpperCase()} ${String(order.side).toUpperCase()} ${order.quantity} ${lastTrading?.contract||""}  ${orderPriceText(order)}`);
+    appendConsole(`${displaySeconds(order.requested_at_ts)}  ORDER  ${orderTypeLabel(order).toUpperCase()} ${String(order.side).toUpperCase()} ${order.quantity} ${lastTrading?.contract||""}  ${orderPriceText(order,true)}`);
   }
   function recordCancelledOrder(order){
     if(!order)return;
-    appendConsole(`${displaySeconds(lastMarkTs ?? order.requested_at_ts)}  CANCEL ${orderTypeLabel(order).toUpperCase()} ${String(order.side).toUpperCase()} ${order.quantity}  ${orderPriceText(order)}`);
+    appendConsole(`${displaySeconds(lastMarkTs ?? order.requested_at_ts)}  CANCEL ${orderTypeLabel(order).toUpperCase()} ${String(order.side).toUpperCase()} ${order.quantity}  ${orderPriceText(order,true)}`);
   }
   function recordTriggeredOrders(orders){
     for(const order of orders||[]){
@@ -126,13 +131,17 @@
     preserveChartViewport(()=>{tradeMarkers.setMarkers(fills.map(f=>({time:Number(f.filled_at_ts),position:f.side==="buy"?"belowBar":"aboveBar",color:f.side==="buy"?cssVar("--chart-up","#26a69a"):cssVar("--chart-down","#ef5350"),shape:f.side==="buy"?"arrowUp":"arrowDown",text:`${f.side==="buy"?"B":"S"}${f.quantity}`,id:f.id,size:1}))) });
   }
   // A new bar can only change the P&L/mark fields: unrealized P&L, total P&L and
-  // the mark price they derive from. It cannot add or remove a fill or a console
-  // line, so rebuilding the fills table and re-serialising the console on every
-  // bar (as low as once a second at 1x) was pure waste. Split the two and gate
-  // the fills/console rebuild on a signature, the same pattern renderTradeMarkers
-  // already uses for the chart markers.
-  let lastFillsSignature=null;
-  function fillsSignature(fills){return fills.map(f=>f.id).join("|")+"|"+selectedFillId}
+  // the mark price they derive from. It cannot add or remove a working order, a
+  // fill or a console line, so rebuilding the record table and re-serialising the
+  // console on every bar (as low as once a second at 1x) was pure waste. Split the
+  // two and gate the record rebuild on a signature, the same pattern
+  // renderTradeMarkers already uses for the chart markers.
+  let lastRecordSignature=null;
+  function recordSignature(orders,fills){
+    return orders.map(o=>`${o.id}:${o.status}:${o.limit_price}:${o.stop_price}`).join("|")
+      +"#"+fills.map(f=>f.id).join("|")
+      +"#"+selectedFillId;
+  }
   function renderPnl(t){
     if(!t){
       $("trade-position").textContent="Flat";$("trade-avg").textContent="—";$("trade-unrealized").textContent="$0.00";$("trade-realized").textContent="$0.00";$("trade-costs").textContent="$0.00";$("trade-total").textContent="$0.00";
@@ -186,39 +195,53 @@
       orderPriceLines.delete(id);
     }
   }
-  function ordersSignature(orders){return orders.map(o=>`${o.id}:${o.status}:${o.limit_price}:${o.stop_price}`).join("|")}
-  function renderOrders(t){
-    const orders=t?.pending_orders||[];
-    const signature=ordersSignature(orders);
-    if(signature===lastOrdersSignature)return;
-    lastOrdersSignature=signature;
-    $("orders-toggle").textContent=orders.length?`Orders ${orders.length}`:"Orders";
-    $("order-rows").innerHTML=orders.length
-      ?orders.map(o=>`<tr class="order-row${o.status==="triggered"?" triggered":""}"><td>${orderTypeLabel(o)}</td><td class="${o.side==="buy"?"buy-text":"sell-text"}">${o.side==="buy"?"Buy":"Sell"}</td><td>${o.quantity}</td><td>${orderPriceText(o)}</td><td><button type="button" class="order-cancel" data-order-id="${o.id}" title="Cancel this order">✕</button></td></tr>`).join("")
-      :'<tr class="trade-empty"><td colspan="5">No working orders</td></tr>';
-    syncOrderPriceLines(orders);
+
+  // Working orders and fills share one table: the orders are what you can still
+  // act on, so they sit on top, and the fills are the history underneath.
+  function orderRow(o){
+    return `<tr class="order-row${o.status==="triggered"?" triggered":""}">`
+      +`<td class="order-mark" title="${o.status==="triggered"?"Stop triggered, working as a limit":"Working order"}">${o.status==="triggered"?"▸":"○"}</td>`
+      +`<td class="order-type">${orderTypeLabel(o)}</td>`
+      +`<td class="${o.side==="buy"?"buy-text":"sell-text"}">${o.side==="buy"?"Buy":"Sell"}</td>`
+      +`<td>${o.quantity}</td>`
+      +`<td class="order-price" title="${orderPriceText(o,true)}">${orderPriceText(o)}</td>`
+      +`<td><button type="button" class="order-cancel" data-order-id="${o.id}" title="Cancel this order">✕</button></td>`
+      +`</tr>`;
   }
-  function renderFillsAndConsole(t){
+  function fillRow(f){
+    return `<tr class="trade-row${selectedFillId===f.id?" selected":""}" data-fill-id="${f.id}">`
+      +`<td>${f.sequence}</td>`
+      +`<td>${ORDER_TYPE_LABELS[f.order_type||"market"]||"Market"}</td>`
+      +`<td class="${f.side==="buy"?"buy-text":"sell-text"}">${f.side==="buy"?"Buy":"Sell"}</td>`
+      +`<td>${f.quantity}</td>`
+      +`<td>${number(f.fill_price)}</td>`
+      +`<td class="${Number(f.realized_delta)>0?"pnl-positive":Number(f.realized_delta)<0?"pnl-negative":""}">${money(f.realized_delta)}</td>`
+      +`</tr>`;
+  }
+  function renderRecordAndConsole(t){
+    const orders=t?.pending_orders||[];
     const fills=t?.fills||[];
-    const signature=fillsSignature(fills);
-    if(signature===lastFillsSignature)return;
-    lastFillsSignature=signature;
-    $("trades-toggle").textContent=fills.length?`Trades ${fills.length}`:"Trades";
-    $("trade-rows").innerHTML=fills.length
-      ?fills.map(f=>`<tr class="trade-row${selectedFillId===f.id?" selected":""}" data-fill-id="${f.id}"><td>${f.sequence}</td><td>${ORDER_TYPE_LABELS[f.order_type||"market"]||"Market"}</td><td class="${f.side==="buy"?"buy-text":"sell-text"}">${f.side==="buy"?"Buy":"Sell"}</td><td>${f.quantity}</td><td>${number(f.fill_price)}</td><td class="${Number(f.realized_delta)>0?"pnl-positive":Number(f.realized_delta)<0?"pnl-negative":""}">${money(f.realized_delta)}</td></tr>`).join("")
-      :'<tr class="trade-empty"><td colspan="6">No trades yet</td></tr>';
+    const signature=recordSignature(orders,fills);
+    if(signature===lastRecordSignature)return;
+    lastRecordSignature=signature;
+    $("trades-toggle").textContent=orders.length
+      ?`Trades ${fills.length} · ${orders.length} working`
+      :(fills.length?`Trades ${fills.length}`:"Trades");
+    $("trade-rows").innerHTML=(orders.length||fills.length)
+      ?orders.map(orderRow).join("")+fills.map(fillRow).join("")
+      :'<tr class="trade-empty"><td colspan="6">No orders or trades yet</td></tr>';
+    syncOrderPriceLines(orders);
     renderConsole();
   }
   function renderTrading(){
     const t=derivedTrading();
     renderPnl(t);
-    renderOrders(t);
-    renderFillsAndConsole(t);
+    renderRecordAndConsole(t);
   }
   function setTrading(trading){if(!trading)return;lastTrading=trading;syncFillConsole(trading);renderTrading();renderTradeMarkers();syncControls()}
   function inspectFill(fillId){
     const fill=(lastTrading?.fills||[]).find(f=>f.id===fillId);if(!fill)return;
-    selectedFillId=fill.id;lastFillsSignature=null;renderTrading();
+    selectedFillId=fill.id;lastRecordSignature=null;renderTrading();
     const before=Number(fill.filled_at_ts)-3600,after=Number(fill.filled_at_ts)+3600;try{chart.timeScale().setVisibleRange({from:before,to:after})}catch{}
   }
 
@@ -230,7 +253,7 @@
     preserveChartViewport(()=>{bs.forEach(b=>{candles.update(candle(b));volume.update(vol(b))});chartTools.appendMany(bs)});
     if(bs.length){lastMarkPrice=Number(bs[bs.length-1].c);lastMarkTs=Number(bs[bs.length-1].t);$("time-status").textContent=displaySeconds(bs[bs.length-1].t);renderPnl(derivedTrading())}
   }
-  function reset(bs){chartTools._cancelDrawing?.();candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chartTools.fit();lastMarkPrice=bs.length?Number(bs[bs.length-1].c):null;lastMarkTs=bs.length?Number(bs[bs.length-1].t):null;selectedFillId=null;lastOrdersSignature=null;lastMarkerSignature=null;lastFillsSignature=null;clearConsole();renderTradeMarkers()}
+  function reset(bs){chartTools._cancelDrawing?.();candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chartTools.fit();lastMarkPrice=bs.length?Number(bs[bs.length-1].c):null;lastMarkTs=bs.length?Number(bs[bs.length-1].t):null;selectedFillId=null;lastMarkerSignature=null;lastRecordSignature=null;clearConsole();renderTradeMarkers()}
   function error(m=""){$("error").textContent=m}
   async function api(path,opts={}){const authToken=token();if(!authToken)return goLogin();const r=await fetch(`${API_ORIGIN}${path}`,{headers:{"Content-Type":"application/json","Authorization":`Bearer ${authToken}`,...(opts.headers||{})},...opts});if(r.status===401)return goLogin();if(!r.ok){let m=`HTTP ${r.status}`;try{m=(await r.json()).error||m}catch{}throw new Error(m)}return r.json()}
   async function validateAuth(){const authToken=token();if(!authToken){goLogin();return false}const r=await fetch(`${API_ORIGIN}/api/auth/me`,{cache:"no-store",headers:{"Authorization":`Bearer ${authToken}`}});if(!r.ok){goLogin();return false}return true}
@@ -281,7 +304,7 @@
       if(x.type==="bar")render(x.bar);
       else if(x.type==="bars_batch")renderMany(x.bars);
       else if(x.type==="fills"){setTrading(x.trading);error()}
-      else if(x.type==="order_accepted"){recordAcceptedOrder(x.order);setTrading(x.trading);error(`${orderTypeLabel(x.order)} order accepted: ${x.order.side.toUpperCase()} ${x.order.quantity} · ${orderPriceText(x.order)}`)}
+      else if(x.type==="order_accepted"){recordAcceptedOrder(x.order);setTrading(x.trading);error(`${orderTypeLabel(x.order)} order accepted: ${x.order.side.toUpperCase()} ${x.order.quantity} · ${orderPriceText(x.order,true)}`)}
       else if(x.type==="order_cancelled"){recordCancelledOrder(x.order);setTrading(x.trading);error("Order cancelled")}
       else if(x.type==="orders_triggered"){recordTriggeredOrders(x.orders);setTrading(x.trading);error()}
       else if(x.type==="trading_cleared"){clearConsole();setTrading(x.trading);error("Trading record cleared")}
@@ -303,12 +326,15 @@
   $("speeds").onclick=e=>{const b=e.target.closest("button[data-speed]");if(!b)return;document.querySelectorAll("#speeds button").forEach(x=>x.classList.remove("active"));b.classList.add("active");speed=b.dataset.speed==="max"?"max":Number(b.dataset.speed);if(lastState==="PLAYING"&&!pendingCommand)command("play",{speed})};
   $("buy-btn").onclick=()=>placeOrder("buy");$("sell-btn").onclick=()=>placeOrder("sell");
   $("trade-type").onchange=()=>syncOrderFields();
-  $("order-rows").onclick=e=>{const b=e.target.closest("button[data-order-id]");if(b)cancelOrder(b.dataset.orderId)};
-  $("orders-toggle").onclick=()=>{preserveChartViewport(()=>{const wrap=$("orders-wrap");const show=wrap.hidden;wrap.hidden=!show;$("orders-toggle").setAttribute("aria-pressed",String(show));if(show&&!$("workspace").classList.contains("trades-open"))$("trades-toggle").click()})};
   $("trades-toggle").onclick=()=>{preserveChartViewport(()=>{const open=!$("workspace").classList.contains("trades-open");$("workspace").classList.toggle("trades-open",open);$("trades-toggle").setAttribute("aria-pressed",String(open));requestAnimationFrame(()=>chart.resize($("chart").clientWidth,$("chart").clientHeight))})};
   $("console-toggle").onclick=()=>{preserveChartViewport(()=>{const consoleEl=$("trading-console");const show=consoleEl.hidden;consoleEl.hidden=!show;$("console-toggle").setAttribute("aria-pressed",String(show));requestAnimationFrame(()=>chart.resize($("chart").clientWidth,$("chart").clientHeight))})};
   $("trade-clear").onclick=()=>clearTrading();
-  $("trade-rows").onclick=e=>{const row=e.target.closest("tr[data-fill-id]");if(row)inspectFill(row.dataset.fillId)};
+  $("trade-rows").onclick=e=>{
+    const cancel=e.target.closest("button[data-order-id]");
+    if(cancel){cancelOrder(cancel.dataset.orderId);return}
+    const row=e.target.closest("tr[data-fill-id]");
+    if(row)inspectFill(row.dataset.fillId);
+  };
   $("logout").onclick=()=>logout();
 
   (async()=>{if(!(await validateAuth()))return;await loadRange();update({state:"STOPPED"});syncOrderFields();renderTrading();syncControls()})().catch(e=>error(e.message));
