@@ -494,6 +494,8 @@ function viewportHarness({ count = 100, timeframe = "1D", step = DAY } = {}) {
   instance._fvLockedSnapshot = null;
   instance._fvDesiredRange = null;
   instance._fvUserInteractionUntil = 0;
+  instance._fvLockApplying = false;
+  instance._fvLockSuspendUntil = 0;
   instance._cancelDrawing = () => {};
   instance._fvSetDisplayData = () => {};
   instance._fvRefreshRangeBoundaries = () => {};
@@ -629,12 +631,52 @@ test("unlocked, price is never pinned", () => {
 
 test("toggling Lock off clears the snapshot", () => {
   const h = viewportHarness();
+  // Engaging pins the price scale straight away, so count from there.
   h.instance._fvToggleLock();
   h.instance._fvToggleLock();
   assert.equal(h.instance._fvViewportLocked, false);
   assert.equal(h.instance._fvLockedSnapshot, null);
+  const pinned = h.calls.price.length;
   h.instance._fvSetTimeframe("5");
-  assert.deepEqual(h.calls.price, []);
+  assert.equal(h.calls.price.length, pinned, "nothing is pinned once the lock is off");
+});
+
+test("a locked viewport that drifts is put back", () => {
+  const h = viewportHarness();
+  h.setVisible(h.at(40), h.at(50));
+  h.instance._fvToggleLock();
+  // Something outside this class moved the axis to the far right.
+  h.setVisible(h.at(89), h.at(99));
+  assert.equal(h.instance._fvEnforceLock(), true);
+  const got = h.lastLogical();
+  assert.ok(Math.abs(got.from - 40) < 0.01 && Math.abs(got.to - 50) < 0.01,
+    `put back to ${got.from}..${got.to}, expected the locked 40..50`);
+});
+
+test("a locked viewport that has not drifted is left alone", () => {
+  const h = viewportHarness();
+  h.setVisible(h.at(40), h.at(50));
+  h.instance._fvToggleLock();
+  const before = h.calls.logical.length;
+  assert.equal(h.instance._fvEnforceLock(), false);
+  assert.equal(h.calls.logical.length, before);
+});
+
+test("Fit and Start/Random suspend the lock instead of fighting it", () => {
+  const h = viewportHarness();
+  h.setVisible(h.at(40), h.at(50));
+  h.instance._fvToggleLock();
+  h.setVisible(h.at(0), h.at(99));
+  h.instance._fvSuspendLock(1000);
+  assert.equal(h.instance._fvEnforceLock(), false, "a fit in progress is not undone");
+  h.instance._fvResumeLock();
+  assert.equal(h.instance._fvEnforceLock(), true, "and the lock resumes afterwards");
+});
+
+test("unlocked, nothing is enforced", () => {
+  const h = viewportHarness();
+  h.setVisible(h.at(0), h.at(99));
+  assert.equal(h.instance._fvEnforceLock(), false);
 });
 
 test("locked, a history-range change does not resize the window", () => {
