@@ -515,3 +515,89 @@ test("a cached window never fits and keeps the current viewport", () => {
   assert.equal(calls.fits, 0, "data arrival never fits on its own, whatever triggered it");
   assert.deepEqual(calls.restored, [visibleRange]);
 });
+
+// A harness for the Lock control, with a mutable "live" time+price range so
+// tests can prove the locked snapshot is used instead of whatever the axes
+// currently read.
+function lockHarness(timeframe = "5") {
+  const instance = Object.create(ChartTools.prototype);
+  const calls = { restored: [], priceRestored: [] };
+  let timeRange = { from: 100, to: 200 };
+  let priceRange = { from: 10, to: 20 };
+  instance._fvTimeframe = timeframe;
+  instance._fvRawBars = [];
+  instance.bars = [];
+  instance._fvViewportLocked = false;
+  instance._fvLockedSnapshot = null;
+  instance._cancelDrawing = () => {};
+  instance._fvSetDisplayData = () => {};
+  instance._fvRefreshRangeBoundaries = () => {};
+  instance._fvRebuildActiveAggregate = () => null;
+  instance._fvSyncTimeframeUi = () => {};
+  instance._fvSyncLockUi = () => {};
+  instance._fvNativeSetVisibleRange = (range) => calls.restored.push(range);
+  instance.chart = { timeScale: () => ({ getVisibleRange: () => timeRange }) };
+  instance.candles = {
+    priceScale: () => ({
+      getVisibleRange: () => priceRange,
+      setVisibleRange: (range) => calls.priceRestored.push(range),
+      applyOptions: () => {},
+    }),
+  };
+  return {
+    instance,
+    calls,
+    setTimeRange: (range) => { timeRange = range; },
+    setPriceRange: (range) => { priceRange = range; },
+  };
+}
+
+test("locking snapshots both axes; a later switch restores that snapshot, not the drifted live range", () => {
+  const { instance, calls, setTimeRange, setPriceRange } = lockHarness("5");
+
+  instance._fvToggleLock();
+  assert.equal(instance._fvViewportLocked, true);
+  assert.deepEqual(instance._fvLockedSnapshot, { time: { from: 100, to: 200 }, price: { from: 10, to: 20 } });
+
+  // The live range moves between locking and the switch (e.g. a cache refresh).
+  setTimeRange({ from: 500, to: 600 });
+  setPriceRange({ from: 50, to: 60 });
+
+  instance._fvSetTimeframe("1D");
+
+  assert.deepEqual(calls.restored, [{ from: 100, to: 200 }], "the snapshot at lock time, not the live range");
+  assert.deepEqual(calls.priceRestored, [{ from: 10, to: 20 }]);
+});
+
+test("unlocked, a bar-scale switch keeps the live viewport and never touches price", () => {
+  const { instance, calls } = lockHarness("5");
+  instance._fvSetTimeframe("1D");
+  assert.deepEqual(calls.restored, [{ from: 100, to: 200 }]);
+  assert.deepEqual(calls.priceRestored, [], "price is only pinned while locked");
+});
+
+test("toggling lock off clears the snapshot and stops pinning price", () => {
+  const { instance, calls } = lockHarness("5");
+  instance._fvToggleLock();
+  instance._fvToggleLock();
+  assert.equal(instance._fvViewportLocked, false);
+  assert.equal(instance._fvLockedSnapshot, null);
+
+  instance._fvSetTimeframe("1D");
+  assert.deepEqual(calls.priceRestored, []);
+});
+
+test("locked, a history-range change does not resize the window", () => {
+  const { instance, calls } = lockHarness("5");
+  instance._fvToggleLock();
+  instance._fvSetHistoryRange(3600);
+  assert.deepEqual(calls.restored, [{ from: 100, to: 200 }], "the locked snapshot, not a range sized to `seconds`");
+});
+
+test("locked, a cached window restores the locked snapshot", () => {
+  const { instance, calls } = lockHarness("5");
+  instance._fvToggleLock();
+  instance._fvLoadCachedWindow("5", [{ t: 1, o: 1, h: 2, l: 0, c: 1, v: 1 }]);
+  assert.deepEqual(calls.restored, [{ from: 100, to: 200 }]);
+  assert.deepEqual(calls.priceRestored, [{ from: 10, to: 20 }]);
+});

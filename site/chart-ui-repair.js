@@ -174,6 +174,8 @@
       this._fvRawBars = [];
       this._fvActiveAggregate = null;
       this._fvUserInteractionUntil = 0;
+      this._fvViewportLocked = false;
+      this._fvLockedSnapshot = null;
       this._fvVwapState = null;
       this._fvSmaState = null;
       this._fvIndicatorVisible = Object.fromEntries(
@@ -223,7 +225,51 @@
       }, true);
 
       this._fvSyncTimeframeUi();
+
+      this.toolbar?.addEventListener("click", (event) => {
+        const button = event.target.closest?.('button[data-tool="lock"]');
+        if (!button) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this._fvToggleLock();
+      }, true);
+      this._fvSyncLockUi();
+
       window.__futureViewChartTools = this;
+    }
+
+    // Snapshot both axes so a later switch can put them back exactly, rather
+    // than reading "whatever is visible right now" (which can drift between
+    // the lock engaging and the switch actually happening).
+    _fvCaptureViewportSnapshot() {
+      const time = this.chart.timeScale().getVisibleRange?.() || null;
+      if (!time) return null;
+      const price = this.candles.priceScale().getVisibleRange?.() || null;
+      return { time, price };
+    }
+
+    _fvApplyViewportSnapshot(snapshot) {
+      if (!snapshot) return;
+      if (snapshot.time) { try { this._fvNativeSetVisibleRange(snapshot.time); } catch {} }
+      if (snapshot.price) {
+        try {
+          this.candles.priceScale().applyOptions({ autoScale: false });
+          this.candles.priceScale().setVisibleRange(snapshot.price);
+        } catch {}
+      }
+    }
+
+    _fvToggleLock() {
+      this._fvViewportLocked = !this._fvViewportLocked;
+      this._fvLockedSnapshot = this._fvViewportLocked ? this._fvCaptureViewportSnapshot() : null;
+      this._fvSyncLockUi();
+    }
+
+    _fvSyncLockUi() {
+      const button = this.toolbar?.querySelector?.('button[data-tool="lock"]');
+      if (!button) return;
+      button.classList.toggle("active", this._fvViewportLocked);
+      button.setAttribute("aria-pressed", String(this._fvViewportLocked));
     }
 
     _fvInstallViewportGuard() {
@@ -288,6 +334,7 @@
 
     _fvSetHistoryRange(seconds) {
       this._fvSetTimeDomain(seconds);
+      if (this._fvViewportLocked) { this._fvApplyViewportSnapshot(this._fvLockedSnapshot); return; }
       const cursor = this._fvCursor();
       if (!Number.isFinite(cursor)) return;
       try { this._fvNativeSetVisibleRange({ from: cursor - Number(seconds), to: cursor }); } catch {}
@@ -562,14 +609,17 @@
       this._cancelDrawing?.();
       // Only Start/Random and the explicit Fit control may move the viewport.
       // A bar-scale switch keeps whatever range the user was already looking
-      // at, even though that leaves it sized for the old scale.
-      const visible = this.chart.timeScale().getVisibleRange?.() || null;
+      // at, even though that leaves it sized for the old scale. Locked, it
+      // restores the exact snapshot taken when Lock engaged (both axes),
+      // rather than whatever happens to be visible right this moment.
+      const visible = this._fvViewportLocked ? null : (this.chart.timeScale().getVisibleRange?.() || null);
       this._fvTimeframe = value;
       this._fvSyncTimeframeUi();
       this._fvRebuildActiveAggregate();
       this._fvSetDisplayData(aggregateAll(this._fvRawBars, value));
       this._fvRefreshRangeBoundaries();
-      if (visible) { try { this._fvNativeSetVisibleRange(visible); } catch {} }
+      if (this._fvViewportLocked) this._fvApplyViewportSnapshot(this._fvLockedSnapshot);
+      else if (visible) { try { this._fvNativeSetVisibleRange(visible); } catch {} }
     }
 
     // Only Start/Random (reset(), followed by one explicit fit() in app.js) and
@@ -579,7 +629,7 @@
     _fvLoadCachedWindow(resolution, rawBars) {
       if (!rawBars?.length || String(resolution) !== this._fvTimeframe) return false;
       this._cancelDrawing?.();
-      const visible = this.chart.timeScale().getVisibleRange?.() || null;
+      const visible = this._fvViewportLocked ? null : (this.chart.timeScale().getVisibleRange?.() || null);
       const displayBars = rawBars.map(normalizeDisplay).filter((bar) => Number.isFinite(bar.time));
       const partial = this._fvRebuildActiveAggregate();
       if (partial) {
@@ -590,7 +640,8 @@
       this._fvSetDisplayData(displayBars);
       this._fvRefreshRangeBoundaries();
 
-      if (visible) { try { this._fvNativeSetVisibleRange(visible); } catch {} }
+      if (this._fvViewportLocked) this._fvApplyViewportSnapshot(this._fvLockedSnapshot);
+      else if (visible) { try { this._fvNativeSetVisibleRange(visible); } catch {} }
       return true;
     }
 
@@ -646,6 +697,9 @@
       requestAnimationFrame(() => requestAnimationFrame(() => {
         try { priceScale.applyOptions({ autoScale: false }); } catch {}
         if (volumeScale) { try { volumeScale.applyOptions({ autoScale: false }); } catch {} }
+        // Fit is one of the two actions allowed to move a locked viewport;
+        // re-capture so the newly-fit view becomes what Lock now holds.
+        if (this._fvViewportLocked) this._fvLockedSnapshot = this._fvCaptureViewportSnapshot();
       }));
     }
   };
