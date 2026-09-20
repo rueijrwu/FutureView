@@ -289,14 +289,8 @@
       const requested = String(timeframeButton.dataset.timeframe);
       applyRangeOnNextWindow = false;
       displayWindowAssembler?.reset();
-      // A bar-scale change is an explicit request for a different view, so the
-      // window the worker sends back is allowed to fit. This handler runs on
-      // document capture, before the chart overlay's own handler, so timeframe()
-      // is still the outgoing scale here. Arming from both places covers the case
-      // where the overlay handler never runs.
-      if (requested !== timeframe()) {
-        window.__futureViewChartTools?._fvRequestAutoFit?.(requested);
-      }
+      // Only Start/Random and the explicit Fit control may move the viewport -
+      // a bar-scale change keeps whatever range the user is already looking at.
       send({
         type: "set_timeframe",
         timeframe: requested,
@@ -319,13 +313,9 @@
       event.preventDefault();
       event.stopImmediatePropagation();
       nextButton.disabled = true;
-      // Disarm any autofit still pending from an earlier timeframe/range
-      // change before stepping - Next must never move the viewport.
-      window.__futureViewChartTools?._fvClearAutoFit?.();
       send({ type: "step_frame", timeframe: timeframe() });
       return;
     }
-
   }, true);
 
   document.addEventListener("input", (event) => {

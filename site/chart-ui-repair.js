@@ -173,7 +173,6 @@
       this._fvHistorySeconds = 5 * 86400;
       this._fvRawBars = [];
       this._fvActiveAggregate = null;
-      this._fvAutoFitPending = false;
       this._fvUserInteractionUntil = 0;
       this._fvVwapState = null;
       this._fvSmaState = null;
@@ -557,42 +556,26 @@
       this._showLegend(null);
     }
 
-    // Arm a one-shot fit for the next cached window that arrives at `timeframe`.
-    // Tagging the arm with its resolution means a window for some other timeframe,
-    // or a later history-range response, can never consume it. That is what keeps
-    // 532f18bc's rule intact: nothing fits except on an explicit request.
-    _fvRequestAutoFit(timeframe = this._fvTimeframe) {
-      this._fvAutoFitPending = String(timeframe);
-    }
-
     _fvSetTimeframe(timeframe) {
       const value = String(timeframe);
       if (!TIMEFRAMES.has(value) || value === this._fvTimeframe) return;
       this._cancelDrawing?.();
+      // Only Start/Random and the explicit Fit control may move the viewport.
+      // A bar-scale switch keeps whatever range the user was already looking
+      // at, even though that leaves it sized for the old scale.
+      const visible = this.chart.timeScale().getVisibleRange?.() || null;
       this._fvTimeframe = value;
       this._fvSyncTimeframeUi();
       this._fvRebuildActiveAggregate();
       this._fvSetDisplayData(aggregateAll(this._fvRawBars, value));
       this._fvRefreshRangeBoundaries();
-      // Changing the bar scale is an explicit request for a different view of the
-      // data, so it may fit. Restoring the pre-switch time range instead leaves the
-      // viewport sized for the old scale: 1m -> 1D shows a fraction of one candle,
-      // 1D -> 1m shows months of whitespace around a few minutes of bars.
-      // Fit the locally aggregated view now and arm the authoritative window the
-      // worker sends back, so the final data is fitted too.
-      this._fvRequestAutoFit(value);
-      this.fit();
+      if (visible) { try { this._fvNativeSetVisibleRange(visible); } catch {} }
     }
 
-    // Called right before sending Next/step. A timeframe (or history-range)
-    // switch arms a one-shot autofit for whichever cached window answers it,
-    // but that answer can arrive late - after the user has already stepped
-    // forward and away from it. Disarming here means Next can never trigger
-    // an autofit it didn't ask for, however stale the pending arm is.
-    _fvClearAutoFit() {
-      this._fvAutoFitPending = false;
-    }
-
+    // Only Start/Random (reset(), followed by one explicit fit() in app.js) and
+    // the Fit control ever move the viewport. A cached window - whatever
+    // triggered it (bar-scale switch, history-range change, a late refresh
+    // while stepping) - always preserves whatever range the user is looking at.
     _fvLoadCachedWindow(resolution, rawBars) {
       if (!rawBars?.length || String(resolution) !== this._fvTimeframe) return false;
       this._cancelDrawing?.();
@@ -607,13 +590,7 @@
       this._fvSetDisplayData(displayBars);
       this._fvRefreshRangeBoundaries();
 
-      const armedFor = this._fvAutoFitPending;
-      this._fvAutoFitPending = false;
-      if (armedFor && String(armedFor) === String(resolution)) {
-        requestAnimationFrame(() => this.fit());
-      } else if (visible) {
-        try { this._fvNativeSetVisibleRange(visible); } catch {}
-      }
+      if (visible) { try { this._fvNativeSetVisibleRange(visible); } catch {} }
       return true;
     }
 
@@ -624,10 +601,6 @@
       this._fvRebuildActiveAggregate();
       this._fvSetDisplayData(aggregateAll(this._fvRawBars, this._fvTimeframe));
       this._fvRefreshRangeBoundaries();
-      // reset() is followed by one explicit fit() in app.js. Do not arm a second
-      // asynchronous fit for a later cached-history response: that response may
-      // arrive after Next/Play and would unexpectedly move the user's viewport.
-      this._fvAutoFitPending = false;
     }
 
     append(rawBar) {
