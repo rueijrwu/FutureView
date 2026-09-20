@@ -584,6 +584,15 @@
       this.fit();
     }
 
+    // Called right before sending Next/step. A timeframe (or history-range)
+    // switch arms a one-shot autofit for whichever cached window answers it,
+    // but that answer can arrive late - after the user has already stepped
+    // forward and away from it. Disarming here means Next can never trigger
+    // an autofit it didn't ask for, however stale the pending arm is.
+    _fvClearAutoFit() {
+      this._fvAutoFitPending = false;
+    }
+
     _fvLoadCachedWindow(resolution, rawBars) {
       if (!rawBars?.length || String(resolution) !== this._fvTimeframe) return false;
       this._cancelDrawing?.();

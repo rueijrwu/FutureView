@@ -561,3 +561,18 @@ test("cached window only fits when explicitly armed", async () => {
   assert.match(loadBlock, /if \(armedFor && String\(armedFor\) === String\(resolution\)\)/);
   assert.match(loadBlock, /else if \(visible\)/);
 });
+
+test("clearing the autofit arm stops a late-arriving window from fitting", async () => {
+  const { instance, calls } = autoFitHarness("5");
+
+  instance._fvSetTimeframe("1D");
+  assert.equal(instance._fvAutoFitPending, "1D", "the switch arms the incoming 1D window");
+
+  // Next is clicked before that 1D window answers - Next must disarm it.
+  instance._fvClearAutoFit();
+  assert.equal(instance._fvAutoFitPending, false);
+
+  instance._fvLoadCachedWindow("1D", [{ t: 1, o: 1, h: 2, l: 0, c: 1, v: 1 }]);
+  await flushFrame();
+  assert.equal(calls.fits, 1, "only the immediate local fit from the switch happened");
+});

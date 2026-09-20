@@ -319,6 +319,9 @@
       event.preventDefault();
       event.stopImmediatePropagation();
       nextButton.disabled = true;
+      // Disarm any autofit still pending from an earlier timeframe/range
+      // change before stepping - Next must never move the viewport.
+      window.__futureViewChartTools?._fvClearAutoFit?.();
       send({ type: "step_frame", timeframe: timeframe() });
       return;
     }
