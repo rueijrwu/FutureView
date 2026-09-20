@@ -175,11 +175,8 @@
       this._fvActiveAggregate = null;
       this._fvUserInteractionUntil = 0;
       this._fvViewportLocked = false;
-      this._fvLockedSnapshot = null;
+      this._fvLockedCentre = null;
       this._fvDesiredRange = null;
-      this._fvLockApplying = false;
-      this._fvLockSuspendUntil = 0;
-      this._fvLockEnforceQueued = false;
       this._fvVwapState = null;
       this._fvSmaState = null;
       this._fvIndicatorVisible = Object.fromEntries(
@@ -364,30 +361,34 @@
         hi = dataLo + width;
       }
 
+      this._fvApplyLogicalRange(lo, hi, { from, to });
+      return true;
+    }
+
+    // setData settles the axis over the following frame and can overwrite a
+    // range applied in the same tick, so every placement is asserted twice -
+    // unless the user has taken hold of the chart in the meantime.
+    _fvApplyLogicalRange(lo, hi, timeFallback = null) {
       const apply = () => {
         if (this._fvNativeSetVisibleLogicalRange) {
           try { this._fvNativeSetVisibleLogicalRange({ from: lo, to: hi }); return; } catch {}
         }
-        try { this._fvNativeSetVisibleRange({ from, to }); } catch {}
+        if (timeFallback) { try { this._fvNativeSetVisibleRange(timeFallback); } catch {} }
       };
       apply();
-      // setData settles the axis over the following frame and can overwrite a
-      // range applied in the same tick, so assert it once more - unless the
-      // user has taken hold of the chart in the meantime.
       requestAnimationFrame(() => {
         if (this._fvUserInteractionUntil === Infinity) return;
         if (performance.now() < this._fvUserInteractionUntil) return;
         apply();
       });
-      return true;
     }
 
-    // What the viewport should be after a data change: the lock if one is held,
-    // otherwise a window carried over from a scale switch, otherwise whatever
-    // was on screen before the change.
+    // What the viewport should be after a data change: the locked centre if one
+    // is held, otherwise a window carried over from a scale switch, otherwise
+    // whatever was on screen before the change.
     _fvRestoreViewport(previous) {
-      if (this._fvViewportLocked && this._fvLockedSnapshot) {
-        this._fvApplyViewportSnapshot(this._fvLockedSnapshot);
+      if (this._fvViewportLocked && this._fvLockedCentre) {
+        this._fvRecentreLocked();
         return;
       }
       if (this._fvDesiredRange) {
@@ -397,78 +398,59 @@
       if (previous) { try { this._fvNativeSetVisibleRange(previous); } catch {} }
     }
 
-    // Snapshot both axes so a later switch can put them back exactly, rather
-    // than reading "whatever is visible right now" (which can drift between
-    // the lock engaging and the switch actually happening).
-    _fvCaptureViewportSnapshot() {
+    // Lock holds one point, not a window: the time at the middle of the chart
+    // and the price at the middle of the price axis. A scale change is free to
+    // change how wide the window is and how much price it spans - what it may
+    // not do is drift off that point.
+    _fvCaptureCentre() {
       const time = this.chart.timeScale().getVisibleRange?.() || null;
       if (!time) return null;
       const price = this.candles.priceScale().getVisibleRange?.() || null;
-      return { time, price };
+      return {
+        time: (Number(time.from) + Number(time.to)) / 2,
+        price: price ? (Number(price.from) + Number(price.to)) / 2 : null,
+      };
     }
 
-    _fvApplyViewportSnapshot(snapshot) {
-      if (!snapshot) return;
-      if (snapshot.time) this._fvApplyTimeRange(snapshot.time);
-      if (snapshot.price) {
-        try {
-          this.candles.priceScale().applyOptions({ autoScale: false });
-          this.candles.priceScale().setVisibleRange(snapshot.price);
-        } catch {}
+    // Keep the width the new scale produced and slide it onto the locked point.
+    _fvRecentreLocked() {
+      const centre = this._fvLockedCentre;
+      if (!this._fvViewportLocked || !centre) return false;
+
+      // Bar indices, not times: the width is whatever the new scale ended up
+      // showing, and the centre keeps its place even when half the window ends
+      // up past the last bar - being centred on the latest bar means exactly
+      // that. A time window would be clamped back onto the data instead.
+      const frame = this._fvLogicalFrame();
+      const visible = this.chart.timeScale().getVisibleRange?.();
+      if (frame && visible && Number.isFinite(centre.time)) {
+        const lo = this._fvLogicalIndexAt(Number(visible.from), frame);
+        const hi = this._fvLogicalIndexAt(Number(visible.to), frame);
+        const middle = this._fvLogicalIndexAt(centre.time, frame);
+        const width = hi - lo;
+        if (Number.isFinite(width) && width > 0 && Number.isFinite(middle)) {
+          this._fvApplyLogicalRange(middle - width / 2, middle + width / 2);
+        }
       }
-    }
 
-    // Lock has to be held continuously, not just at the call sites that are
-    // known to change data. setData settles the axis over later frames, the
-    // app restores its own remembered range after appending bars, and a
-    // history-range change arrives as several windows - each of those can move
-    // the viewport without passing through this class. So the lock watches the
-    // axis and puts it back whenever it drifts, unless the user is the one
-    // moving it or an explicitly-allowed action (Fit, Start/Random) is running.
-    _fvLockSuspended() {
-      return this._fvLockApplying || performance.now() < this._fvLockSuspendUntil;
-    }
-
-    _fvSuspendLock(ms) {
-      this._fvLockSuspendUntil = performance.now() + Number(ms || 0);
-    }
-
-    _fvResumeLock() {
-      this._fvLockSuspendUntil = 0;
-    }
-
-    _fvEnforceLock() {
-      const want = this._fvLockedSnapshot?.time;
-      if (!this._fvViewportLocked || !want) return false;
-      if (this._fvLockSuspended()) return false;
-      if (this._fvUserInteractionUntil === Infinity) return false;
-      if (performance.now() < this._fvUserInteractionUntil) return false;
-      const current = this.chart.timeScale().getVisibleRange?.();
-      if (!current) return false;
-      const width = Number(want.to) - Number(want.from);
-      if (!Number.isFinite(width) || width <= 0) return false;
-      // A bar's worth of slack: the axis legitimately rounds a time window to
-      // whole bars, and at a coarse scale that is a visible but correct shift.
-      const tolerance = Math.max(this._fvStepSeconds(), width * 0.02);
-      const drifted = Math.abs(Number(current.from) - Number(want.from)) > tolerance
-        || Math.abs(Number(current.to) - Number(want.to)) > tolerance;
-      if (!drifted) return false;
-      this._fvLockApplying = true;
-      this._fvApplyViewportSnapshot(this._fvLockedSnapshot);
-      requestAnimationFrame(() => requestAnimationFrame(() => { this._fvLockApplying = false; }));
+      if (Number.isFinite(centre.price)) {
+        const scale = this.candles.priceScale();
+        const range = scale.getVisibleRange?.();
+        const height = range ? Number(range.to) - Number(range.from) : NaN;
+        if (Number.isFinite(height) && height > 0) {
+          try {
+            scale.applyOptions({ autoScale: false });
+            scale.setVisibleRange({ from: centre.price - height / 2, to: centre.price + height / 2 });
+          } catch {}
+        }
+      }
       return true;
     }
 
     _fvToggleLock() {
       this._fvViewportLocked = !this._fvViewportLocked;
-      this._fvLockedSnapshot = this._fvViewportLocked ? this._fvCaptureViewportSnapshot() : null;
-      this._fvResumeLock();
-      if (this._fvViewportLocked) {
-        // Pin the price scale straight away, so incoming bars cannot rescale it.
-        this._fvLockApplying = true;
-        this._fvApplyViewportSnapshot(this._fvLockedSnapshot);
-        this._fvLockApplying = false;
-      }
+      // Engaging only reads the chart; it never moves it.
+      this._fvLockedCentre = this._fvViewportLocked ? this._fvCaptureCentre() : null;
       this._fvSyncLockUi();
     }
 
@@ -483,44 +465,23 @@
       const ts = this.chart.timeScale();
       this._fvNativeSetVisibleRange = ts.setVisibleRange.bind(ts);
       this._fvNativeSetVisibleLogicalRange = ts.setVisibleLogicalRange?.bind(ts) ?? null;
-      const nativeFitContent = ts.fitContent?.bind(ts) ?? null;
       const blocked = () => this._fvUserInteractionUntil === Infinity || performance.now() < this._fvUserInteractionUntil;
-      // While locked, the only viewport writes that land are the lock's own and
-      // the user's. Everything else - the app restoring a range it remembered
-      // from before a bar-scale change, a tool asking to zoom - is dropped.
-      const lockedOut = () => this._fvViewportLocked && !this._fvLockSuspended();
 
       ts.setVisibleRange = (range) => {
-        if (blocked() || lockedOut()) return;
+        if (blocked()) return;
         if (sameRange(ts.getVisibleRange?.(), range)) return;
         return this._fvNativeSetVisibleRange(range);
       };
       if (this._fvNativeSetVisibleLogicalRange) {
         ts.setVisibleLogicalRange = (range) => {
-          if (blocked() || lockedOut()) return;
+          if (blocked()) return;
           if (sameRange(ts.getVisibleLogicalRange?.(), range)) return;
           return this._fvNativeSetVisibleLogicalRange(range);
         };
       }
-      if (nativeFitContent) {
-        ts.fitContent = () => {
-          if (lockedOut()) return;
-          return nativeFitContent();
-        };
-      }
-      // The axis reports every move it makes, including the ones the library
-      // makes by itself after setData. One check per frame is enough.
-      ts.subscribeVisibleLogicalRangeChange?.(() => {
-        if (this._fvLockEnforceQueued) return;
-        this._fvLockEnforceQueued = true;
-        requestAnimationFrame(() => {
-          this._fvLockEnforceQueued = false;
-          this._fvEnforceLock();
-        });
-      });
 
       // A deliberate pan or zoom is the user choosing a window by hand, so it
-      // supersedes one carried from a scale switch and becomes what Lock holds.
+      // supersedes one carried from a scale switch and re-centres the lock.
       const begin = () => {
         this._fvUserInteractionUntil = Infinity;
         this._fvDesiredRange = null;
@@ -528,7 +489,7 @@
       const end = () => {
         this._fvUserInteractionUntil = performance.now() + 180;
         if (this._fvViewportLocked) {
-          setTimeout(() => { this._fvLockedSnapshot = this._fvCaptureViewportSnapshot(); }, 200);
+          setTimeout(() => { this._fvLockedCentre = this._fvCaptureCentre(); }, 200);
         }
       };
       this.container.addEventListener("pointerdown", begin, true);
@@ -572,7 +533,7 @@
 
     _fvSetHistoryRange(seconds) {
       this._fvSetTimeDomain(seconds);
-      if (this._fvViewportLocked) { this._fvApplyViewportSnapshot(this._fvLockedSnapshot); return; }
+      if (this._fvViewportLocked && this._fvRecentreLocked()) return;
       const cursor = this._fvCursor();
       if (!Number.isFinite(cursor)) return;
       try { this._fvNativeSetVisibleRange({ from: cursor - Number(seconds), to: cursor }); } catch {}
@@ -871,7 +832,7 @@
     _fvLoadCachedWindow(resolution, rawBars) {
       if (!rawBars?.length || String(resolution) !== this._fvTimeframe) return false;
       this._cancelDrawing?.();
-      const visible = this._fvViewportLocked || this._fvDesiredRange
+      const visible = (this._fvViewportLocked && this._fvLockedCentre) || this._fvDesiredRange
         ? null
         : (this.chart.timeScale().getVisibleRange?.() || null);
       const displayBars = rawBars.map(normalizeDisplay).filter((bar) => Number.isFinite(bar.time));
@@ -893,9 +854,6 @@
 
     reset(rawBars) {
       this._cancelDrawing?.();
-      // Start/Random is one of the two actions allowed to move a locked
-      // viewport; app.js fits right after, which re-captures the lock.
-      this._fvSuspendLock(1000);
       // Start/Random is a fresh session and fits explicitly in app.js, so no
       // window carried from a previous scale switch may survive it.
       this._fvDesiredRange = null;
@@ -934,7 +892,6 @@
       const bars = this.bars || [];
       if (!bars.length) return;
       this._fvDesiredRange = null;
-      this._fvSuspendLock(1000);
       const first = Number(bars[0].time);
       const last = Number(bars.at(-1).time);
       if (Number.isFinite(first) && Number.isFinite(last)) {
@@ -952,9 +909,8 @@
         try { priceScale.applyOptions({ autoScale: false }); } catch {}
         if (volumeScale) { try { volumeScale.applyOptions({ autoScale: false }); } catch {} }
         // Fit is one of the two actions allowed to move a locked viewport;
-        // re-capture so the newly-fit view becomes what Lock now holds.
-        if (this._fvViewportLocked) this._fvLockedSnapshot = this._fvCaptureViewportSnapshot();
-        this._fvResumeLock();
+        // re-capture so the newly-fit centre becomes what Lock now holds.
+        if (this._fvViewportLocked) this._fvLockedCentre = this._fvCaptureCentre();
       }));
     }
   };

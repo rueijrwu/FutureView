@@ -491,11 +491,9 @@ function viewportHarness({ count = 100, timeframe = "1D", step = DAY } = {}) {
     time: T0 + i * step, open: 1, high: 2, low: 0, close: 1, volume: 1,
   }));
   instance._fvViewportLocked = false;
-  instance._fvLockedSnapshot = null;
+  instance._fvLockedCentre = null;
   instance._fvDesiredRange = null;
   instance._fvUserInteractionUntil = 0;
-  instance._fvLockApplying = false;
-  instance._fvLockSuspendUntil = 0;
   instance._cancelDrawing = () => {};
   instance._fvSetDisplayData = () => {};
   instance._fvRefreshRangeBoundaries = () => {};
@@ -604,89 +602,89 @@ test("with nothing carried, a cached window just preserves what was on screen", 
   assert.deepEqual(h.calls.time.at(-1), { from: T0 + 10 * DAY, to: T0 + 20 * DAY });
 });
 
-test("Lock snapshots both axes and restores them, not the drifted live range", () => {
+test("Lock holds the centre and lets the width change", () => {
   const h = viewportHarness();
   h.setVisible(h.at(40), h.at(50));
-  h.setPrice(5580, 5620);
-
   h.instance._fvToggleLock();
   assert.equal(h.instance._fvViewportLocked, true);
 
-  // The live range drifts before the switch happens.
-  h.setVisible(h.at(2), h.at(4));
-  h.setPrice(1, 2);
+  // The new bar scale produces a window twice as wide, somewhere else entirely.
+  h.setVisible(h.at(0), h.at(20));
+  h.instance._fvRecentreLocked();
 
-  h.instance._fvSetTimeframe("5");
   const got = h.lastLogical();
-  assert.ok(Math.abs(got.from - 40) < 0.01 && Math.abs(got.to - 50) < 0.01,
-    `restored ${got.from}..${got.to}, expected the locked 40..50`);
-  assert.deepEqual(h.calls.price.at(-1), { from: 5580, to: 5620 }, "price is pinned too");
+  assert.ok(Math.abs((got.from + got.to) / 2 - 45) < 0.01, `centred on ${(got.from + got.to) / 2}`);
+  assert.ok(Math.abs((got.to - got.from) - 20) < 0.01, `kept the new width, got ${got.to - got.from}`);
 });
 
-test("unlocked, price is never pinned", () => {
+test("Lock centres the price too, keeping whatever height the new scale gives", () => {
   const h = viewportHarness();
+  h.setPrice(5580, 5620);
+  h.instance._fvToggleLock();
+
+  h.setPrice(0, 100);
+  h.instance._fvRecentreLocked();
+  assert.deepEqual(h.calls.price.at(-1), { from: 5550, to: 5650 });
+});
+
+test("engaging Lock does not move the chart", () => {
+  const h = viewportHarness();
+  h.instance._fvToggleLock();
+  assert.deepEqual(h.calls.logical, []);
+  assert.deepEqual(h.calls.time, []);
+  assert.deepEqual(h.calls.price, []);
+  assert.equal(h.calls.fits, 0);
+});
+
+test("locked, a bar-scale change re-centres rather than restoring a window", () => {
+  const h = viewportHarness();
+  h.setVisible(h.at(40), h.at(50));
+  h.instance._fvToggleLock();
+
+  // The starved re-aggregation leaves a narrow window somewhere else.
+  h.setVisible(h.at(2), h.at(4));
+  h.instance._fvSetTimeframe("5");
+
+  const got = h.lastLogical();
+  assert.ok(Math.abs((got.from + got.to) / 2 - 45) < 0.01, `centred on ${(got.from + got.to) / 2}`);
+  assert.ok(Math.abs((got.to - got.from) - 2) < 0.01, `kept the narrow width, got ${got.to - got.from}`);
+});
+
+test("a centred window may run past the last bar", () => {
+  const h = viewportHarness({ count: 100 });
+  h.setVisible(h.at(95), h.at(99));
+  h.instance._fvToggleLock();
+  h.setVisible(h.at(90), h.at(100));
+  h.instance._fvRecentreLocked();
+  const got = h.lastLogical();
+  assert.ok(got.to > 99, `centre held into the empty space, got ${got.from}..${got.to}`);
+  assert.ok(Math.abs((got.from + got.to) / 2 - 97) < 0.01, `centred on ${(got.from + got.to) / 2}`);
+});
+
+test("unlocked, price is never pinned and nothing is centred", () => {
+  const h = viewportHarness();
+  assert.equal(h.instance._fvRecentreLocked(), false);
   h.instance._fvSetTimeframe("5");
   assert.deepEqual(h.calls.price, []);
 });
 
-test("toggling Lock off clears the snapshot", () => {
+test("toggling Lock off clears the centre", () => {
   const h = viewportHarness();
-  // Engaging pins the price scale straight away, so count from there.
   h.instance._fvToggleLock();
   h.instance._fvToggleLock();
   assert.equal(h.instance._fvViewportLocked, false);
-  assert.equal(h.instance._fvLockedSnapshot, null);
-  const pinned = h.calls.price.length;
+  assert.equal(h.instance._fvLockedCentre, null);
   h.instance._fvSetTimeframe("5");
-  assert.equal(h.calls.price.length, pinned, "nothing is pinned once the lock is off");
+  assert.deepEqual(h.calls.price, [], "nothing is pinned once the lock is off");
 });
 
-test("a locked viewport that drifts is put back", () => {
-  const h = viewportHarness();
-  h.setVisible(h.at(40), h.at(50));
-  h.instance._fvToggleLock();
-  // Something outside this class moved the axis to the far right.
-  h.setVisible(h.at(89), h.at(99));
-  assert.equal(h.instance._fvEnforceLock(), true);
-  const got = h.lastLogical();
-  assert.ok(Math.abs(got.from - 40) < 0.01 && Math.abs(got.to - 50) < 0.01,
-    `put back to ${got.from}..${got.to}, expected the locked 40..50`);
-});
-
-test("a locked viewport that has not drifted is left alone", () => {
-  const h = viewportHarness();
-  h.setVisible(h.at(40), h.at(50));
-  h.instance._fvToggleLock();
-  const before = h.calls.logical.length;
-  assert.equal(h.instance._fvEnforceLock(), false);
-  assert.equal(h.calls.logical.length, before);
-});
-
-test("Fit and Start/Random suspend the lock instead of fighting it", () => {
-  const h = viewportHarness();
-  h.setVisible(h.at(40), h.at(50));
-  h.instance._fvToggleLock();
-  h.setVisible(h.at(0), h.at(99));
-  h.instance._fvSuspendLock(1000);
-  assert.equal(h.instance._fvEnforceLock(), false, "a fit in progress is not undone");
-  h.instance._fvResumeLock();
-  assert.equal(h.instance._fvEnforceLock(), true, "and the lock resumes afterwards");
-});
-
-test("unlocked, nothing is enforced", () => {
-  const h = viewportHarness();
-  h.setVisible(h.at(0), h.at(99));
-  assert.equal(h.instance._fvEnforceLock(), false);
-});
-
-test("locked, a history-range change does not resize the window", () => {
+test("locked, a history-range change keeps the centre", () => {
   const h = viewportHarness();
   h.setVisible(h.at(40), h.at(50));
   h.instance._fvToggleLock();
   h.instance._fvSetHistoryRange(3600);
   const got = h.lastLogical();
-  assert.ok(Math.abs(got.from - 40) < 0.01 && Math.abs(got.to - 50) < 0.01,
-    `restored ${got.from}..${got.to}, expected the locked 40..50`);
+  assert.ok(Math.abs((got.from + got.to) / 2 - 45) < 0.01, `centred on ${(got.from + got.to) / 2}`);
 });
 
 test("Start/Random clears a carried window so its own fit stands", () => {
