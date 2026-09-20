@@ -1,10 +1,20 @@
 import { DurableObject } from "cloudflare:workers";
 
 const SPEEDS = new Set([1, 5, 10, 25, 50, 100]);
+// commissionPerSide is charged per contract on every fill; slippageTicks is the
+// adverse micro-slippage charged on any fill that reaches the market (market
+// orders and triggered stops). Resting limits never slip: they fill at their
+// own price or better, or they do not fill.
 const PRODUCT_SPECS = {
-  MES: { pointValue: 5, tickSize: 0.25 },
-  ES: { pointValue: 50, tickSize: 0.25 },
+  MES: { pointValue: 5, tickSize: 0.25, commissionPerSide: 0.62, slippageTicks: 1 },
+  ES: { pointValue: 50, tickSize: 0.25, commissionPerSide: 2.25, slippageTicks: 1 },
 };
+const ORDER_TYPES = new Set(["market", "limit", "stop", "stop_limit"]);
+const ORDER_SIDES = new Set(["buy", "sell"]);
+// Stops are evaluated before limits inside one canonical bar. Both can trigger on
+// the same minute and 1m OHLCV carries no intrabar sequence, so the order has to
+// be a stated convention rather than an accident of insertion order.
+const ORDER_EVAL_RANK = { stop: 0, stop_limit: 0, market: 1, limit: 2 };
 
 // Base of the replay chain. This class is never deployed on its own: wrangler
 // ships the display-fast subclass via main-frame.js. Five methods it calls are
@@ -80,6 +90,7 @@ export class ReplaySession extends DurableObject {
       pendingOrders: [],
       fills: [],
       nextSequence: 1,
+      nextOrderSequence: 1,
       lastPrice,
     };
   }
@@ -180,6 +191,8 @@ export class ReplaySession extends DurableObject {
       contract: this.session.contract,
       point_value: spec.pointValue,
       tick_size: spec.tickSize,
+      commission_per_side: spec.commissionPerSide,
+      slippage_ticks: spec.slippageTicks,
       position_qty: t.positionQty,
       avg_price: t.avgPrice,
       realized_pnl: t.realizedPnl,
@@ -214,7 +227,8 @@ export class ReplaySession extends DurableObject {
       else if (command.type === "pause") await this.pause();
       else if (command.type === "step") await this.step();
       else if (command.type === "restart") await this.restart();
-      else if (command.type === "order") await this.placeOrder(command.side, command.quantity);
+      else if (command.type === "order") await this.placeOrder(command);
+      else if (command.type === "cancel_order") await this.cancelOrder(command.order_id);
       else if (command.type === "clear_trading") await this.clearTrading();
       else ws.send(JSON.stringify({ type: "error", error: `Unknown command ${command.type}` }));
     } catch (error) {
@@ -233,25 +247,73 @@ export class ReplaySession extends DurableObject {
     }
   }
 
-  async placeOrder(side, quantity) {
+  // Prices the user names must sit on the contract's tick grid. tickSize was
+  // published in the account snapshot long before anything validated against it.
+  _requireTickPrice(value, label) {
+    const price = Number(value);
+    if (!Number.isFinite(price) || price <= 0) throw new Error(`${label} must be a positive price`);
+    const spec = this._spec();
+    const ticks = price / spec.tickSize;
+    if (Math.abs(ticks - Math.round(ticks)) > 1e-9) {
+      throw new Error(`${label} must be a multiple of ${spec.tickSize}`);
+    }
+    return Math.round(ticks) * spec.tickSize;
+  }
+
+  async placeOrder(command) {
     if (!this.session) throw new Error("Session not initialized");
     if (this.session.state === "FINISHED") throw new Error("Replay is finished");
-    side = String(side || "").toLowerCase();
-    quantity = Number(quantity);
-    if (!new Set(["buy", "sell"]).has(side)) throw new Error("Order side must be buy or sell");
+    const side = String(command?.side || "").toLowerCase();
+    const type = String(command?.order_type || "market").toLowerCase();
+    const quantity = Number(command?.quantity);
+    if (!ORDER_SIDES.has(side)) throw new Error("Order side must be buy or sell");
+    if (!ORDER_TYPES.has(type)) throw new Error(`Unsupported order type ${command?.order_type}`);
     if (!Number.isInteger(quantity) || quantity < 1 || quantity > 100) throw new Error("Quantity must be an integer from 1 to 100");
     const cursor = this.shard?.[this.session.barIndex]?.t;
     if (!Number.isFinite(cursor)) throw new Error("Replay cursor is unavailable");
+
     const t = this._trading();
+    const needsLimit = type === "limit" || type === "stop_limit";
+    const needsStop = type === "stop" || type === "stop_limit";
+    const limitPrice = needsLimit ? this._requireTickPrice(command?.limit_price, "Limit price") : null;
+    const stopPrice = needsStop ? this._requireTickPrice(command?.stop_price, "Stop price") : null;
+
+    // A stop that is already through the market is an order-entry mistake, not a
+    // stop: it would trigger on the very next bar and behave as a market order.
+    if (needsStop && Number.isFinite(Number(t.lastPrice))) {
+      const last = Number(t.lastPrice);
+      if (side === "buy" && stopPrice <= last) throw new Error("A buy stop must be above the current price");
+      if (side === "sell" && stopPrice >= last) throw new Error("A sell stop must be below the current price");
+    }
+
     const order = {
       id: crypto.randomUUID(),
+      sequence: t.nextOrderSequence++,
+      type,
       side,
       quantity,
+      limit_price: limitPrice,
+      stop_price: stopPrice,
+      status: "working",
       requested_at_ts: cursor,
+      triggered_at_ts: null,
     };
     t.pendingOrders.push(order);
     await this.ctx.storage.put("session", this.session);
+    await this._persistOrder(order);
     this._broadcast({ type: "order_accepted", order, trading: this._accountSnapshot() });
+  }
+
+  async cancelOrder(orderId) {
+    if (!this.session) throw new Error("Session not initialized");
+    const t = this._trading();
+    const index = t.pendingOrders.findIndex((order) => order.id === orderId);
+    if (index < 0) throw new Error("No working order with that id");
+    const [order] = t.pendingOrders.splice(index, 1);
+    order.status = "cancelled";
+    await this.ctx.storage.put("session", this.session);
+    await this._persistOrderStatus(order.id, "cancelled");
+    this._broadcast({ type: "order_cancelled", order, trading: this._accountSnapshot() });
   }
 
   async clearTrading() {
@@ -330,24 +392,109 @@ export class ReplaySession extends DurableObject {
     this.timer = setTimeout(() => this._tick(generation), this._tickDelayMs());
   }
 
+  // Limits require the bar to trade *through* the price, stops trigger on a touch.
+  // That asymmetry is deliberate: a stop is a market trigger, while a resting
+  // limit sitting exactly at a bar's extreme is behind a queue we cannot model, so
+  // crediting it a fill would flatter every result.
+  _evaluateLimit(order, open, high, low) {
+    const limit = Number(order.limit_price);
+    if (order.side === "buy") {
+      if (open <= limit) return { action: "fill", price: open };
+      if (low < limit) return { action: "fill", price: limit };
+      return { action: "rest" };
+    }
+    if (open >= limit) return { action: "fill", price: open };
+    if (high > limit) return { action: "fill", price: limit };
+    return { action: "rest" };
+  }
+
+  // Decides what one working order does against the bar being released right now.
+  // It never looks at any later bar, which is what keeps the replay causal.
+  _evaluateOrder(order, bar) {
+    const open = Number(bar.o);
+    const high = Number(bar.h);
+    const low = Number(bar.l);
+    const type = order.type ?? "market";
+
+    if (type === "market") return { action: "fill", price: open, marketable: true };
+    if (type === "limit") return this._evaluateLimit(order, open, high, low);
+
+    if (order.status !== "triggered") {
+      const stop = Number(order.stop_price);
+      const hit = order.side === "buy" ? high >= stop : low <= stop;
+      if (!hit) return { action: "rest" };
+      if (type === "stop") {
+        // A bar that gapped straight through the stop never traded at it, so the
+        // fill is the open and the user eats the gap. This is the whole point of
+        // modelling stops honestly.
+        const price = order.side === "buy" ? Math.max(stop, open) : Math.min(stop, open);
+        return { action: "fill", price, marketable: true };
+      }
+      // stop_limit: the limit goes live, but not on the bar that triggered it.
+      // 1m OHLCV gives no intrabar sequence, so we cannot claim the limit was
+      // reachable after the stop printed within the same minute.
+      return { action: "trigger" };
+    }
+
+    return this._evaluateLimit(order, open, high, low);
+  }
+
   async _fillPendingOrders(bar) {
     const t = this._trading();
     if (!t.pendingOrders.length) return;
-    const pending = t.pendingOrders.splice(0);
+
+    const rank = (order) => ORDER_EVAL_RANK[order.type ?? "market"] ?? 1;
+    const queue = t.pendingOrders
+      .map((order, index) => ({ order, index }))
+      .sort((a, b) => (rank(a.order) - rank(b.order))
+        || (Number(a.order.sequence ?? 0) - Number(b.order.sequence ?? 0))
+        || (a.index - b.index));
+
+    const filled = new Set();
     const fills = [];
-    for (const order of pending) {
-      const fill = this._applyFill(order, Number(bar.o), Number(bar.t));
+    const triggered = [];
+    for (const { order } of queue) {
+      const outcome = this._evaluateOrder(order, bar);
+      if (outcome.action === "rest") continue;
+      if (outcome.action === "trigger") {
+        order.status = "triggered";
+        order.triggered_at_ts = Number(bar.t);
+        triggered.push({ ...order });
+        continue;
+      }
+      const fill = this._applyFill(order, outcome.price, Number(bar.t), outcome.marketable === true);
+      filled.add(order.id);
       fills.push(fill);
       t.fills.push(fill);
-      await this._persistFill(fill);
     }
+
+    if (!fills.length && !triggered.length) return;
+
+    if (filled.size) t.pendingOrders = t.pendingOrders.filter((order) => !filled.has(order.id));
+    for (const fill of fills) {
+      await this._persistFill(fill);
+      await this._persistOrderStatus(fill.order_id, "filled");
+    }
+    for (const order of triggered) await this._persistOrderStatus(order.id, "triggered", order.triggered_at_ts);
     await this._persistTradingSummary();
-    this._broadcast({ type: "fills", fills, trading: this._accountSnapshot() });
+
+    const snapshot = this._accountSnapshot();
+    if (triggered.length) this._broadcast({ type: "orders_triggered", orders: triggered, trading: snapshot });
+    if (fills.length) this._broadcast({ type: "fills", fills, trading: snapshot });
   }
 
-  _applyFill(order, price, filledAt) {
+  _applyFill(order, price, filledAt, marketable = true) {
     const t = this._trading();
     const spec = this._spec();
+    // Costs are accounted in their own buckets rather than folded into the fill
+    // price, because total_pnl already subtracts them and the average price stays
+    // readable as the price the trade actually printed at.
+    const commission = spec.commissionPerSide * order.quantity;
+    const slippage = marketable
+      ? spec.slippageTicks * spec.tickSize * spec.pointValue * order.quantity
+      : 0;
+    t.commission += commission;
+    t.slippage += slippage;
     const signed = order.side === "buy" ? order.quantity : -order.quantity;
     const oldQty = t.positionQty;
     const oldAvg = t.avgPrice;
@@ -370,17 +517,61 @@ export class ReplaySession extends DurableObject {
     return {
       id: crypto.randomUUID(),
       sequence: t.nextSequence++,
+      order_id: order.id,
+      order_type: order.type ?? "market",
       side: order.side,
       quantity: order.quantity,
+      limit_price: order.limit_price ?? null,
+      stop_price: order.stop_price ?? null,
       requested_at_ts: order.requested_at_ts,
       filled_at_ts: filledAt,
       fill_price: price,
       realized_delta: realizedDelta,
       position_after: t.positionQty,
       avg_price_after: t.avgPrice,
-      commission: 0,
-      slippage: 0,
+      commission,
+      slippage,
     };
+  }
+
+  async _persistOrder(order) {
+    if (!this.env.DB || !this.session) return;
+    try {
+      await this.env.DB.prepare(`
+        INSERT INTO trade_orders
+          (id, replay_session_id, sequence, order_type, side, quantity, limit_price, stop_price, status, requested_at_ts, triggered_at_ts, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        order.id,
+        this.session.id,
+        order.sequence,
+        order.type,
+        order.side,
+        order.quantity,
+        order.limit_price,
+        order.stop_price,
+        order.status,
+        order.requested_at_ts,
+        order.triggered_at_ts,
+        new Date().toISOString(),
+        new Date().toISOString(),
+      ).run();
+    } catch (error) {
+      console.error("D1 order persistence failed", error);
+    }
+  }
+
+  async _persistOrderStatus(orderId, status, triggeredAt = null) {
+    if (!this.env.DB || !this.session || !orderId) return;
+    try {
+      await this.env.DB.prepare(`
+        UPDATE trade_orders
+        SET status = ?, triggered_at_ts = COALESCE(?, triggered_at_ts), updated_at = ?
+        WHERE id = ? AND replay_session_id = ?
+      `).bind(status, triggeredAt, new Date().toISOString(), orderId, this.session.id).run();
+    } catch (error) {
+      console.error("D1 order status persistence failed", error);
+    }
   }
 
   async _persistFill(fill) {
@@ -388,14 +579,18 @@ export class ReplaySession extends DurableObject {
     try {
       await this.env.DB.prepare(`
         INSERT INTO trade_fills
-          (id, replay_session_id, sequence, side, quantity, requested_at_ts, filled_at_ts, fill_price, realized_delta, commission, slippage, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, replay_session_id, sequence, order_id, order_type, side, quantity, limit_price, stop_price, requested_at_ts, filled_at_ts, fill_price, realized_delta, commission, slippage, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).bind(
         fill.id,
         this.session.id,
         fill.sequence,
+        fill.order_id,
+        fill.order_type,
         fill.side,
         fill.quantity,
+        fill.limit_price,
+        fill.stop_price,
         fill.requested_at_ts,
         fill.filled_at_ts,
         fill.fill_price,
@@ -446,6 +641,7 @@ export class ReplaySession extends DurableObject {
     try {
       await this.env.DB.batch([
         this.env.DB.prepare("DELETE FROM trade_fills WHERE replay_session_id = ?").bind(this.session.id),
+        this.env.DB.prepare("DELETE FROM trade_orders WHERE replay_session_id = ?").bind(this.session.id),
         this.env.DB.prepare("DELETE FROM simulation_accounts WHERE replay_session_id = ?").bind(this.session.id),
       ]);
     } catch (error) {

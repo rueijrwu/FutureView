@@ -42,6 +42,7 @@ jobs:
           node --check cloudflare/worker/replay-session-display.js
           node --check cloudflare/worker/replay-session-display-fast.js
           node --check cloudflare/worker/replay-release.test.mjs
+          node --check cloudflare/worker/replay-orders.test.mjs
           node --check cloudflare/worker/replay-display.test.mjs
           node --check cloudflare/worker/replay-display-fast.test.mjs
           node --check cloudflare/worker/replay-window-fast.test.mjs
@@ -51,7 +52,7 @@ jobs:
           node --check cloudflare/worker/replay-continuous-history.test.mjs
           node --check cloudflare/worker/replay-session-boundary.test.mjs
       - name: Replay semantics
-        run: node --test cloudflare/worker/replay-release.test.mjs cloudflare/worker/replay-display.test.mjs cloudflare/worker/replay-display-fast.test.mjs cloudflare/worker/replay-window-fast.test.mjs cloudflare/worker/replay-active-fast.test.mjs cloudflare/worker/replay-history-fast.test.mjs cloudflare/worker/replay-prefetch-fast.test.mjs cloudflare/worker/replay-continuous-history.test.mjs cloudflare/worker/replay-session-boundary.test.mjs
+        run: node --test cloudflare/worker/replay-release.test.mjs cloudflare/worker/replay-orders.test.mjs cloudflare/worker/replay-display.test.mjs cloudflare/worker/replay-display-fast.test.mjs cloudflare/worker/replay-window-fast.test.mjs cloudflare/worker/replay-active-fast.test.mjs cloudflare/worker/replay-history-fast.test.mjs cloudflare/worker/replay-prefetch-fast.test.mjs cloudflare/worker/replay-continuous-history.test.mjs cloudflare/worker/replay-session-boundary.test.mjs
       - name: Chart hot-path semantics
         run: node --test site/chart-ui-repair.test.mjs site/replay-window-assembler.test.mjs site/chart-tools.test.mjs
       - name: Wrangler dry run
