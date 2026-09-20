@@ -287,12 +287,20 @@
     const before=Number(fill.filled_at_ts)-3600,after=Number(fill.filled_at_ts)+3600;try{chart.timeScale().setVisibleRange({from:before,to:after})}catch{}
   }
 
+  // chartTools.append/appendMany already write the display candle and volume
+  // themselves (aggregated to the active bar scale via _fvEmitDisplayBar) -
+  // writing the raw 1-minute bar to the series here too, on top of that, used
+  // to race it: this raw write always lands *after* the aggregated bucket's
+  // own time at any scale coarser than 1m, so the very next aggregated write
+  // (same tick, same bucket) could land earlier than what this just set and
+  // get rejected by the chart as "going backwards" - most visible right after
+  // a scale switch, while bars are still streaming in live.
   function render(b){
-    preserveChartViewport(()=>{candles.update(candle(b));volume.update(vol(b));chartTools.append(b)});
+    preserveChartViewport(()=>{chartTools.append(b)});
     lastMarkPrice=Number(b.c);lastMarkTs=Number(b.t);$("time-status").textContent=displaySeconds(b.t);renderPnl(derivedTrading());
   }
   function renderMany(bs){
-    preserveChartViewport(()=>{bs.forEach(b=>{candles.update(candle(b));volume.update(vol(b))});chartTools.appendMany(bs)});
+    preserveChartViewport(()=>{chartTools.appendMany(bs)});
     if(bs.length){lastMarkPrice=Number(bs[bs.length-1].c);lastMarkTs=Number(bs[bs.length-1].t);$("time-status").textContent=displaySeconds(bs[bs.length-1].t);renderPnl(derivedTrading())}
   }
   function reset(bs){chartTools._cancelDrawing?.();candles.setData(bs.map(candle));volume.setData(bs.map(vol));chartTools.reset(bs);chartTools.fit();lastMarkPrice=bs.length?Number(bs[bs.length-1].c):null;lastMarkTs=bs.length?Number(bs[bs.length-1].t):null;selectedFillId=null;lastMarkerSignature=null;lastRecordSignature=null;clearConsole();renderTradeMarkers()}
