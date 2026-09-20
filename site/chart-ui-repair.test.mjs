@@ -471,133 +471,186 @@ test("active 1D rebuild uses midnight ET during EST", () => {
 });
 
 
-// A controller stubbed just far enough to drive _fvLoadCachedWindow and
-// _fvSetTimeframe without a real chart.
-function viewportHarness(timeframe = "5") {
+
+// A controller stubbed just far enough to drive the viewport logic without a
+// real chart. The chart places a viewport by bar index, not by time, so these
+// record the logical range that actually reaches the axis.
+const DAY = 86400;
+const T0 = Math.floor(Date.UTC(2026, 0, 1) / 1000);
+
+function viewportHarness({ count = 100, timeframe = "1D", step = DAY } = {}) {
   const instance = Object.create(ChartTools.prototype);
-  const calls = { fits: 0, restored: [] };
-  const visibleRange = { from: 100, to: 200 };
-  instance._fvTimeframe = timeframe;
-  instance._fvRawBars = [];
-  instance.bars = [];
-  instance._cancelDrawing = () => {};
-  instance._fvSetDisplayData = () => {};
-  instance._fvRefreshRangeBoundaries = () => {};
-  instance._fvRebuildActiveAggregate = () => null;
-  instance._fvSyncTimeframeUi = () => {};
-  instance._fvNativeSetVisibleRange = (range) => calls.restored.push(range);
-  instance.fit = () => { calls.fits += 1; };
-  instance.chart = { timeScale: () => ({ getVisibleRange: () => visibleRange }) };
-  return { instance, calls, visibleRange };
-}
-
-test("a bar-scale switch never fits and keeps the current viewport", () => {
-  const { instance, calls, visibleRange } = viewportHarness("5");
-
-  instance._fvSetTimeframe("1D");
-
-  assert.equal(calls.fits, 0, "only Start/Random and Fit may move the viewport");
-  assert.deepEqual(calls.restored, [visibleRange]);
-});
-
-test("re-selecting the active bar scale does not fit", () => {
-  const { instance, calls } = viewportHarness("5");
-  instance._fvSetTimeframe("5");
-  assert.equal(calls.fits, 0);
-});
-
-test("a cached window never fits and keeps the current viewport", () => {
-  const { instance, calls, visibleRange } = viewportHarness("5");
-
-  const accepted = instance._fvLoadCachedWindow("5", [{ t: 1, o: 1, h: 2, l: 0, c: 1, v: 1 }]);
-
-  assert.equal(accepted, true);
-  assert.equal(calls.fits, 0, "data arrival never fits on its own, whatever triggered it");
-  assert.deepEqual(calls.restored, [visibleRange]);
-});
-
-// A harness for the Lock control, with a mutable "live" time+price range so
-// tests can prove the locked snapshot is used instead of whatever the axes
-// currently read.
-function lockHarness(timeframe = "5") {
-  const instance = Object.create(ChartTools.prototype);
-  const calls = { restored: [], priceRestored: [] };
-  let timeRange = { from: 100, to: 200 };
+  const calls = { fits: 0, logical: [], time: [], price: [] };
+  let visibleRange = { from: T0 + 10 * step, to: T0 + 20 * step };
   let priceRange = { from: 10, to: 20 };
+
   instance._fvTimeframe = timeframe;
+  instance._fvHistorySeconds = 5 * DAY;
   instance._fvRawBars = [];
-  instance.bars = [];
+  instance.bars = Array.from({ length: count }, (_, i) => ({
+    time: T0 + i * step, open: 1, high: 2, low: 0, close: 1, volume: 1,
+  }));
   instance._fvViewportLocked = false;
   instance._fvLockedSnapshot = null;
+  instance._fvDesiredRange = null;
+  instance._fvUserInteractionUntil = 0;
   instance._cancelDrawing = () => {};
   instance._fvSetDisplayData = () => {};
   instance._fvRefreshRangeBoundaries = () => {};
   instance._fvRebuildActiveAggregate = () => null;
   instance._fvSyncTimeframeUi = () => {};
   instance._fvSyncLockUi = () => {};
-  instance._fvNativeSetVisibleRange = (range) => calls.restored.push(range);
-  instance.chart = { timeScale: () => ({ getVisibleRange: () => timeRange }) };
+  instance.fit = () => { calls.fits += 1; };
+  instance._fvNativeSetVisibleLogicalRange = (range) => calls.logical.push(range);
+  instance._fvNativeSetVisibleRange = (range) => calls.time.push(range);
+  instance.chart = { timeScale: () => ({ getVisibleRange: () => visibleRange }) };
   instance.candles = {
     priceScale: () => ({
       getVisibleRange: () => priceRange,
-      setVisibleRange: (range) => calls.priceRestored.push(range),
+      setVisibleRange: (range) => calls.price.push(range),
       applyOptions: () => {},
     }),
   };
+
   return {
     instance,
     calls,
-    setTimeRange: (range) => { timeRange = range; },
-    setPriceRange: (range) => { priceRange = range; },
+    at: (index) => T0 + index * step,
+    setVisible: (from, to) => { visibleRange = { from, to }; },
+    setPrice: (from, to) => { priceRange = { from, to }; },
+    lastLogical: () => calls.logical.at(-1),
   };
 }
 
-test("locking snapshots both axes; a later switch restores that snapshot, not the drifted live range", () => {
-  const { instance, calls, setTimeRange, setPriceRange } = lockHarness("5");
+// _fvApplyTimeRange defers one re-assert to the next frame.
+globalThis.requestAnimationFrame = () => {};
+globalThis.performance ??= { now: () => 0 };
 
-  instance._fvToggleLock();
-  assert.equal(instance._fvViewportLocked, true);
-  assert.deepEqual(instance._fvLockedSnapshot, { time: { from: 100, to: 200 }, price: { from: 10, to: 20 } });
-
-  // The live range moves between locking and the switch (e.g. a cache refresh).
-  setTimeRange({ from: 500, to: 600 });
-  setPriceRange({ from: 50, to: 60 });
-
-  instance._fvSetTimeframe("1D");
-
-  assert.deepEqual(calls.restored, [{ from: 100, to: 200 }], "the snapshot at lock time, not the live range");
-  assert.deepEqual(calls.priceRestored, [{ from: 10, to: 20 }]);
+test("a time window becomes the matching bar indices", () => {
+  const h = viewportHarness();
+  h.instance._fvApplyTimeRange({ from: h.at(10), to: h.at(20) });
+  const got = h.lastLogical();
+  assert.ok(Math.abs(got.from - 10) < 0.01, `from ${got.from}`);
+  assert.ok(Math.abs(got.to - 20) < 0.01, `to ${got.to}`);
 });
 
-test("unlocked, a bar-scale switch keeps the live viewport and never touches price", () => {
-  const { instance, calls } = lockHarness("5");
-  instance._fvSetTimeframe("1D");
-  assert.deepEqual(calls.restored, [{ from: 100, to: 200 }]);
-  assert.deepEqual(calls.priceRestored, [], "price is only pinned while locked");
+test("a window narrower than one bar widens to exactly one bar", () => {
+  const h = viewportHarness();
+  // Two hours inside bar 50 - far less than the one-day bar it lands in.
+  const noon = h.at(50) + 10 * 3600;
+  h.instance._fvApplyTimeRange({ from: noon, to: noon + 2 * 3600 });
+  const got = h.lastLogical();
+  assert.ok(Math.abs((got.to - got.from) - 1) < 0.01, `width ${got.to - got.from}`);
+  // ...and stays over the bar the user was reading, not somewhere else.
+  assert.ok(got.from > 49 && got.to < 52, `placed at ${got.from}..${got.to}`);
 });
 
-test("toggling lock off clears the snapshot and stops pinning price", () => {
-  const { instance, calls } = lockHarness("5");
-  instance._fvToggleLock();
-  instance._fvToggleLock();
-  assert.equal(instance._fvViewportLocked, false);
-  assert.equal(instance._fvLockedSnapshot, null);
+test("a window running past the last bar is pulled back onto it", () => {
+  const h = viewportHarness({ count: 100 });
+  h.instance._fvApplyTimeRange({ from: h.at(95), to: h.at(130) });
+  const got = h.lastLogical();
+  // There is one whitespace point beyond the last bar and no more, so the
+  // window cannot keep a width that reaches into empty space. What matters is
+  // that it ends on the last bar and still covers where the user was reading.
+  assert.equal(got.to, 99, "right edge sits on the last bar");
+  assert.ok(got.from > 92 && got.from < 97, `left edge stayed near the request, got ${got.from}`);
+});
 
-  instance._fvSetTimeframe("1D");
-  assert.deepEqual(calls.priceRestored, []);
+test("a window wider than the data shows the data, not the whitespace beyond it", () => {
+  const h = viewportHarness({ count: 100 });
+  h.instance._fvApplyTimeRange({ from: h.at(-500), to: h.at(130) });
+  assert.deepEqual(h.lastLogical(), { from: 0, to: 99 });
+});
+
+test("a bar-scale switch never fits", () => {
+  const h = viewportHarness({ timeframe: "5", step: 300, count: 300 });
+  h.instance._fvSetTimeframe("1D");
+  assert.equal(h.calls.fits, 0, "only Start/Random and Fit may fit");
+});
+
+test("re-selecting the active bar scale does nothing", () => {
+  const h = viewportHarness({ timeframe: "5", step: 300 });
+  h.instance._fvSetTimeframe("5");
+  assert.equal(h.calls.fits, 0);
+  assert.equal(h.calls.logical.length, 0);
+});
+
+test("the window is carried across the switch, not re-read from the starved middle", () => {
+  const h = viewportHarness({ timeframe: "1D", step: DAY, count: 100 });
+  const want = { from: h.at(80), to: h.at(90) };
+  h.setVisible(want.from, want.to);
+
+  h.instance._fvSetTimeframe("5");
+  assert.deepEqual(h.instance._fvDesiredRange, want, "the pre-switch window is carried");
+
+  // The local re-aggregation leaves the axis somewhere else entirely; the
+  // authoritative window that follows must not adopt that, but the carried one.
+  h.setVisible(h.at(2), h.at(4));
+  h.instance._fvTimeframe = "5";
+  h.instance._fvLoadCachedWindow("5", h.instance.bars.map((b) => ({ t: b.time, o: 1, h: 2, l: 0, c: 1, v: 1 })));
+
+  const got = h.lastLogical();
+  assert.ok(Math.abs(got.from - 80) < 0.01 && Math.abs(got.to - 90) < 0.01,
+    `restored ${got.from}..${got.to}, expected the carried 80..90`);
+  assert.equal(h.instance._fvDesiredRange, null, "and it is spent once honoured");
+});
+
+test("with nothing carried, a cached window just preserves what was on screen", () => {
+  const h = viewportHarness();
+  h.instance._fvLoadCachedWindow("1D", h.instance.bars.map((b) => ({ t: b.time, o: 1, h: 2, l: 0, c: 1, v: 1 })));
+  assert.equal(h.calls.fits, 0, "data arrival never fits on its own");
+  assert.deepEqual(h.calls.time.at(-1), { from: T0 + 10 * DAY, to: T0 + 20 * DAY });
+});
+
+test("Lock snapshots both axes and restores them, not the drifted live range", () => {
+  const h = viewportHarness();
+  h.setVisible(h.at(40), h.at(50));
+  h.setPrice(5580, 5620);
+
+  h.instance._fvToggleLock();
+  assert.equal(h.instance._fvViewportLocked, true);
+
+  // The live range drifts before the switch happens.
+  h.setVisible(h.at(2), h.at(4));
+  h.setPrice(1, 2);
+
+  h.instance._fvSetTimeframe("5");
+  const got = h.lastLogical();
+  assert.ok(Math.abs(got.from - 40) < 0.01 && Math.abs(got.to - 50) < 0.01,
+    `restored ${got.from}..${got.to}, expected the locked 40..50`);
+  assert.deepEqual(h.calls.price.at(-1), { from: 5580, to: 5620 }, "price is pinned too");
+});
+
+test("unlocked, price is never pinned", () => {
+  const h = viewportHarness();
+  h.instance._fvSetTimeframe("5");
+  assert.deepEqual(h.calls.price, []);
+});
+
+test("toggling Lock off clears the snapshot", () => {
+  const h = viewportHarness();
+  h.instance._fvToggleLock();
+  h.instance._fvToggleLock();
+  assert.equal(h.instance._fvViewportLocked, false);
+  assert.equal(h.instance._fvLockedSnapshot, null);
+  h.instance._fvSetTimeframe("5");
+  assert.deepEqual(h.calls.price, []);
 });
 
 test("locked, a history-range change does not resize the window", () => {
-  const { instance, calls } = lockHarness("5");
-  instance._fvToggleLock();
-  instance._fvSetHistoryRange(3600);
-  assert.deepEqual(calls.restored, [{ from: 100, to: 200 }], "the locked snapshot, not a range sized to `seconds`");
+  const h = viewportHarness();
+  h.setVisible(h.at(40), h.at(50));
+  h.instance._fvToggleLock();
+  h.instance._fvSetHistoryRange(3600);
+  const got = h.lastLogical();
+  assert.ok(Math.abs(got.from - 40) < 0.01 && Math.abs(got.to - 50) < 0.01,
+    `restored ${got.from}..${got.to}, expected the locked 40..50`);
 });
 
-test("locked, a cached window restores the locked snapshot", () => {
-  const { instance, calls } = lockHarness("5");
-  instance._fvToggleLock();
-  instance._fvLoadCachedWindow("5", [{ t: 1, o: 1, h: 2, l: 0, c: 1, v: 1 }]);
-  assert.deepEqual(calls.restored, [{ from: 100, to: 200 }]);
-  assert.deepEqual(calls.priceRestored, [{ from: 10, to: 20 }]);
+test("Start/Random clears a carried window so its own fit stands", () => {
+  const h = viewportHarness();
+  h.instance._fvDesiredRange = { from: h.at(10), to: h.at(20) };
+  h.instance._fvTrimRawTail = () => {};
+  h.instance.reset([]);
+  assert.equal(h.instance._fvDesiredRange, null);
 });

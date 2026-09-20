@@ -176,6 +176,7 @@
       this._fvUserInteractionUntil = 0;
       this._fvViewportLocked = false;
       this._fvLockedSnapshot = null;
+      this._fvDesiredRange = null;
       this._fvVwapState = null;
       this._fvSmaState = null;
       this._fvIndicatorVisible = Object.fromEntries(
@@ -238,6 +239,161 @@
       window.__futureViewChartTools = this;
     }
 
+    // Switching bar scale churns the data twice: first a local re-aggregation
+    // of the raw tail (RAW_TAIL_LIMIT minutes, so only a couple of bars at 1D),
+    // then the worker's authoritative window. The intermediate state is too
+    // data-starved to place a viewport against, and reading the range back off
+    // it - which is what "preserve what is visible" used to do - bakes the
+    // resulting lurch in permanently. So the window the user wants is carried
+    // across both steps and re-applied, instead of being re-read in between.
+    _fvWantRange(range) {
+      const from = Number(range?.from);
+      const to = Number(range?.to);
+      this._fvDesiredRange = Number.isFinite(from) && Number.isFinite(to) && to > from
+        ? { from, to }
+        : null;
+    }
+
+    // The chart's logical axis is the candles plus the two whitespace points
+    // _fvRefreshRangeBoundaries puts either side of them, so an index into
+    // this.bars is not an index into the axis. This describes the difference:
+    // how many boundary points sit before the candles, how many after, and
+    // where they are, so a time can be converted exactly.
+    _fvLogicalFrame() {
+      const bars = this.bars || [];
+      const count = bars.length;
+      if (!count) return null;
+      const first = Number(bars[0].time);
+      const last = Number(bars[count - 1].time);
+      if (!Number.isFinite(first) || !Number.isFinite(last)) return null;
+      const step = this._fvStepSeconds();
+      const cursor = this._fvCursor();
+      let head = null;
+      let tail = null;
+      if (Number.isFinite(cursor)) {
+        const seconds = Math.max(step, Number(this._fvHistorySeconds) || 5 * 86400);
+        const boundaryFrom = cursor - seconds;
+        const boundaryTo = cursor + step * 2;
+        if (boundaryFrom < first) head = boundaryFrom;
+        if (boundaryTo > last) tail = boundaryTo;
+      }
+      const lead = head == null ? 0 : 1;
+      return {
+        bars,
+        count,
+        first,
+        last,
+        step,
+        head,
+        tail,
+        lead,
+        lastIndex: count - 1 + lead + (tail == null ? 0 : 1),
+      };
+    }
+
+    // Where a timestamp falls on that axis, as a fractional index.
+    _fvLogicalIndexAt(time, frame = this._fvLogicalFrame()) {
+      if (!frame) return null;
+      const { bars, count, first, last, step, head, tail, lead } = frame;
+      if (time <= first) {
+        if (head == null) return (time - first) / step;
+        const span = first - head || step;
+        return Math.max(0, lead * (1 - (first - time) / span));
+      }
+      if (time >= last) {
+        const base = count - 1 + lead;
+        if (tail == null) return base + (time - last) / step;
+        const span = tail - last || step;
+        return base + Math.min(1, (time - last) / span);
+      }
+      let lo = 0;
+      let hi = count - 1;
+      while (hi - lo > 1) {
+        const mid = (lo + hi) >> 1;
+        if (Number(bars[mid].time) <= time) lo = mid; else hi = mid;
+      }
+      const span = Number(bars[hi].time) - Number(bars[lo].time) || step;
+      return lo + lead + (time - Number(bars[lo].time)) / span;
+    }
+
+    // Put the chart back on a time window. This goes through the logical
+    // (bar-index) axis on purpose: a *time* range that reaches past the last
+    // bar, or that is narrower than one bar, is silently replaced by a range
+    // of the library's own choosing - which is the jump that made switching
+    // bar scale look like an auto-fit. The equivalent logical range holds.
+    _fvApplyTimeRange(range) {
+      const bars = this.bars || [];
+      if (!bars.length) return false;
+      const from = Number(range?.from);
+      const to = Number(range?.to);
+      if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from) return false;
+
+      const frame = this._fvLogicalFrame();
+      if (!frame) return false;
+      let lo = this._fvLogicalIndexAt(from, frame);
+      let hi = this._fvLogicalIndexAt(to, frame);
+      if (lo == null || hi == null) return false;
+      // One bar is the narrowest window the chart will draw, so a request for
+      // less (two hours of daily candles) is widened around its own centre,
+      // keeping the user where they were and changing only the width.
+      if (hi - lo < 1) {
+        const centre = (lo + hi) / 2;
+        lo = centre - 0.5;
+        hi = centre + 0.5;
+      }
+      // Keep the window on the candles, holding its width and its right edge -
+      // the edge the user was reading. Asking for more history than arrived,
+      // or for anything past the last bar, is otherwise answered by the chart
+      // with a range of its own choosing, so it is clamped here instead, where
+      // the intent is known. The boundary whitespace is deliberately excluded:
+      // drifting into it shows the user empty space instead of the market.
+      const dataLo = frame.lead;
+      const dataHi = frame.count - 1 + frame.lead;
+      const width = hi - lo;
+      if (width >= dataHi - dataLo) {
+        lo = dataLo;
+        hi = dataHi;
+      } else if (hi > dataHi) {
+        hi = dataHi;
+        lo = dataHi - width;
+      } else if (lo < dataLo) {
+        lo = dataLo;
+        hi = dataLo + width;
+      }
+
+      const apply = () => {
+        if (this._fvNativeSetVisibleLogicalRange) {
+          try { this._fvNativeSetVisibleLogicalRange({ from: lo, to: hi }); return; } catch {}
+        }
+        try { this._fvNativeSetVisibleRange({ from, to }); } catch {}
+      };
+      apply();
+      // setData settles the axis over the following frame and can overwrite a
+      // range applied in the same tick, so assert it once more - unless the
+      // user has taken hold of the chart in the meantime.
+      requestAnimationFrame(() => {
+        if (this._fvUserInteractionUntil === Infinity) return;
+        if (performance.now() < this._fvUserInteractionUntil) return;
+        apply();
+      });
+      return true;
+    }
+
+    // What the viewport should be after a data change: the lock if one is held,
+    // otherwise a window carried over from a scale switch, otherwise whatever
+    // was on screen before the change.
+    _fvRestoreViewport(previous) {
+      if (this._fvViewportLocked && this._fvLockedSnapshot) {
+        this._fvApplyViewportSnapshot(this._fvLockedSnapshot);
+        return;
+      }
+      if (this._fvDesiredRange) {
+        this._fvApplyTimeRange(this._fvDesiredRange);
+        return;
+      }
+      if (previous) { try { this._fvNativeSetVisibleRange(previous); } catch {} }
+    }
+
     // Snapshot both axes so a later switch can put them back exactly, rather
     // than reading "whatever is visible right now" (which can drift between
     // the lock engaging and the switch actually happening).
@@ -250,7 +406,7 @@
 
     _fvApplyViewportSnapshot(snapshot) {
       if (!snapshot) return;
-      if (snapshot.time) { try { this._fvNativeSetVisibleRange(snapshot.time); } catch {} }
+      if (snapshot.time) this._fvApplyTimeRange(snapshot.time);
       if (snapshot.price) {
         try {
           this.candles.priceScale().applyOptions({ autoScale: false });
@@ -291,8 +447,18 @@
         };
       }
 
-      const begin = () => { this._fvUserInteractionUntil = Infinity; };
-      const end = () => { this._fvUserInteractionUntil = performance.now() + 180; };
+      // A deliberate pan or zoom is the user choosing a window by hand, so it
+      // supersedes one carried from a scale switch and becomes what Lock holds.
+      const begin = () => {
+        this._fvUserInteractionUntil = Infinity;
+        this._fvDesiredRange = null;
+      };
+      const end = () => {
+        this._fvUserInteractionUntil = performance.now() + 180;
+        if (this._fvViewportLocked) {
+          setTimeout(() => { this._fvLockedSnapshot = this._fvCaptureViewportSnapshot(); }, 200);
+        }
+      };
       this.container.addEventListener("pointerdown", begin, true);
       this.container.addEventListener("pointerup", end, true);
       this.container.addEventListener("pointercancel", end, true);
@@ -608,18 +774,22 @@
       if (!TIMEFRAMES.has(value) || value === this._fvTimeframe) return;
       this._cancelDrawing?.();
       // Only Start/Random and the explicit Fit control may move the viewport.
-      // A bar-scale switch keeps whatever range the user was already looking
-      // at, even though that leaves it sized for the old scale. Locked, it
-      // restores the exact snapshot taken when Lock engaged (both axes),
-      // rather than whatever happens to be visible right this moment.
-      const visible = this._fvViewportLocked ? null : (this.chart.timeScale().getVisibleRange?.() || null);
+      // Take the window the user is on now and carry it through both halves of
+      // the switch: this local re-aggregation, and the worker's window that
+      // follows it. Reading the range back after the re-aggregation instead
+      // would read a range the starved intermediate data already displaced.
+      if (!this._fvViewportLocked) {
+        this._fvWantRange(this.chart.timeScale().getVisibleRange?.());
+      }
       this._fvTimeframe = value;
       this._fvSyncTimeframeUi();
       this._fvRebuildActiveAggregate();
       this._fvSetDisplayData(aggregateAll(this._fvRawBars, value));
       this._fvRefreshRangeBoundaries();
-      if (this._fvViewportLocked) this._fvApplyViewportSnapshot(this._fvLockedSnapshot);
-      else if (visible) { try { this._fvNativeSetVisibleRange(visible); } catch {} }
+      // Placed against the re-aggregated raw tail first, then again when the
+      // worker's window for this scale lands - both from the same carried
+      // window, so the two steps agree instead of fighting.
+      this._fvRestoreViewport(null);
     }
 
     // Only Start/Random (reset(), followed by one explicit fit() in app.js) and
@@ -629,7 +799,9 @@
     _fvLoadCachedWindow(resolution, rawBars) {
       if (!rawBars?.length || String(resolution) !== this._fvTimeframe) return false;
       this._cancelDrawing?.();
-      const visible = this._fvViewportLocked ? null : (this.chart.timeScale().getVisibleRange?.() || null);
+      const visible = this._fvViewportLocked || this._fvDesiredRange
+        ? null
+        : (this.chart.timeScale().getVisibleRange?.() || null);
       const displayBars = rawBars.map(normalizeDisplay).filter((bar) => Number.isFinite(bar.time));
       const partial = this._fvRebuildActiveAggregate();
       if (partial) {
@@ -640,13 +812,18 @@
       this._fvSetDisplayData(displayBars);
       this._fvRefreshRangeBoundaries();
 
-      if (this._fvViewportLocked) this._fvApplyViewportSnapshot(this._fvLockedSnapshot);
-      else if (visible) { try { this._fvNativeSetVisibleRange(visible); } catch {} }
+      // This is the authoritative half of a scale switch, so the carried window
+      // has had its chance: honour it here, then go back to plain preservation.
+      this._fvRestoreViewport(visible);
+      this._fvDesiredRange = null;
       return true;
     }
 
     reset(rawBars) {
       this._cancelDrawing?.();
+      // Start/Random is a fresh session and fits explicitly in app.js, so no
+      // window carried from a previous scale switch may survive it.
+      this._fvDesiredRange = null;
       this._fvRawBars = (rawBars || []).map(normalizeRaw).filter((bar) => Number.isFinite(bar.t));
       this._fvTrimRawTail();
       this._fvRebuildActiveAggregate();
@@ -681,6 +858,7 @@
     fit() {
       const bars = this.bars || [];
       if (!bars.length) return;
+      this._fvDesiredRange = null;
       const first = Number(bars[0].time);
       const last = Number(bars.at(-1).time);
       if (Number.isFinite(first) && Number.isFinite(last)) {
