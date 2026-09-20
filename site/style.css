@@ -173,6 +173,19 @@ button:disabled { opacity: .4; cursor: default; }
 .speeds { margin-left: 6px; }
 .trade-entry { margin-left: auto; flex: 0 0 auto; min-width: max-content; padding-left: 14px; border-left: 1px solid #253247; }
 .speeds span, .trade-entry span { font-size: 11px; color: #8190a4; margin-right: 4px; }
+#speed-slider {
+  width: 110px;
+  height: 4px;
+  margin: 0;
+  accent-color: #668fe8;
+  cursor: pointer;
+}
+#speed-value {
+  font-size: 11px;
+  color: #edf2fa;
+  min-width: 30px;
+  text-align: right;
+}
 .trade-entry span:first-child { text-transform: uppercase; letter-spacing: .06em; color: #6f7f95; }
 .trade-entry input { width: 58px; padding: 7px 6px; }
 .trade-entry select { background: #0a111b; color: #edf2fa; border: 1px solid #35455d; border-radius: 6px; padding: 7px 6px; font: inherit; }

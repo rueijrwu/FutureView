@@ -183,19 +183,28 @@
     });
   }
 
-  function speedFromButton(button) {
-    return button?.dataset.speed === "max" ? "max" : Number(button?.dataset.speed || 1);
+  const SPEED_STEPS = [1, 5, 10, 25, 50, 100, "max"];
+
+  function speedFromSlider(slider) {
+    const step = SPEED_STEPS[Number(slider?.value)];
+    return step == null ? 1 : step;
   }
 
   function selectedSpeed() {
-    return speedFromButton(document.querySelector("#speeds button.active[data-speed]"));
+    return speedFromSlider(document.getElementById("speed-slider"));
+  }
+
+  function speedLabel(value) {
+    return value === "max" ? "Max" : `${value}x`;
   }
 
   function syncSpeedUi(value) {
     const target = String(value).toLowerCase();
-    document.querySelectorAll("#speeds button[data-speed]").forEach((button) => {
-      button.classList.toggle("active", String(button.dataset.speed).toLowerCase() === target);
-    });
+    const index = SPEED_STEPS.findIndex((step) => String(step).toLowerCase() === target);
+    const slider = document.getElementById("speed-slider");
+    if (slider && index >= 0) slider.value = String(index);
+    const output = document.getElementById("speed-value");
+    if (output) output.textContent = speedLabel(index >= 0 ? SPEED_STEPS[index] : value);
   }
 
   function send(payload) {
@@ -314,15 +323,25 @@
       return;
     }
 
-    const speedButton = event.target.closest?.("#speeds button[data-speed]");
-    if (speedButton && document.getElementById("state-status")?.textContent === "PLAYING") {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      const value = speedFromButton(speedButton);
-      syncSpeedUi(value);
-      send({ type: "set_speed", speed: value });
-    }
   }, true);
+
+  document.addEventListener("input", (event) => {
+    const slider = event.target.closest?.("#speed-slider");
+    if (!slider) return;
+    const output = document.getElementById("speed-value");
+    if (output) output.textContent = speedLabel(speedFromSlider(slider));
+  });
+
+  // Commit the speed change once the drag/keypress settles, rather than on
+  // every intermediate "input" tick, so dragging the slider doesn't flood
+  // the worker with set_speed messages.
+  document.addEventListener("change", (event) => {
+    const slider = event.target.closest?.("#speed-slider");
+    if (!slider || document.getElementById("state-status")?.textContent !== "PLAYING") return;
+    const value = speedFromSlider(slider);
+    syncSpeedUi(value);
+    send({ type: "set_speed", speed: value });
+  });
 
   document.addEventListener("click", (event) => {
     const play = event.target.closest?.("#play");
