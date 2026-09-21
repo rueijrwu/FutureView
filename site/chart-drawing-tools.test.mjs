@@ -132,6 +132,22 @@ class FakeDrawing {
   }
 }
 
+// A real horizontal-line drawing spans the full pane width and hit-tests on y alone,
+// ignoring x - unlike a trend line, whose two anchors give testHit an x-bounded
+// segment. That's what let a mousedown on the price axis (x outside the pane, but at
+// a y that lines up with the line) match as a hit at all.
+class FakeHLine extends FakeDrawing {
+  testHit(point, viewport) {
+    const y = viewport.priceScale.priceToCoordinate(this.anchors[0].price);
+    if (y == null) return false;
+    return Math.abs(point.y - y) <= 5;
+  }
+
+  isRenderable(viewport) {
+    return viewport.priceScale.priceToCoordinate(this.anchors[0].price) != null;
+  }
+}
+
 class FakeDrawingManager {
   constructor() {
     this.drawings = new Map();
@@ -241,7 +257,8 @@ globalThis.window = {
     InteractionHandler: class {},
     getToolRegistry: () => ({
       get: () => ({ requiredAnchors: 2 }),
-      createDrawing: (type, id, anchors, style) => new FakeDrawing(type, id, anchors, style),
+      createDrawing: (type, id, anchors, style) =>
+        type === "horizontal-line" ? new FakeHLine(type, id, anchors, style) : new FakeDrawing(type, id, anchors, style),
     }),
   },
 };
@@ -279,6 +296,10 @@ function addTrendLine(tools, startIndex = 15, endIndex = 25) {
     ],
     {},
   );
+}
+
+function addHLine(tools, price) {
+  return tools._finalizeDrawing("horizontal-line", [{ time: BAR_TIMES[10], price }], {});
 }
 
 // The on-screen position of a pane point: this is what a real mouse event carries.
@@ -425,4 +446,41 @@ test("Delete with nothing selected does nothing", () => {
   const id = addTrendLine(tools);
   documentKeydown.at(-1)({ key: "Delete", target: { tagName: "BODY" }, preventDefault: () => {} });
   assert.ok(tools.drawManager.drawings.has(id));
+});
+
+// A mousedown on the price axis to drag-zoom the scale is the chart's own gesture, not
+// a click in the pane. An h-line hit-tests on y alone (it spans the whole pane), so a
+// zoom grab at a y that lines up with the line used to match anyway and hijack the
+// zoom into a line move - reproducing Ruei's report: zooming the price (Y) axis with
+// the mouse over the axis label area moved an existing h-line.
+test("a drag-to-zoom grab on the price axis does not move an h-line at that y", () => {
+  const tools = makeTools();
+  const price = yToPrice(200);
+  const id = addHLine(tools, price);
+  const drawing = tools.drawManager.drawings.get(id);
+  const before = drawing.anchors.map((a) => ({ ...a }));
+
+  const paneWidth = tools.chart.timeScale().width();
+  // Over the right price axis: same y as the line, x past the edge of the pane.
+  const onAxis = { x: paneWidth + 20, y: 200 };
+  tools._handleDragStart({ button: 0, ...clientAt(onAxis), preventDefault: () => {} });
+
+  assert.equal(tools.dragState, null, "a grab on the price axis must not start a drawing move");
+  tools._handleDragMove?.(clientAt({ x: onAxis.x, y: 260 }));
+  assert.deepEqual(drawing.anchors, before, "the h-line must not have moved");
+});
+
+test("a drag inside the pane still moves an h-line", () => {
+  const tools = makeTools();
+  const price = yToPrice(200);
+  const id = addHLine(tools, price);
+  const drawing = tools.drawManager.drawings.get(id);
+
+  tools._handleDragStart({ button: 0, ...clientAt({ x: 150, y: 200 }), preventDefault: () => {} });
+  assert.ok(tools.dragState, "grabbing the line inside the pane should start a move");
+
+  tools._handleDragMove(clientAt({ x: 150, y: 240 }));
+  tools._handleDragEnd();
+
+  assert.equal(drawing.anchors[0].price, yToPrice(240), "the line should follow the drag");
 });

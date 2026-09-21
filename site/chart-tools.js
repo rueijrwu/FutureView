@@ -437,6 +437,14 @@
     _handleDragStart(event) {
       if (event.button !== 0 || this.editorEl || this.activeDrawTool) return;
       const point = this._containerPoint(event);
+      // A mousedown over a price/time axis (point outside the pane) is the chart's own
+      // drag-to-zoom gesture, not a click on the plot. An h-line's hitTest only checks
+      // y against its price, ignoring x, so a drag-to-zoom grab on the right price
+      // axis - at a y that happens to line up with an h-line - was matching as a hit
+      // and hijacking the zoom into a line move. Bail out before hit-testing so that
+      // gesture is left for the chart to handle.
+      const paneWidth = this.chart.timeScale().width();
+      if (point.x < 0 || point.x > paneWidth || point.y < 0 || point.y > this.container.clientHeight) return;
       const hit = this._hitTestMagnet(point);
       if (!hit) return;
 
