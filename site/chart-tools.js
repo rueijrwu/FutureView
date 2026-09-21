@@ -119,6 +119,10 @@
       // the "click toolbar button, click chart, tool appears" flow below is ours.
       this.drawManager = new LCD.DrawingManager();
       this.drawManager.attach(chart, candles, container);
+      // DrawingManager derives its own points from the container rect, with the same
+      // missing price-axis offset - that is the path that wires per-anchor resize, so
+      // grabbing an endpoint missed it too. Point it at our corrected conversion.
+      this.drawManager.getPointFromEvent = (event) => this._containerPoint(event);
       this.registry = LCD.getToolRegistry();
       this.drawColor = THEME.overlay;
       this.activeDrawTool = null;
@@ -205,15 +209,59 @@
       // need to step aside for that exact case and otherwise own the gesture ourselves.
       this.container.addEventListener("mousedown", (event) => this._handleDragStart(event));
       document.addEventListener("keydown", (event) => {
-        if (event.key !== "Escape") return;
-        if (this.interactionHandler) this.interactionHandler.onKeyDown("Escape");
-        else this._cancelDrawing();
+        if (event.key === "Escape") {
+          if (this.interactionHandler) this.interactionHandler.onKeyDown("Escape");
+          else this._cancelDrawing();
+          return;
+        }
+        // Delete/Backspace on a selected drawing, the gesture every charting tool
+        // uses - the right-click menu's Delete is otherwise the only way out.
+        if (event.key !== "Delete" && event.key !== "Backspace") return;
+        if (this.editorEl || this._isTypingTarget(event.target)) return;
+        const selected = this.drawManager.getSelectedDrawing();
+        if (!selected) return;
+        event.preventDefault();
+        this._removeDrawingById(selected.id);
       });
+    }
+
+    // lightweight-charts reports every position it gives us - subscribeClick's
+    // param.point, timeScale().timeToCoordinate(), series.priceToCoordinate() - in
+    // *pane* coordinates: the series area alone, with the price axes excluded. A DOM
+    // event on the container is relative to the whole chart element, axes included.
+    // chart-tools-fixes.js turns the left price scale on to hold the volume overlay,
+    // so the two origins sit ~55px apart, and every hit test derived from a raw
+    // container offset looked for the drawing that far to the right of the cursor.
+    // That is why a trend line could be drawn but never hovered, right-clicked for
+    // Delete, moved, or grabbed by an endpoint. Everything that turns a DOM event
+    // into chart space goes through _containerPoint, so the correction lives here.
+    _paneOriginX() {
+      try {
+        return this.chart.priceScale("left").width() || 0;
+      } catch {
+        return 0;
+      }
+    }
+
+    // The inverse, for positioning a DOM overlay (the inline text editor) at a point
+    // the chart handed us in pane coordinates.
+    _paneToClient(point) {
+      const rect = this.container.getBoundingClientRect();
+      return { x: rect.left + this._paneOriginX() + point.x, y: rect.top + point.y };
+    }
+
+    // Backspace is also "go back" and both keys edit text, so a keystroke aimed at a
+    // field must never delete a drawing behind it.
+    _isTypingTarget(target) {
+      if (!target) return false;
+      if (target.isContentEditable) return true;
+      const tag = target.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
     }
 
     _containerPoint(event) {
       const rect = this.container.getBoundingClientRect();
-      return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      return { x: event.clientX - rect.left - this._paneOriginX(), y: event.clientY - rect.top };
     }
 
     _anchorAtPoint(point) {
@@ -368,11 +416,12 @@
       return null;
     }
 
+    // Pane geometry, not element geometry: the drawing primitives measure everything
+    // in the same pane space their coordinate converters use.
     _viewport() {
-      const rect = this.container.getBoundingClientRect();
       return {
-        width: rect.width,
-        height: rect.height,
+        width: this.chart.timeScale().width(),
+        height: this.container.clientHeight,
         timeScale: {
           coordinateToTime: (x) => this.chart.timeScale().coordinateToTime(x),
           timeToCoordinate: (t) => this.chart.timeScale().timeToCoordinate(t),
@@ -397,16 +446,26 @@
       const isSelected = this.drawManager.getSelectedDrawing()?.id === hit.id;
       if (isSelected && hit.hitTestAnchor(point, this._viewport()) !== null) return;
 
-      const time = this.chart.timeScale().coordinateToTime(point.x);
-      const price = this.candles.coordinateToPrice(point.y);
-      if (time == null || price == null || !Number.isFinite(price)) return;
+      // The move is carried in pixels and re-snapped to a bar on every step, rather
+      // than shifting each anchor by a raw time delta. Bar times are not evenly
+      // spaced - the 17:00-18:00 ET maintenance break, weekends and every aggregated
+      // bar scale leave gaps - so `anchor.time + delta` lands between bars, and
+      // timeScale.timeToCoordinate() returns null for any time that is not itself a
+      // bar. A null there makes the drawing's computeGeometry AND its testHit both
+      // bail: the line disappeared mid-drag and could never be selected, restyled or
+      // deleted again. Re-snapping keeps every anchor on a real bar, so it stays
+      // drawable and hittable, and a horizontal drag steps bar by bar like TradingView.
+      const startPixels = hit.anchors.map((anchor) => ({
+        x: this.chart.timeScale().timeToCoordinate(anchor.time),
+        y: this.candles.priceToCoordinate(anchor.price),
+      }));
+      if (startPixels.some((pixel) => pixel.x == null || pixel.y == null)) return;
 
       event.preventDefault();
       this.dragState = {
         drawing: hit,
-        startAnchors: hit.anchors.map((a) => ({ ...a })),
-        startTime: time,
-        startPrice: price,
+        startPixels,
+        startPoint: point,
       };
       this.chart.applyOptions({ handleScroll: false, handleScale: false });
       this.container.style.cursor = "move";
@@ -419,12 +478,17 @@
     _handleDragMove(event) {
       if (!this.dragState) return;
       const point = this._containerPoint(event);
-      const time = this.chart.timeScale().coordinateToTime(point.x);
-      const price = this.candles.coordinateToPrice(point.y);
-      if (time == null || price == null || !Number.isFinite(price)) return;
-      const timeDelta = time - this.dragState.startTime;
-      const priceDelta = price - this.dragState.startPrice;
-      const newAnchors = this.dragState.startAnchors.map((a) => ({ time: a.time + timeDelta, price: a.price + priceDelta }));
+      const dx = point.x - this.dragState.startPoint.x;
+      const dy = point.y - this.dragState.startPoint.y;
+      const newAnchors = [];
+      for (const pixel of this.dragState.startPixels) {
+        const time = this.chart.timeScale().coordinateToTime(pixel.x + dx);
+        const price = this.candles.coordinateToPrice(pixel.y + dy);
+        // Dragged past the end of the data: hold the last good shape for this step
+        // instead of writing an anchor the chart cannot place.
+        if (time == null || price == null || !Number.isFinite(price)) return;
+        newAnchors.push({ time, price });
+      }
       this.dragState.drawing.setAnchors(newAnchors);
     }
 
@@ -704,7 +768,11 @@
             const rect = this.container.getBoundingClientRect();
             const anchorPoint = this.chart.timeScale().timeToCoordinate(drawing.anchors[0].time);
             const priceCoord = this.candles.priceToCoordinate(drawing.anchors[0].price);
-            const screenPoint = { x: anchorPoint ?? clientX - rect.left, y: priceCoord ?? clientY - rect.top };
+            // Both branches are pane coordinates, which is what _openTextEditor takes.
+            const screenPoint = {
+              x: anchorPoint ?? clientX - rect.left - this._paneOriginX(),
+              y: priceCoord ?? clientY - rect.top,
+            };
             this._openTextEditor(screenPoint, drawing.textOptions?.text || "", (text) => {
               if (text) drawing.setText(text);
             });
@@ -734,13 +802,13 @@
     // instead of a blocking window.prompt(). Enter commits, Escape/blur-empty cancels. ----
     _openTextEditor(point, initialText, onCommit) {
       this._closeEditor();
-      const rect = this.container.getBoundingClientRect();
       const box = document.createElement("div");
       box.className = "fv-text-editor";
       box.contentEditable = "true";
       box.textContent = initialText;
-      box.style.left = `${rect.left + point.x}px`;
-      box.style.top = `${rect.top + point.y}px`;
+      const client = this._paneToClient(point);
+      box.style.left = `${client.x}px`;
+      box.style.top = `${client.y}px`;
       box.style.borderColor = this.drawColor;
       document.body.appendChild(box);
       this.editorEl = box;
