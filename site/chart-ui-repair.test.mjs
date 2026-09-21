@@ -757,6 +757,39 @@ test("a pan/wheel recapture once the authoritative window has settled does updat
     `anchor should update once data is settled, got ${h.instance._fvLockedCentre.time}`);
 });
 
+test("_fvLogicalIndexAt extrapolates past the synthetic boundary instead of clamping to it", () => {
+  const h = viewportHarness({ count: 100 });
+  const frame = h.instance._fvLogicalFrame();
+  const base = frame.count - 1 + frame.lead;
+  const farPast = frame.last + 3 * frame.step; // well past the synthetic tail boundary point
+  const clamped = h.instance._fvLogicalIndexAt(farPast, frame);
+  const extrapolated = h.instance._fvLogicalIndexAt(farPast, frame, { extrapolate: true });
+  assert.ok(clamped <= base + 1 + 1e-9, `default mapping is capped at the boundary point, got ${clamped}`);
+  assert.ok(Math.abs(extrapolated - (base + 3)) < 0.01, `extrapolated mapping should stay proportional, got ${extrapolated}`);
+});
+
+test("Lock centred just past the last bar recentres proportionally, not snapped to the rightmost index", () => {
+  const h = viewportHarness({ count: 100 });
+  // Centred a few steps past the last real bar - deep in the synthetic
+  // whitespace margin, past even the boundary point _fvRefreshRangeBoundaries
+  // draws. This is what "centred on the latest bar" naturally looks like:
+  // some right margin past the last candle, not glued to it - and it is
+  // exactly the case that used to collapse to "the rightmost index" on
+  // recentre, since the old mapping clamped to whichever boundary point the
+  // current frame happened to carry.
+  const centreTime = h.at(99) + 3 * DAY;
+  h.setVisible(centreTime - 5, centreTime + 5);
+  h.instance._fvToggleLock();
+  h.setVisibleLogical(0, 10);
+  h.instance._fvRecentreLocked();
+
+  const got = h.lastLogical();
+  const centreIndex = (got.from + got.to) / 2;
+  const lastRealIndex = h.instance.bars.length - 1 + h.instance._fvLogicalFrame().lead;
+  assert.ok(centreIndex > lastRealIndex + 2.5,
+    `centre should extrapolate proportionally past the last bar, got ${centreIndex} (last real bar at ${lastRealIndex})`);
+});
+
 test("_fvSetTimeframe marks data unsettled, _fvLoadCachedWindow settles it again", () => {
   const h = viewportHarness({ timeframe: "1D", step: DAY, count: 100 });
   assert.equal(h.instance._fvDataSettled, true, "starts settled");

@@ -299,17 +299,33 @@
     }
 
     // Where a timestamp falls on that axis, as a fractional index.
-    _fvLogicalIndexAt(time, frame = this._fvLogicalFrame()) {
+    //
+    // Past the last real bar (or before the first), the axis carries one
+    // synthetic whitespace point - not real data - so a time out there has no
+    // bar to interpolate against. The default mapping places it proportionally
+    // between the last bar and that boundary point, clamped to the boundary's
+    // own index: right for _fvApplyTimeRange, which draws directly against
+    // that boundary and must never run past it. It is wrong for a point that
+    // is carried across frames with a different boundary each time - Lock's
+    // centre, most often - since the boundary's distance from the last bar
+    // depends on this frame's cursor and step, not on where the point
+    // actually is: a centre that lands even slightly past the last bar gets
+    // rounded up to "the boundary", which is effectively "the rightmost index",
+    // every time, regardless of how far past it actually was. `extrapolate`
+    // switches to plain step arithmetic instead - the same you would get if
+    // there were no boundary at all - so the same time maps to a consistent
+    // index whatever frame (and whatever scale) it is read back against.
+    _fvLogicalIndexAt(time, frame = this._fvLogicalFrame(), { extrapolate = false } = {}) {
       if (!frame) return null;
       const { bars, count, first, last, step, head, tail, lead } = frame;
       if (time <= first) {
-        if (head == null) return (time - first) / step;
+        if (extrapolate || head == null) return lead + (time - first) / step;
         const span = first - head || step;
         return Math.max(0, lead * (1 - (first - time) / span));
       }
       if (time >= last) {
         const base = count - 1 + lead;
-        if (tail == null) return base + (time - last) / step;
+        if (extrapolate || tail == null) return base + (time - last) / step;
         const span = tail - last || step;
         return base + Math.min(1, (time - last) / span);
       }
@@ -437,7 +453,13 @@
           ? current.to - current.from
           : null;
         if (width && width > 0) {
-          const centreIndex = this._fvLogicalIndexAt(centre.time, frame);
+          // Extrapolated: the centre may sit past the last real bar (or
+          // before the first) in the synthetic whitespace margin - most
+          // often exactly there, since "centred on the latest bar" usually
+          // means centred just past it. That position must convert to the
+          // same relative index every time, not collapse to whichever
+          // boundary point this frame happens to carry.
+          const centreIndex = this._fvLogicalIndexAt(centre.time, frame, { extrapolate: true });
           if (Number.isFinite(centreIndex)) {
             this._fvApplyLogicalRange(centreIndex - width / 2, centreIndex + width / 2);
           }
