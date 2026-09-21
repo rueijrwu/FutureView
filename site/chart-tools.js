@@ -551,6 +551,30 @@
         event.preventDefault();
         return this._showIndicatorMenu(event.clientX, event.clientY, indicatorKey);
       }
+      // The chart's own background menu (Lock, for now) only makes sense when
+      // right-clicking empty chart space with nothing selected - a selected
+      // drawing means the user is mid-edit on it, and the axes have their own
+      // native drag gestures (see the pane-bounds guard in _handleDragStart).
+      const paneWidth = this.chart.timeScale().width();
+      const inPane = point.x >= 0 && point.x <= paneWidth && point.y >= 0 && point.y <= this.container.clientHeight;
+      if (inPane && !this.drawManager.getSelectedDrawing?.()) {
+        event.preventDefault();
+        return this._showChartMenu(event.clientX, event.clientY, point);
+      }
+    }
+
+    _showChartMenu(clientX, clientY, point) {
+      const time = this.chart.timeScale().coordinateToTime(point.x);
+      const price = this.candles.coordinateToPrice(point.y);
+      if (time == null || price == null) return;
+      this._openMenu(clientX, clientY, (menu) => {
+        this._menuButton(menu, "Lock", () => {
+          this._fvLockedCentre = { time: Number(time), price: Number(price) };
+          this._fvViewportLocked = true;
+          this._fvSyncLockUi?.();
+          this._hideMenu();
+        });
+      });
     }
 
     _hitTestIndicator(point) {

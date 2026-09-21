@@ -336,12 +336,41 @@ test("right-clicking a trend line where it is drawn opens its menu and Delete re
   assert.equal(tools.drawManager.drawings.has(id), false, "Delete should remove the drawing");
 });
 
-test("right-clicking empty space leaves the drawing alone", () => {
+test("right-clicking empty space leaves the drawing alone but opens the chart's Lock menu", () => {
   const tools = makeTools();
-  addTrendLine(tools);
-  const pane = midpointPane([...tools.drawManager.drawings.values()][0]);
+  const id = addTrendLine(tools);
+  const pane = midpointPane(tools.drawManager.drawings.get(id));
+
+  let prevented = false;
+  tools._handleContextMenu({ ...clientAt({ x: pane.x, y: pane.y + 120 }), preventDefault: () => { prevented = true; } });
+
+  assert.ok(prevented);
+  assert.ok(tools.menuEl, "empty-space right-click should open the chart's own menu");
+  assert.equal(tools.drawManager.drawings.has(id), true, "the drawing itself is untouched");
+  const lockButton = flatten(tools.menuEl).find((el) => el.textContent === "Lock");
+  assert.ok(lockButton, "the chart menu should offer Lock");
+});
+
+test("a selected drawing suppresses the chart's Lock menu on empty space", () => {
+  const tools = makeTools();
+  const id = addTrendLine(tools);
+  tools.drawManager.selectDrawing(id);
+  const pane = midpointPane(tools.drawManager.drawings.get(id));
   tools._handleContextMenu({ ...clientAt({ x: pane.x, y: pane.y + 120 }), preventDefault: () => {} });
-  assert.equal(tools.menuEl, null);
+  assert.equal(tools.menuEl, null, "no chart menu while a drawing is selected");
+});
+
+test("Lock in the chart menu captures the time and price at the mouse position, not the live centre", () => {
+  const tools = makeTools();
+  const pane = { x: paneX(12), y: priceToY(5050) };
+
+  tools._handleContextMenu({ ...clientAt(pane), preventDefault: () => {} });
+  const lockButton = flatten(tools.menuEl).find((el) => el.textContent === "Lock");
+  lockButton.onclick();
+
+  assert.equal(tools._fvViewportLocked, true);
+  assert.deepEqual(tools._fvLockedCentre, { time: BAR_TIMES[12], price: yToPrice(priceToY(5050)) });
+  assert.equal(tools.menuEl, null, "the menu closes after Lock is chosen");
 });
 
 test("hovering the line offers the move cursor at the cursor's real position", () => {
