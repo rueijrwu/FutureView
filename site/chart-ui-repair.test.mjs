@@ -490,10 +490,12 @@ function viewportHarness({ count = 100, timeframe = "1D", step = DAY } = {}) {
   instance.bars = Array.from({ length: count }, (_, i) => ({
     time: T0 + i * step, open: 1, high: 2, low: 0, close: 1, volume: 1,
   }));
+  let visibleLogicalRange = { from: 10, to: 20 };
   instance._fvViewportLocked = false;
   instance._fvLockedCentre = null;
   instance._fvDesiredRange = null;
   instance._fvUserInteractionUntil = 0;
+  instance._fvDataSettled = true;
   instance._cancelDrawing = () => {};
   instance._fvSetDisplayData = () => {};
   instance._fvRefreshRangeBoundaries = () => {};
@@ -503,7 +505,12 @@ function viewportHarness({ count = 100, timeframe = "1D", step = DAY } = {}) {
   instance.fit = () => { calls.fits += 1; };
   instance._fvNativeSetVisibleLogicalRange = (range) => calls.logical.push(range);
   instance._fvNativeSetVisibleRange = (range) => calls.time.push(range);
-  instance.chart = { timeScale: () => ({ getVisibleRange: () => visibleRange }) };
+  instance.chart = {
+    timeScale: () => ({
+      getVisibleRange: () => visibleRange,
+      getVisibleLogicalRange: () => visibleLogicalRange,
+    }),
+  };
   instance.candles = {
     priceScale: () => ({
       getVisibleRange: () => priceRange,
@@ -518,6 +525,7 @@ function viewportHarness({ count = 100, timeframe = "1D", step = DAY } = {}) {
     at: (index) => T0 + index * step,
     setVisible: (from, to) => { visibleRange = { from, to }; },
     setPrice: (from, to) => { priceRange = { from, to }; },
+    setVisibleLogical: (from, to) => { visibleLogicalRange = { from, to }; },
     lastLogical: () => calls.logical.at(-1),
   };
 }
@@ -602,38 +610,41 @@ test("with nothing carried, a cached window just preserves what was on screen", 
   assert.deepEqual(h.calls.time.at(-1), { from: T0 + 10 * DAY, to: T0 + 20 * DAY });
 });
 
-test("Lock captures the centre and the calendar-second span at engage time", () => {
+test("Lock captures only the centre time and price at engage time - no span", () => {
   const h = viewportHarness();
   h.setVisible(h.at(40), h.at(50));
+  h.setPrice(5580, 5620);
   h.instance._fvToggleLock();
   assert.equal(h.instance._fvViewportLocked, true);
   assert.ok(Math.abs(h.instance._fvLockedCentre.time - h.at(45)) < 0.01);
-  assert.ok(Math.abs(h.instance._fvLockedCentre.span - 10 * DAY) < 0.01);
+  assert.equal(h.instance._fvLockedCentre.price, 5600);
+  assert.equal("span" in h.instance._fvLockedCentre, false, "span must not be captured");
+  assert.equal("priceSpan" in h.instance._fvLockedCentre, false, "priceSpan must not be captured");
 });
 
-test("Lock re-centres using the captured span, not whatever the axis shows now", () => {
+test("Lock re-centres on the anchor using the chart's current zoom width, not a captured one", () => {
   const h = viewportHarness();
   h.setVisible(h.at(40), h.at(50));
   h.instance._fvToggleLock();
 
-  // Something left the axis showing an unrelated window before recentre runs -
-  // exactly what happens mid-switch, when setData doesn't reset the axis.
-  h.setVisible(h.at(0), h.at(20));
+  // The chart's current zoom is whatever it naturally is right now - here a
+  // width of 6 bars, unrelated to whatever was on screen at engage time.
+  h.setVisibleLogical(2, 8);
   h.instance._fvRecentreLocked();
 
   const got = h.lastLogical();
   assert.ok(Math.abs((got.from + got.to) / 2 - 45) < 0.01, `centred on ${(got.from + got.to) / 2}`);
-  assert.ok(Math.abs((got.to - got.from) - 10) < 0.01, `kept the captured span, got ${got.to - got.from} bars`);
+  assert.ok(Math.abs((got.to - got.from) - 6) < 0.01, `used the chart's current width, got ${got.to - got.from} bars`);
 });
 
-test("Lock centres the price too, using the captured span", () => {
+test("Lock centres the price too, using the chart's current price-axis width", () => {
   const h = viewportHarness();
   h.setPrice(5580, 5620);
   h.instance._fvToggleLock();
 
   h.setPrice(0, 100);
   h.instance._fvRecentreLocked();
-  assert.deepEqual(h.calls.price.at(-1), { from: 5580, to: 5620 });
+  assert.deepEqual(h.calls.price.at(-1), { from: 5550, to: 5650 });
 });
 
 test("engaging Lock does not move the chart", () => {
@@ -645,31 +656,27 @@ test("engaging Lock does not move the chart", () => {
   assert.equal(h.calls.fits, 0);
 });
 
-test("locked, a bar-scale change re-centres on the captured span, not a leftover window", () => {
+test("locked, a bar-scale change re-centres on the anchor using the chart's current zoom width", () => {
   const h = viewportHarness();
   h.setVisible(h.at(40), h.at(50));
   h.instance._fvToggleLock();
 
-  // The starved re-aggregation leaves the axis showing a leftover window from
-  // before the switch - reading that back as "the new width" is the bug this
-  // guards: converting a few old-scale bars' worth of seconds into new-scale
-  // bar indices produces a near-zero or wildly wrong width.
-  h.setVisible(h.at(2), h.at(4));
+  // Whatever zoom the chart naturally has after the switch's local
+  // re-aggregation - here 6 bars, unrelated to the width at engage time -
+  // is what the re-centre must use. No span is carried from Lock itself.
+  h.setVisibleLogical(2, 8);
   h.instance._fvSetTimeframe("5");
 
   const got = h.lastLogical();
   assert.ok(Math.abs((got.from + got.to) / 2 - 45) < 0.01, `centred on ${(got.from + got.to) / 2}`);
-  assert.ok(Math.abs((got.to - got.from) - 10) < 0.01, `kept the captured span, got ${got.to - got.from} bars`);
+  assert.ok(Math.abs((got.to - got.from) - 6) < 0.01, `used the chart's current width, got ${got.to - got.from} bars`);
 });
 
 test("a centred window may run past the last bar", () => {
   const h = viewportHarness({ count: 100 });
-  // Centred on 99 (the last bar) with a span wide enough that half of it
-  // reaches past the data - which is what being centred on the latest bar
-  // means, so it is not pulled back onto the data. The whitespace beyond the
-  // last bar is twice as many seconds per logical unit as the candles
-  // themselves, so the mapped window is not perfectly symmetric in bar-index
-  // terms - only in the calendar time it was captured from.
+  // Centred on 99 (the last bar) with the chart's current width wide enough
+  // that half of it reaches past the data - which is what being centred on
+  // the latest bar means, so it is not pulled back onto the data.
   h.setVisible(h.at(97), h.at(101));
   h.instance._fvToggleLock();
   h.instance._fvRecentreLocked();
@@ -717,6 +724,51 @@ test("a wheel pan alone (no pointer events) re-captures the locked centre", () =
 
   assert.ok(Math.abs(h.instance._fvLockedCentre.time - h.at(15)) < 0.01,
     `centre not updated by the wheel pan, got ${h.instance._fvLockedCentre.time}`);
+});
+
+test("a pan/wheel recapture during the starved bar-scale-switch render does not corrupt the anchor", () => {
+  const h = viewportHarness();
+  h.setVisible(h.at(40), h.at(50));
+  h.instance._fvToggleLock();
+  const before = h.instance._fvLockedCentre;
+
+  // _fvSetTimeframe marks the data unsettled before its starved local
+  // re-aggregation renders. A wheel/pan event (or its debounced recapture)
+  // landing here must not read the live, starved chart back as the anchor -
+  // this is the corruption this guards against.
+  h.instance._fvDataSettled = false;
+  h.setVisible(h.at(2), h.at(4));
+  h.instance._fvRecaptureLockedCentre();
+
+  assert.deepEqual(h.instance._fvLockedCentre, before,
+    "anchor must be unchanged while data is unsettled");
+});
+
+test("a pan/wheel recapture once the authoritative window has settled does update the anchor", () => {
+  const h = viewportHarness();
+  h.setVisible(h.at(40), h.at(50));
+  h.instance._fvToggleLock();
+
+  h.instance._fvDataSettled = true;
+  h.setVisible(h.at(10), h.at(20));
+  h.instance._fvRecaptureLockedCentre();
+
+  assert.ok(Math.abs(h.instance._fvLockedCentre.time - h.at(15)) < 0.01,
+    `anchor should update once data is settled, got ${h.instance._fvLockedCentre.time}`);
+});
+
+test("_fvSetTimeframe marks data unsettled, _fvLoadCachedWindow settles it again", () => {
+  const h = viewportHarness({ timeframe: "1D", step: DAY, count: 100 });
+  assert.equal(h.instance._fvDataSettled, true, "starts settled");
+
+  h.instance._fvSetTimeframe("5");
+  assert.equal(h.instance._fvDataSettled, false,
+    "the starved local re-aggregation is not the authoritative window");
+
+  h.instance._fvTimeframe = "5";
+  h.instance._fvLoadCachedWindow("5", h.instance.bars.map((b) => ({ t: b.time, o: 1, h: 2, l: 0, c: 1, v: 1 })));
+  assert.equal(h.instance._fvDataSettled, true,
+    "the worker's display_window is authoritative");
 });
 
 test("Start/Random clears a carried window so its own fit stands", () => {

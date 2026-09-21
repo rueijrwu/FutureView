@@ -177,6 +177,13 @@
       this._fvViewportLocked = false;
       this._fvLockedCentre = null;
       this._fvDesiredRange = null;
+      // True once the currently-displayed bars are the authoritative window
+      // for the active timeframe (either a fresh reset() or the worker's
+      // display_window landing in _fvLoadCachedWindow). False while only the
+      // local raw-tail re-aggregation from a bar-scale switch is on screen -
+      // that data is starved (RAW_TAIL_LIMIT covers ~25h, a couple of bars at
+      // 1D) and its visible range must never be read back as ground truth.
+      this._fvDataSettled = true;
       this._fvVwapState = null;
       this._fvSmaState = null;
       this._fvIndicatorVisible = Object.fromEntries(
@@ -398,27 +405,18 @@
       if (previous) { try { this._fvNativeSetVisibleRange(previous); } catch {} }
     }
 
-    // Lock holds one point and one width, not a live window: the time and
-    // calendar-second span at the middle of the chart, and the price and
-    // dollar span at the middle of the price axis, all captured once and kept
-    // fixed. A scale change re-renders that same span at the new granularity -
-    // what it may not do is drift the centre or the span.
-    //
-    // The span has to be captured, not read fresh off the chart at recentre
-    // time: mid-switch, the axis can be showing a leftover window from the
-    // *previous* scale (the library doesn't reset it on setData), and
-    // converting that stale time span into the new scale's bar-index units
-    // produces a near-zero or wildly wrong width - the old scale's few-minute
-    // window becomes a fraction of a bar once the step is a day.
+    // Lock holds one point, not a window: the time and price at the middle
+    // of the chart, captured once and kept fixed. Zoom is deliberately not
+    // part of it - width is whatever the chart's current pan/zoom state
+    // naturally is after each render, read fresh at recentre time, never
+    // captured or preserved.
     _fvCaptureCentre() {
       const time = this.chart.timeScale().getVisibleRange?.() || null;
       if (!time) return null;
       const price = this.candles.priceScale().getVisibleRange?.() || null;
       return {
         time: (Number(time.from) + Number(time.to)) / 2,
-        span: Number(time.to) - Number(time.from),
         price: price ? (Number(price.from) + Number(price.to)) / 2 : null,
-        priceSpan: price ? Number(price.to) - Number(price.from) : null,
       };
     }
 
@@ -429,24 +427,37 @@
       // Bar indices, not a time range: a time range would be clamped back onto
       // the data, but the centre keeps its place even when half the window
       // ends up past the last bar - being centred on the latest bar means
-      // exactly that.
+      // exactly that. The width is read fresh off the chart's *current*
+      // logical range right here, never a captured one, so zoom stays
+      // whatever it naturally is.
       const frame = this._fvLogicalFrame();
-      if (frame && Number.isFinite(centre.time) && Number.isFinite(centre.span) && centre.span > 0) {
-        const lo = this._fvLogicalIndexAt(centre.time - centre.span / 2, frame);
-        const hi = this._fvLogicalIndexAt(centre.time + centre.span / 2, frame);
-        if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
-          this._fvApplyLogicalRange(lo, hi);
+      if (frame && Number.isFinite(centre.time)) {
+        const current = this.chart.timeScale().getVisibleLogicalRange?.();
+        const width = current && Number.isFinite(current.from) && Number.isFinite(current.to)
+          ? current.to - current.from
+          : null;
+        if (width && width > 0) {
+          const centreIndex = this._fvLogicalIndexAt(centre.time, frame);
+          if (Number.isFinite(centreIndex)) {
+            this._fvApplyLogicalRange(centreIndex - width / 2, centreIndex + width / 2);
+          }
         }
       }
 
-      if (Number.isFinite(centre.price) && Number.isFinite(centre.priceSpan) && centre.priceSpan > 0) {
+      if (Number.isFinite(centre.price)) {
         try {
           const scale = this.candles.priceScale();
-          scale.applyOptions({ autoScale: false });
-          scale.setVisibleRange({
-            from: centre.price - centre.priceSpan / 2,
-            to: centre.price + centre.priceSpan / 2,
-          });
+          const currentRange = scale.getVisibleRange?.();
+          const priceSpan = currentRange && Number.isFinite(currentRange.from) && Number.isFinite(currentRange.to)
+            ? currentRange.to - currentRange.from
+            : null;
+          if (priceSpan && priceSpan > 0) {
+            scale.applyOptions({ autoScale: false });
+            scale.setVisibleRange({
+              from: centre.price - priceSpan / 2,
+              to: centre.price + priceSpan / 2,
+            });
+          }
         } catch {}
       }
       return true;
@@ -517,7 +528,16 @@
       this._fvRecaptureTimer = setTimeout(() => this._fvRecaptureLockedCentre(), 220);
     }
 
+    // Only ever updates the anchor from data that is the authoritative window
+    // for the active timeframe. A bar-scale switch renders the starved local
+    // re-aggregation first, then the worker's real window; a pan or wheel
+    // that lands (or whose debounced recapture fires) in between would
+    // otherwise read the live chart's range off that starved data and bake a
+    // wrong centre in permanently - the leading cause of the locked anchor's
+    // time drifting while price stays correct, since price isn't derived
+    // from the bar frame the starved data corrupts.
     _fvRecaptureLockedCentre() {
+      if (!this._fvDataSettled) return;
       this._fvLockedCentre = this._fvCaptureCentre();
     }
 
@@ -839,6 +859,10 @@
       }
       this._fvTimeframe = value;
       this._fvSyncTimeframeUi();
+      // The data about to render is the starved local re-aggregation of the
+      // raw tail, not the authoritative window for this timeframe - a locked
+      // anchor may not be recaptured from it until _fvLoadCachedWindow lands.
+      this._fvDataSettled = false;
       this._fvRebuildActiveAggregate();
       this._fvSetDisplayData(aggregateAll(this._fvRawBars, value));
       this._fvRefreshRangeBoundaries();
@@ -867,6 +891,10 @@
       }
       this._fvSetDisplayData(displayBars);
       this._fvRefreshRangeBoundaries();
+      // This data is authoritative for the active timeframe - whatever a
+      // bar-scale switch's starved intermediate render left unsettled, a
+      // locked anchor may be recaptured from the chart again from here on.
+      this._fvDataSettled = true;
 
       // This is the authoritative half of a scale switch, so the carried window
       // has had its chance: honour it here, then go back to plain preservation.
@@ -880,6 +908,7 @@
       // Start/Random is a fresh session and fits explicitly in app.js, so no
       // window carried from a previous scale switch may survive it.
       this._fvDesiredRange = null;
+      this._fvDataSettled = true;
       this._fvRawBars = (rawBars || []).map(normalizeRaw).filter((bar) => Number.isFinite(bar.t));
       this._fvTrimRawTail();
       this._fvRebuildActiveAggregate();
