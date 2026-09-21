@@ -316,6 +316,7 @@
       if (wasArmed) return;
       this.activeDrawTool = tool;
       button.classList.add("armed");
+      this._pauseDrawManagerOwnHandlers();
       // Match TradingView: chart panning/scroll-zoom is suspended while a drawing tool
       // is armed, so a natural click-drag-release places the tool instead of silently
       // scrolling the chart out from under the cursor mid-draw.
@@ -343,6 +344,39 @@
       this.chart.applyOptions({ handleScroll: true, handleScale: true });
       this._clearPreview();
       this._closeEditor();
+      this._resumeDrawManagerOwnHandlers();
+    }
+
+    // DrawingManager.attach() subscribes its OWN click/mousedown/mousemove/mouseup
+    // listeners on the same chart and container we do, entirely independent of the
+    // this.activeDrawTool state above - it never learns a tool is armed, so its own
+    // hit-test-and-select-or-deselect (on every click) and anchor-drag-editing (on a
+    // mousedown within 8px of the CURRENTLY SELECTED drawing's anchor) keep running
+    // while the user is trying to place a brand new one. Concretely: select a drawing,
+    // arm a new tool, click near that old drawing's anchor to start the new shape there
+    // - DrawingManager's own mousedown handler (registered before ours, since it's wired
+    // in the constructor's drawManager.attach() rather than _bind()) claims that
+    // mousedown as an anchor-drag on the OLD drawing, and every subsequent mousemove
+    // silently relocates the OLD drawing's anchor to trail the cursor meant for the NEW
+    // one's preview - the new drawing does still get created on the completing click,
+    // but the old one is corrupted and the whole thing reads as "drawing failed to add".
+    // Pausing these for the duration the placement flow owns the gesture instead.
+    _pauseDrawManagerOwnHandlers() {
+      if (this._drawManagerPaused) return;
+      this._drawManagerPaused = true;
+      try { this.chart.unsubscribeClick(this.drawManager.handleClick); } catch {}
+      this.container.removeEventListener("mousedown", this.drawManager.handleMouseDown);
+      this.container.removeEventListener("mousemove", this.drawManager.handleMouseMove);
+      this.container.removeEventListener("mouseup", this.drawManager.handleMouseUp);
+    }
+
+    _resumeDrawManagerOwnHandlers() {
+      if (!this._drawManagerPaused) return;
+      this._drawManagerPaused = false;
+      try { this.chart.subscribeClick(this.drawManager.handleClick); } catch {}
+      this.container.addEventListener("mousedown", this.drawManager.handleMouseDown);
+      this.container.addEventListener("mousemove", this.drawManager.handleMouseMove);
+      this.container.addEventListener("mouseup", this.drawManager.handleMouseUp);
     }
 
     _handleDrawClick(param) {

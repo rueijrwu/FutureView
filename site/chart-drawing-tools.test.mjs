@@ -38,10 +38,16 @@ const priceToY = (price) => (PRICE_TOP - price) / PRICE_PER_PIXEL;
 const yToPrice = (y) => PRICE_TOP - y * PRICE_PER_PIXEL;
 
 function makeChart() {
+  const clickSubs = [];
   return {
     applyOptions() {},
     addSeries: () => makeSeries(),
-    subscribeClick() {},
+    subscribeClick(fn) { clickSubs.push(fn); },
+    unsubscribeClick(fn) {
+      const i = clickSubs.indexOf(fn);
+      if (i !== -1) clickSubs.splice(i, 1);
+    },
+    _clickSubs: clickSubs,
     subscribeCrosshairMove() {},
     priceScale: (id) => ({ width: () => (id === "left" ? LEFT_AXIS_WIDTH : 0), applyOptions() {} }),
     timeScale: () => ({
@@ -153,12 +159,42 @@ class FakeDrawingManager {
     this.drawings = new Map();
     this.selectedId = null;
     this.viewport = null;
+    // Real DrawingManager binds its own click/mousedown/mousemove/mouseup handlers and
+    // subscribes them independently of the app's own placement flow - it drags whatever
+    // is selected when a mousedown lands within 8px of one of its anchors, exactly the
+    // behaviour that hijacked placing a new drawing near an old, already-selected one.
+    this.handleClick = () => { this.handleClickCalls = (this.handleClickCalls || 0) + 1; };
+    this.handleMouseDown = (event) => {
+      this.handleMouseDownCalls = (this.handleMouseDownCalls || 0) + 1;
+      const drawing = this.getSelectedDrawing();
+      if (!drawing || !this.viewport) return;
+      const point = this.getPointFromEvent(event);
+      const anchorIndex = drawing.anchors.findIndex((anchor) => {
+        const ax = this.viewport.timeScale.timeToCoordinate(anchor.time);
+        const ay = this.viewport.priceScale.priceToCoordinate(anchor.price);
+        return ax != null && ay != null && Math.hypot(ax - point.x, ay - point.y) <= 8;
+      });
+      if (anchorIndex !== -1) this._dragging = { drawing, anchorIndex };
+    };
+    this.handleMouseMove = (event) => {
+      if (!this._dragging) return;
+      const point = this.getPointFromEvent(event);
+      const time = this.viewport.timeScale.coordinateToTime(point.x);
+      const price = this.viewport.priceScale.coordinateToPrice(point.y);
+      if (time == null || price == null) return;
+      this._dragging.drawing.anchors[this._dragging.anchorIndex] = { time, price };
+    };
+    this.handleMouseUp = () => { this._dragging = null; };
   }
 
   attach(chart, series, container) {
     this.chart = chart;
     this.series = series;
     this.container = container;
+    chart.subscribeClick(this.handleClick);
+    container.addEventListener("mousedown", this.handleMouseDown);
+    container.addEventListener("mousemove", this.handleMouseMove);
+    container.addEventListener("mouseup", this.handleMouseUp);
   }
 
   addDrawing(drawing) {
@@ -207,7 +243,15 @@ function makeElement(tagName = "DIV") {
     addEventListener(type, handler) {
       (el.listeners[type] ||= []).push(handler);
     },
-    removeEventListener() {},
+    removeEventListener(type, handler) {
+      const handlers = el.listeners[type];
+      if (!handlers) return;
+      const index = handlers.indexOf(handler);
+      if (index !== -1) handlers.splice(index, 1);
+    },
+    dispatch(type, event) {
+      (el.listeners[type] || []).slice().forEach((handler) => handler(event));
+    },
     setAttribute() {},
     appendChild(child) {
       el.children.push(child);
@@ -513,3 +557,31 @@ test("a drag inside the pane still moves an h-line", () => {
 
   assert.equal(drawing.anchors[0].price, yToPrice(240), "the line should follow the drag");
 });
+
+// DrawingManager.attach() subscribes its OWN click/mousedown/mousemove/mouseup listeners
+// on the same chart and container, entirely independent of activeDrawTool: it never
+// learns a tool is armed. Placing a new drawing near an already-selected old one used to
+// get its very first mousedown hijacked into an anchor-drag of the OLD drawing (its own
+// handleMouseDown only checks "is this within 8px of the *selected* drawing's anchor",
+// which the new placement's first click can easily satisfy) - the new drawing still got
+// created, but the old one silently moved, reading as "adding an annotation doesn't work".
+test("arming a draw tool pauses the plugin's own click/mousedown competition, and cancelling resumes it", () => {
+  const tools = makeTools();
+  const id = addTrendLine(tools);
+  tools.drawManager.selectDrawing(id);
+
+  assert.equal(tools.chart._clickSubs.includes(tools.drawManager.handleClick), true, "the plugin's click handler starts subscribed");
+
+  tools._armDrawTool("trend", { classList: { add() {}, remove() {} }, dataset: { tool: "trend" } });
+
+  assert.equal(tools.chart._clickSubs.includes(tools.drawManager.handleClick), false, "arming a tool must unsubscribe the plugin's own click handler");
+  tools.container.dispatch("mousedown", { clientX: CONTAINER_LEFT + LEFT_AXIS_WIDTH, clientY: CONTAINER_TOP });
+  assert.equal(tools.drawManager.handleMouseDownCalls, undefined, "the plugin's own mousedown handler must not run while placing a new drawing");
+
+  tools._cancelDrawing();
+
+  assert.equal(tools.chart._clickSubs.includes(tools.drawManager.handleClick), true, "cancelling must resubscribe the plugin's click handler");
+  tools.container.dispatch("mousedown", { clientX: CONTAINER_LEFT + LEFT_AXIS_WIDTH, clientY: CONTAINER_TOP });
+  assert.equal(tools.drawManager.handleMouseDownCalls, 1, "the plugin's own mousedown handler should resume once nothing is being placed");
+});
+
