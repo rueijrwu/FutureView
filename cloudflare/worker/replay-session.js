@@ -151,8 +151,10 @@ export class ReplaySession extends CoreReplaySession {
       for (let index = start; index < start + take; index += 1) {
         this.session.barIndex = index;
         const bar = this.shard[index];
+        await this._maybeFlattenForSessionEnd(bar);
         if (trading.pendingOrders.length) await this._fillPendingOrders(bar);
         trading.lastPrice = bar.c;
+        trading.lastBarTs = bar.t;
         released.push(bar);
       }
       this._maybePrefetchCanonicalShard(contract);
@@ -202,8 +204,10 @@ export class ReplaySession extends CoreReplaySession {
         for (let index = start; index < end; index += 1) {
           this.session.barIndex = index;
           const bar = this.shard[index];
+          await this._maybeFlattenForSessionEnd(bar);
           if (trading.pendingOrders.length) await this._fillPendingOrders(bar);
           trading.lastPrice = bar.c;
+          trading.lastBarTs = bar.t;
           released.push(bar);
         }
         this._maybePrefetchCanonicalShard(contract);

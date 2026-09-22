@@ -329,6 +329,7 @@ export default {
             contract_selection: selection,
             start: body.start,
             warmup: body.warmup ?? 300,
+            auto_flatten_at_session_end: body.auto_flatten_at_session_end,
           }),
         });
         const payload = await response.json();

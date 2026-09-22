@@ -33,6 +33,8 @@ main {
 .setup label { display: grid; gap: 4px; font-size: 11px; color: #8796aa; flex: 0 0 auto; }
 .setup input, .setup select, .trade-entry input { background: #0a111b; color: #edf2fa; border: 1px solid #35455d; border-radius: 6px; padding: 7px; }
 .setup > span { font-size: 11px; color: #748297; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.auto-flatten-field { display: inline-flex !important; align-items: center; gap: 5px; font-size: 11px; color: #8796aa; white-space: nowrap; }
+.auto-flatten-field input[type="checkbox"] { width: 14px; height: 14px; accent-color: #668fe8; }
 .session-status { margin-left: auto; display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: 0 0 auto; padding-left: 14px; border-left: 1px solid #253247; }
 .session-status b { font-size: 12px; }
 .session-status span:not(.pill) { color: #8d9bad; font-size: 11px; }

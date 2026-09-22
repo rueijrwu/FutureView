@@ -144,6 +144,11 @@
       appendConsole(`${displaySeconds(lastMarkTs ?? order.requested_at_ts)}  CANCEL ${orderTypeLabel(order).toUpperCase()} ${String(order.side).toUpperCase()} ${order.quantity}  ${orderPriceText(order,true)} · OCO, other leg filled`);
     }
   }
+  function recordSessionEndCancelled(orders){
+    for(const order of orders||[]){
+      appendConsole(`${displaySeconds(lastMarkTs ?? order.requested_at_ts)}  CANCEL ${orderTypeLabel(order).toUpperCase()} ${String(order.side).toUpperCase()} ${order.quantity}  ${orderPriceText(order,true)} · session end`);
+    }
+  }
   function syncFillConsole(trading){
     for(const f of trading?.fills||[]){
       if(consoleFillIds.has(f.id))continue;
@@ -348,7 +353,7 @@
     }catch(e){error(e.message)}
     finally{syncControls()}
   }
-  function update(s,authoritative=false){if(!s)return;if(s.state)lastState=s.state;if(authoritative){wsSynced=true;pendingCommand=null;clearTimeout(commandAckTimer);commandAckTimer=null;}$("state-status").textContent=lastState;if(s.contract)$("contract-status").textContent=s.contract;if(s.cursor!=null){lastMarkTs=Number(s.cursor);$("time-status").textContent=displaySeconds(s.cursor);}else if(!sessionId)$("time-status").textContent="No session";if(s.trading)setTrading(s.trading);syncControls()}
+  function update(s,authoritative=false){if(!s)return;if(s.state)lastState=s.state;if(authoritative){wsSynced=true;pendingCommand=null;clearTimeout(commandAckTimer);commandAckTimer=null;}$("state-status").textContent=lastState;if(s.contract)$("contract-status").textContent=s.contract;if(s.cursor!=null){lastMarkTs=Number(s.cursor);$("time-status").textContent=displaySeconds(s.cursor);}else if(!sessionId)$("time-status").textContent="No session";if(s.auto_flatten_at_session_end!=null)$("auto-flatten").checked=!!s.auto_flatten_at_session_end;if(s.trading)setTrading(s.trading);syncControls()}
   function command(type,extra={}){if(!ws||ws.readyState!==WebSocket.OPEN||!wsSynced){error("Replay socket is not synchronized - reconnecting…");if(wsPath)connect(wsPath);return}pendingCommand=type;if(type==="play")lastState="PLAYING";else if(type==="pause"||type==="restart")lastState="PAUSED";update({state:lastState});ws.send(JSON.stringify({type,...extra}));clearTimeout(commandAckTimer);commandAckTimer=setTimeout(()=>{if(pendingCommand===type){pendingCommand=null;wsSynced=false;error("Replay command acknowledgement timed out - resynchronizing…");syncControls();if(wsPath)connect(wsPath)}},2000)}
   function tickSize(){const size=Number(lastTrading?.tick_size);return Number.isFinite(size)&&size>0?size:0.25}
   function readPrice(id,label){
@@ -405,7 +410,9 @@
       else if(x.type==="order_cancelled"){recordCancelledOrder(x.order);setTrading(x.trading);error("Order cancelled")}
       else if(x.type==="orders_triggered"){recordTriggeredOrders(x.orders);setTrading(x.trading);error()}
       else if(x.type==="bracket_attached"){recordAttachedBracket(x.orders);setTrading(x.trading);error()}
-      else if(x.type==="orders_cancelled"){if(x.reason==="oco")recordOcoCancelled(x.orders);setTrading(x.trading);error()}
+      else if(x.type==="orders_cancelled"){if(x.reason==="oco")recordOcoCancelled(x.orders);else if(x.reason==="session_end")recordSessionEndCancelled(x.orders);setTrading(x.trading);error()}
+      else if(x.type==="session_end_flatten"){recordSessionEndCancelled(x.cancelled_orders);setTrading(x.trading);error(x.fill?"Session ended — position flattened and resting orders cancelled":"Session ended — resting orders cancelled")}
+      else if(x.type==="auto_flatten_changed"){$("auto-flatten").checked=!!x.enabled}
       else if(x.type==="trading_cleared"){clearConsole();setTrading(x.trading);error("Trading record cleared")}
       else if(x.type==="reset"){reset(x.warmup||[]);update(x.snapshot,true)}
       else if(x.type==="error"){pendingCommand=null;clearTimeout(commandAckTimer);error(x.error);syncControls()}
@@ -419,8 +426,9 @@
   async function loadRange(explicit=false){error();const p=$("product")?.value||"MES";try{replayRangeInfo=await api(`/api/replay/range?product=${encodeURIComponent(p)}`);if(!replayRangeInfo)return;$("start").value=sessionAtDefaultTime(replayRangeInfo);$("range").textContent=`${displaySeconds(replayRangeInfo.first_time)} → ${displaySeconds(replayRangeInfo.last_time)} · ${replayRangeInfo.sessions?.length||0} actual sessions`}catch(err){if(!explicit){try{replayRangeInfo=await api("/api/replay/range");if(!replayRangeInfo)return;if(replayRangeInfo.product&&$("product"))$("product").value=replayRangeInfo.product;$("start").value=sessionAtDefaultTime(replayRangeInfo);return}catch{}}error(err.message)}}
   function pickRandomTradingDate(info){const sessions=Array.isArray(info?.sessions)?info.sessions.filter(x=>/^\d{4}-\d{2}-\d{2}$/.test(x)):[];if(!sessions.length)throw new Error("No actual replay sessions are available for random selection");const valid=sessions.filter(day=>{try{const ms=Date.parse(wallTimeToUtcIso(`${day}T${DEFAULT_REPLAY_TIME}`));return ms>=Number(info.first_time)*1000&&ms<=Number(info.last_time)*1000}catch{return false}});const pool=valid.length?valid:sessions;return `${pool[Math.floor(Math.random()*pool.length)]}T${DEFAULT_REPLAY_TIME}`}
   let isStarting=false;
-  async function startReplay(){if(isStarting)return;savedSessionLoaded=false;isStarting=true;$("start-btn").disabled=true;$("random-btn").disabled=true;try{error();const raw=$("start").value;if(!raw)throw new Error("Choose a start time");const x=await api("/api/replay/sessions",{method:"POST",body:JSON.stringify({product:$("product").value,start:wallTimeToUtcIso(raw),warmup:Number($("warmup").value||300)})});if(!x)return;sessionId=x.session_id;wsSynced=false;lastTrading=x.trading||null;reset(x.warmup||[]);update(x,true);renderTrading();const selected=x.contract_selection;if(selected)$("range").textContent=`Selected ${selected.contract} using ${selected.source_session||"fallback"} (${selected.reason})`;connect(x.websocket)}catch(e){error(e.message)}finally{isStarting=false;$("start-btn").disabled=false;$("random-btn").disabled=false}}
+  async function startReplay(){if(isStarting)return;savedSessionLoaded=false;isStarting=true;$("start-btn").disabled=true;$("random-btn").disabled=true;try{error();const raw=$("start").value;if(!raw)throw new Error("Choose a start time");const x=await api("/api/replay/sessions",{method:"POST",body:JSON.stringify({product:$("product").value,start:wallTimeToUtcIso(raw),warmup:Number($("warmup").value||300),auto_flatten_at_session_end:$("auto-flatten").checked})});if(!x)return;sessionId=x.session_id;wsSynced=false;lastTrading=x.trading||null;reset(x.warmup||[]);update(x,true);renderTrading();const selected=x.contract_selection;if(selected)$("range").textContent=`Selected ${selected.contract} using ${selected.source_session||"fallback"} (${selected.reason})`;connect(x.websocket)}catch(e){error(e.message)}finally{isStarting=false;$("start-btn").disabled=false;$("random-btn").disabled=false}}
   $("product").onchange=()=>loadRange(true);$("start-btn").onclick=()=>startReplay();$("random-btn").onclick=async()=>{if(isStarting)return;if(!replayRangeInfo)await loadRange();try{$("start").value=pickRandomTradingDate(replayRangeInfo);await startReplay()}catch(e){error(e.message)}};
+  $("auto-flatten").addEventListener("change",()=>{if(ws&&ws.readyState===WebSocket.OPEN&&wsSynced)ws.send(JSON.stringify({type:"set_auto_flatten",enabled:$("auto-flatten").checked}))});
   $("play").onclick=()=>command("play",{speed});$("pause").onclick=()=>command("pause");$("next").onclick=()=>command("step");$("restart").onclick=()=>command("restart");
   const SPEED_STEPS=[1,5,10,25,50,100,"max"];
   $("speed-slider").addEventListener("input",()=>{const v=SPEED_STEPS[Number($("speed-slider").value)];$("speed-value").textContent=v==="max"?"Max":`${v}x`});

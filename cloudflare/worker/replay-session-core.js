@@ -11,6 +11,46 @@ const PRODUCT_SPECS = {
 };
 const ORDER_TYPES = new Set(["market", "limit", "stop", "stop_limit"]);
 const ORDER_SIDES = new Set(["buy", "sell"]);
+
+// Mirrors resolver.py session_date (SESSION_ROLL_HOUR_ET = 18): which trading
+// session a bar belongs to. This is deliberately the 18:00 roll, not the 17:00
+// requested_session_date used in main.js to resolve a start time — see
+// replay-session-boundary.test.mjs for why the two must not be conflated.
+// Bucketed by UTC hour and cached, same technique (and same reasoning) as
+// historySessionDate in replay-session-display-fast.js: this runs once per
+// released bar, including inside 2000-bar timestamp-bounded releases.
+const SESSION_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  hourCycle: "h23",
+});
+const SESSION_DATE_CACHE = new Map();
+const SESSION_DATE_CACHE_MAX = 1 << 16;
+
+function sessionDateAtUncached(seconds) {
+  const parts = Object.fromEntries(
+    SESSION_DATE_FORMATTER.formatToParts(new Date(Number(seconds) * 1000))
+      .filter((part) => part.type !== "literal")
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+  if (parts.hour >= 18) day.setUTCDate(day.getUTCDate() + 1);
+  return day.toISOString().slice(0, 10);
+}
+
+function sessionDateAt(seconds) {
+  const hour = Math.floor(Number(seconds) / 3600);
+  if (!Number.isFinite(hour)) return sessionDateAtUncached(seconds);
+  const cached = SESSION_DATE_CACHE.get(hour);
+  if (cached !== undefined) return cached;
+  const value = sessionDateAtUncached(seconds);
+  if (SESSION_DATE_CACHE.size >= SESSION_DATE_CACHE_MAX) SESSION_DATE_CACHE.clear();
+  SESSION_DATE_CACHE.set(hour, value);
+  return value;
+}
 // Stops are evaluated before limits inside one canonical bar. Both can trigger on
 // the same minute and 1m OHLCV carries no intrabar sequence, so the order has to
 // be a stated convention rather than an accident of insertion order.
@@ -100,6 +140,7 @@ export class ReplaySession extends DurableObject {
       nextSequence: 1,
       nextOrderSequence: 1,
       lastPrice,
+      lastBarTs: null,
     };
   }
 
@@ -126,6 +167,7 @@ export class ReplaySession extends DurableObject {
       nextSequence: num(saved.nextSequence, blank.nextSequence) || 1,
       nextOrderSequence: num(saved.nextOrderSequence, blank.nextOrderSequence) || 1,
       lastPrice,
+      lastBarTs: null,
     };
   }
 
@@ -186,12 +228,16 @@ export class ReplaySession extends DurableObject {
       warmup: Math.max(0, Math.min(100000, Number(body.warmup ?? 300))),
       startTs: start,
       trading: this._blankTrading(),
+      autoFlattenAtSessionEnd: body.auto_flatten_at_session_end !== false,
+      currentSessionDate: null,
     };
     this.shard = resolvedBars;
     this.shardKey = contract.shards[resolvedShard]?.key ?? null;
     const current = this.shard[this.session.barIndex];
     const cursorPrice = current?.c ?? current?.o ?? null;
     this.session.trading = body.trading ? this._hydrateTrading(body.trading, cursorPrice) : this._blankTrading(cursorPrice);
+    this.session.trading.lastBarTs = current?.t ?? null;
+    this.session.currentSessionDate = current ? sessionDateAt(current.t) : null;
     await this._persist(true);
     await this._persistTradingSummary();
     const warmup = await this._warmupBars(this.session.originShardIndex, this.session.originBarIndex, this.session.warmup);
@@ -246,6 +292,7 @@ export class ReplaySession extends DurableObject {
       state: this.session.state,
       speed: this.session.speed,
       cursor: bar?.t ?? null,
+      auto_flatten_at_session_end: this.session.autoFlattenAtSessionEnd === true,
       trading: this._accountSnapshot(),
     };
   }
@@ -260,6 +307,7 @@ export class ReplaySession extends DurableObject {
       else if (command.type === "order") await this.placeOrder(command);
       else if (command.type === "cancel_order") await this.cancelOrder(command.order_id);
       else if (command.type === "clear_trading") await this.clearTrading();
+      else if (command.type === "set_auto_flatten") await this.setAutoFlatten(command.enabled);
       else ws.send(JSON.stringify({ type: "error", error: `Unknown command ${command.type}` }));
     } catch (error) {
       ws.send(JSON.stringify({ type: "error", error: String(error?.message ?? error) }));
@@ -375,10 +423,83 @@ export class ReplaySession extends DurableObject {
     if (!this.session) throw new Error("Session not initialized");
     const current = this.shard?.[this.session.barIndex];
     this.session.trading = this._blankTrading(current?.c ?? current?.o ?? null);
+    this.session.trading.lastBarTs = current?.t ?? null;
     await this._clearPersistedTrading();
     await this.ctx.storage.put("session", this.session);
     await this._persistTradingSummary();
     this._broadcast({ type: "trading_cleared", trading: this._accountSnapshot() });
+  }
+
+  // Toggled live from the trading UI, independent of restart/clearTrading. The
+  // session-boundary tracker keeps running either way (see
+  // _maybeFlattenForSessionEnd), so flipping this on mid-session only starts
+  // flattening at the *next* boundary crossed, never retroactively.
+  async setAutoFlatten(enabled) {
+    if (!this.session) throw new Error("Session not initialized");
+    this.session.autoFlattenAtSessionEnd = enabled === true;
+    await this.ctx.storage.put("session", this.session);
+    this._broadcast({ type: "auto_flatten_changed", enabled: this.session.autoFlattenAtSessionEnd });
+  }
+
+  // Called once per released canonical bar (see _release / _releaseUntilBefore
+  // in replay-session.js) to detect the CME daily session roll (18:00 ET) and,
+  // when enabled, force-close any open position and cancel resting orders as of
+  // the last bar of the session that just ended — mirroring a real day-trading
+  // account that cannot carry a position through the close. closePrice/closeTs
+  // are the outgoing session's last bar (this.trading.lastPrice/lastBarTs),
+  // never the incoming bar: the fill must not see the next session's price.
+  async _maybeFlattenForSessionEnd(bar) {
+    const key = sessionDateAt(bar.t);
+    const previous = this.session.currentSessionDate;
+    if (previous && key !== previous && this.session.autoFlattenAtSessionEnd === true) {
+      const t = this._trading();
+      await this._forceCloseSessionEnd(t.lastPrice, t.lastBarTs);
+    }
+    this.session.currentSessionDate = key;
+  }
+
+  // Cancels every resting order (including bracket legs) and, if a position is
+  // open, closes it at closePrice with the same commission/slippage a market
+  // order pays (see _applyFill) — the account cannot walk into the next session
+  // carrying risk it never placed an order to carry.
+  async _forceCloseSessionEnd(closePrice, closeTs) {
+    const t = this._trading();
+    const cancelled = [];
+    if (t.pendingOrders.length) {
+      for (const order of t.pendingOrders) {
+        order.status = "cancelled";
+        cancelled.push({ ...order });
+      }
+      t.pendingOrders = [];
+    }
+
+    let fill = null;
+    if (t.positionQty !== 0 && Number.isFinite(Number(closePrice))) {
+      const order = {
+        id: crypto.randomUUID(),
+        sequence: t.nextOrderSequence++,
+        type: "market",
+        side: t.positionQty > 0 ? "sell" : "buy",
+        quantity: Math.abs(t.positionQty),
+        limit_price: null,
+        stop_price: null,
+        status: "working",
+        requested_at_ts: closeTs,
+        triggered_at_ts: null,
+        take_profit_price: null,
+        stop_loss_price: null,
+      };
+      await this._persistOrder(order);
+      fill = this._applyFill(order, Number(closePrice), closeTs, true);
+      t.fills.push(fill);
+      await this._persistFill(fill);
+      await this._persistOrderStatus(order.id, "filled");
+    }
+
+    if (!cancelled.length && !fill) return;
+    for (const order of cancelled) await this._persistOrderStatus(order.id, "cancelled");
+    await this._persistTradingSummary();
+    this._broadcast({ type: "session_end_flatten", cancelled_orders: cancelled, fill, trading: this._accountSnapshot() });
   }
 
   async play(value) {
@@ -430,6 +551,8 @@ export class ReplaySession extends DurableObject {
     await this._loadShard(this.session.shardIndex);
     const current = this.shard[this.session.barIndex];
     this.session.trading.lastPrice = current?.c ?? current?.o ?? null;
+    this.session.trading.lastBarTs = current?.t ?? null;
+    this.session.currentSessionDate = current ? sessionDateAt(current.t) : null;
     const warmup = await this._warmupBars(this.session.originShardIndex, this.session.originBarIndex, this.session.warmup);
     await this._clearPersistedTrading();
     await this._persist(true);
