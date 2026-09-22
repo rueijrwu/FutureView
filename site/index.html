@@ -18,7 +18,6 @@
       <label>Product<select id="product"><option value="MES">MES</option><option value="ES">ES</option></select></label>
       <label>Start (ET)<input id="start" type="datetime-local" step="300"></label>
       <input id="warmup" type="hidden" value="6900">
-      <label class="auto-flatten-field"><input id="auto-flatten" type="checkbox" checked><span>Auto-flatten at session end</span></label>
       <button id="start-btn" class="primary">Start Replay</button>
       <button id="random-btn" type="button">🎲 Random</button>
       <span id="range">The actual contract is selected automatically from prior-session volume.</span>
@@ -106,6 +105,7 @@
         <label class="trade-field" id="trade-sl-field" hidden><span>Stop loss</span><input id="trade-stop-loss" type="number" step="0.25" inputmode="decimal"></label>
         <button id="buy-btn" class="buy" type="button">Buy</button>
         <button id="sell-btn" class="sell" type="button">Sell</button>
+        <label class="trade-field auto-flatten-field"><input id="auto-flatten" type="checkbox" checked><span>Auto-flatten at session end</span></label>
         <button id="trades-toggle" type="button" aria-pressed="false">Trades</button>
       </div>
     </section>
