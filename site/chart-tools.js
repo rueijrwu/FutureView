@@ -119,10 +119,24 @@
       // the "click toolbar button, click chart, tool appears" flow below is ours.
       this.drawManager = new LCD.DrawingManager();
       this.drawManager.attach(chart, candles, container);
-      // DrawingManager derives its own points from the container rect, with the same
-      // missing price-axis offset - that is the path that wires per-anchor resize, so
-      // grabbing an endpoint missed it too. Point it at our corrected conversion.
-      this.drawManager.getPointFromEvent = (event) => this._containerPoint(event);
+      // DrawingManager.attach() also permanently subscribes its OWN
+      // click/mousedown/mousemove/mouseup listeners on this same chart/container,
+      // independent of anything we do - two independent input-handling systems
+      // racing on the same events. That's what caused 953736b (arming a new draw
+      // tool and clicking near an old, already-selected drawing's anchor got
+      // hijacked into dragging the OLD drawing instead of placing the new one) and
+      // required pausing/resuming those listeners around every trouble spot we
+      // found. Unsubscribing them right away and driving every interaction -
+      // select/deselect on click, anchor-drag on an existing selection - ourselves
+      // through DrawingManager's public methods (hitTest/hitTestAnchor/
+      // selectDrawing/deselectAll/updateAnchor, all pure data-model calls with no
+      // DOM coupling) removes the race structurally instead of pausing around each
+      // known spot. See _handleDrawClick (select/deselect) and _handleDragStart
+      // (anchor-drag priority over whole-shape move).
+      try { chart.unsubscribeClick(this.drawManager.handleClick); } catch {}
+      container.removeEventListener("mousedown", this.drawManager.handleMouseDown);
+      container.removeEventListener("mousemove", this.drawManager.handleMouseMove);
+      container.removeEventListener("mouseup", this.drawManager.handleMouseUp);
       this.registry = LCD.getToolRegistry();
       this.drawColor = THEME.overlay;
       this.activeDrawTool = null;
@@ -316,7 +330,6 @@
       if (wasArmed) return;
       this.activeDrawTool = tool;
       button.classList.add("armed");
-      this._pauseDrawManagerOwnHandlers();
       // Match TradingView: chart panning/scroll-zoom is suspended while a drawing tool
       // is armed, so a natural click-drag-release places the tool instead of silently
       // scrolling the chart out from under the cursor mid-draw.
@@ -344,44 +357,22 @@
       this.chart.applyOptions({ handleScroll: true, handleScale: true });
       this._clearPreview();
       this._closeEditor();
-      this._resumeDrawManagerOwnHandlers();
-    }
-
-    // DrawingManager.attach() subscribes its OWN click/mousedown/mousemove/mouseup
-    // listeners on the same chart and container we do, entirely independent of the
-    // this.activeDrawTool state above - it never learns a tool is armed, so its own
-    // hit-test-and-select-or-deselect (on every click) and anchor-drag-editing (on a
-    // mousedown within 8px of the CURRENTLY SELECTED drawing's anchor) keep running
-    // while the user is trying to place a brand new one. Concretely: select a drawing,
-    // arm a new tool, click near that old drawing's anchor to start the new shape there
-    // - DrawingManager's own mousedown handler (registered before ours, since it's wired
-    // in the constructor's drawManager.attach() rather than _bind()) claims that
-    // mousedown as an anchor-drag on the OLD drawing, and every subsequent mousemove
-    // silently relocates the OLD drawing's anchor to trail the cursor meant for the NEW
-    // one's preview - the new drawing does still get created on the completing click,
-    // but the old one is corrupted and the whole thing reads as "drawing failed to add".
-    // Pausing these for the duration the placement flow owns the gesture instead.
-    _pauseDrawManagerOwnHandlers() {
-      if (this._drawManagerPaused) return;
-      this._drawManagerPaused = true;
-      try { this.chart.unsubscribeClick(this.drawManager.handleClick); } catch {}
-      this.container.removeEventListener("mousedown", this.drawManager.handleMouseDown);
-      this.container.removeEventListener("mousemove", this.drawManager.handleMouseMove);
-      this.container.removeEventListener("mouseup", this.drawManager.handleMouseUp);
-    }
-
-    _resumeDrawManagerOwnHandlers() {
-      if (!this._drawManagerPaused) return;
-      this._drawManagerPaused = false;
-      try { this.chart.subscribeClick(this.drawManager.handleClick); } catch {}
-      this.container.addEventListener("mousedown", this.drawManager.handleMouseDown);
-      this.container.addEventListener("mousemove", this.drawManager.handleMouseMove);
-      this.container.addEventListener("mouseup", this.drawManager.handleMouseUp);
     }
 
     _handleDrawClick(param) {
       if (this.editorEl) return; // don't let a click behind the text editor start a new anchor
-      if (!this.activeDrawTool || !param.point) return;
+      if (!param.point) return;
+      // No tool armed: this click is a select/deselect on an existing drawing -
+      // DrawingManager used to own this via its own (now-unsubscribed) click
+      // listener; we drive it ourselves through the same public methods it used
+      // internally (hitTest/selectDrawing/deselectAll), so it's still one gesture,
+      // just through one input pipeline instead of two.
+      if (!this.activeDrawTool) {
+        const hit = this.drawManager.hitTest(param.point);
+        if (hit) this.drawManager.selectDrawing(hit.id);
+        else this.drawManager.deselectAll();
+        return;
+      }
 
       if (this.activeDrawTool === "text") {
         if (!param.time) return;
@@ -450,24 +441,6 @@
       return null;
     }
 
-    // Pane geometry, not element geometry: the drawing primitives measure everything
-    // in the same pane space their coordinate converters use.
-    _viewport() {
-      return {
-        width: this.chart.timeScale().width(),
-        height: this.container.clientHeight,
-        timeScale: {
-          coordinateToTime: (x) => this.chart.timeScale().coordinateToTime(x),
-          timeToCoordinate: (t) => this.chart.timeScale().timeToCoordinate(t),
-          logicalToCoordinate: (l) => this.chart.timeScale().logicalToCoordinate(l),
-        },
-        priceScale: {
-          coordinateToPrice: (y) => this.candles.coordinateToPrice(y),
-          priceToCoordinate: (p) => this.candles.priceToCoordinate(p),
-        },
-      };
-    }
-
     _handleDragStart(event) {
       if (event.button !== 0 || this.editorEl || this.activeDrawTool) return;
       const point = this._containerPoint(event);
@@ -479,14 +452,30 @@
       // gesture is left for the chart to handle.
       const paneWidth = this.chart.timeScale().width();
       if (point.x < 0 || point.x > paneWidth || point.y < 0 || point.y > this.container.clientHeight) return;
+
+      // A grab within 8px of an anchor on the already-selected drawing is a resize,
+      // not a whole-shape move - this used to be DrawingManager's own mousedown
+      // handler's job (it ran first, before ours, since attach() wired it in the
+      // constructor); now that we own the whole input pipeline, check for that
+      // case first and handle it ourselves via the same public hitTestAnchor +
+      // updateAnchor it used internally.
+      const anchorIndex = this.drawManager.hitTestAnchor(point);
+      if (anchorIndex !== null) {
+        const selected = this.drawManager.getSelectedDrawing();
+        if (selected && !selected.options.locked) {
+          event.preventDefault();
+          selected.setState("editing");
+          this.dragState = { mode: "anchor", drawing: selected, anchorIndex };
+          this._onDragMove = (e) => this._handleAnchorDragMove(e);
+          this._onDragEnd = () => this._handleAnchorDragEnd();
+          document.addEventListener("mousemove", this._onDragMove);
+          document.addEventListener("mouseup", this._onDragEnd);
+          return;
+        }
+      }
+
       const hit = this._hitTestMagnet(point);
       if (!hit) return;
-
-      // A grab within 8px of an anchor on an already-selected drawing is a resize -
-      // DrawingManager's own mousedown handler (wired in attach(), runs before this one)
-      // already started that drag, so back off instead of also translating the whole shape.
-      const isSelected = this.drawManager.getSelectedDrawing()?.id === hit.id;
-      if (isSelected && hit.hitTestAnchor(point, this._viewport()) !== null) return;
 
       // The move is carried in pixels and re-snapped to a bar on every step, rather
       // than shifting each anchor by a raw time delta. Bar times are not evenly
@@ -505,6 +494,7 @@
 
       event.preventDefault();
       this.dragState = {
+        mode: "move",
         drawing: hit,
         startPixels,
         startPoint: point,
@@ -539,6 +529,28 @@
       this.dragState = null;
       this.chart.applyOptions({ handleScroll: true, handleScale: true });
       this.container.style.cursor = "";
+      document.removeEventListener("mousemove", this._onDragMove);
+      document.removeEventListener("mouseup", this._onDragEnd);
+    }
+
+    // Endpoint resize: re-derives time/price straight from the pixel each step,
+    // same as DrawingManager's own (now-unsubscribed) handleMouseMove did - no
+    // pixel/bar re-snapping here since a dragged single anchor is allowed to sit
+    // off the bar grid (unlike the whole-shape move above, which re-snaps every
+    // anchor to stay hittable).
+    _handleAnchorDragMove(event) {
+      if (!this.dragState || this.dragState.mode !== "anchor") return;
+      const point = this._containerPoint(event);
+      const time = this.chart.timeScale().coordinateToTime(point.x);
+      const price = this.candles.coordinateToPrice(point.y);
+      if (time == null || price == null || !Number.isFinite(price)) return;
+      this.dragState.drawing.updateAnchor(this.dragState.anchorIndex, { time, price });
+    }
+
+    _handleAnchorDragEnd() {
+      if (!this.dragState || this.dragState.mode !== "anchor") return;
+      this.dragState.drawing.setState("selected");
+      this.dragState = null;
       document.removeEventListener("mousemove", this._onDragMove);
       document.removeEventListener("mouseup", this._onDragEnd);
     }

@@ -105,6 +105,10 @@ class FakeDrawing {
     this.anchors = anchors.map((a) => ({ ...a }));
   }
 
+  updateAnchor(index, anchor) {
+    this.anchors[index] = { ...anchor };
+  }
+
   setState(state) {
     this.state = state;
   }
@@ -215,6 +219,10 @@ class FakeDrawingManager {
     this.selectedId = id;
   }
 
+  deselectAll() {
+    this.selectedId = null;
+  }
+
   getSelectedDrawing() {
     return (this.selectedId && this.drawings.get(this.selectedId)) || null;
   }
@@ -224,6 +232,15 @@ class FakeDrawingManager {
       if (drawing.options.visible && drawing.testHit(point, this.viewport)) return drawing;
     }
     return null;
+  }
+
+  // The app now drives anchor-resize itself (chart-tools.js no longer lets the real
+  // DrawingManager's own mousedown/mousemove/mouseup listeners run at all), through
+  // this same public method the real DrawingManager exposes.
+  hitTestAnchor(point) {
+    const drawing = this.getSelectedDrawing();
+    if (!drawing || !this.viewport) return null;
+    return drawing.hitTestAnchor(point, this.viewport);
   }
 }
 
@@ -310,6 +327,25 @@ globalThis.window = {
 await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 const FutureViewChartTools = window.FutureViewChartTools;
 
+// Same pane-space geometry chart-tools.js used to build internally (its own
+// _viewport() helper was removed once DrawingManager stopped needing one handed to
+// it - it now drives its own hitTest/hitTestAnchor calls straight off chart/candles).
+function viewport(tools) {
+  return {
+    width: tools.chart.timeScale().width(),
+    height: tools.container.clientHeight,
+    timeScale: {
+      coordinateToTime: (x) => tools.chart.timeScale().coordinateToTime(x),
+      timeToCoordinate: (t) => tools.chart.timeScale().timeToCoordinate(t),
+      logicalToCoordinate: (l) => tools.chart.timeScale().logicalToCoordinate(l),
+    },
+    priceScale: {
+      coordinateToPrice: (y) => tools.candles.coordinateToPrice(y),
+      priceToCoordinate: (p) => tools.candles.priceToCoordinate(p),
+    },
+  };
+}
+
 function makeTools() {
   documentKeydown.length = 0;
   const container = makeElement();
@@ -326,7 +362,7 @@ function makeTools() {
     container,
     formatTime: (t) => String(t),
   });
-  tools.drawManager.viewport = tools._viewport();
+  tools.drawManager.viewport = viewport(tools);
   return tools;
 }
 
@@ -457,8 +493,8 @@ test("dragging a line across the session gap keeps every anchor on a real bar", 
   for (const anchor of drawing.anchors) {
     assert.ok(BAR_TIMES.includes(anchor.time), `anchor time ${anchor.time} is not a bar`);
   }
-  assert.ok(drawing.isRenderable(tools._viewport()), "a moved line must still be drawable");
-  assert.ok(drawing.testHit(midpointPane(drawing), tools._viewport()), "a moved line must still be hittable");
+  assert.ok(drawing.isRenderable(viewport(tools)), "a moved line must still be drawable");
+  assert.ok(drawing.testHit(midpointPane(drawing), viewport(tools)), "a moved line must still be hittable");
   assert.equal(BAR_TIMES.indexOf(drawing.anchors[0].time), 22, "the line should step three bars right");
   assert.equal(BAR_TIMES.indexOf(drawing.anchors[1].time), 25, "the line's span should survive the move");
 });
@@ -475,10 +511,10 @@ test("a drag that runs off the end of the data holds the last good shape", () =>
   tools._handleDragEnd();
 
   assert.deepEqual(drawing.anchors, before);
-  assert.ok(drawing.isRenderable(tools._viewport()));
+  assert.ok(drawing.isRenderable(viewport(tools)));
 });
 
-test("a grab on an endpoint of a selected line is left to the plugin's resize drag", () => {
+test("a grab on an endpoint of a selected line starts an anchor resize, not a whole-shape move", () => {
   const tools = makeTools();
   const id = addTrendLine(tools);
   const drawing = tools.drawManager.drawings.get(id);
@@ -486,15 +522,16 @@ test("a grab on an endpoint of a selected line is left to the plugin's resize dr
 
   const endpoint = { x: paneX(BAR_TIMES.indexOf(drawing.anchors[0].time)), y: priceToY(drawing.anchors[0].price) };
   tools._handleDragStart({ button: 0, ...clientAt(endpoint), preventDefault: () => {} });
-  assert.equal(tools.dragState, null, "an endpoint grab is a resize, not a move");
-});
+  assert.equal(tools.dragState?.mode, "anchor", "an endpoint grab on a selected drawing should start an anchor resize");
+  assert.equal(drawing.state, "editing");
 
-test("the plugin's own manager is given the same corrected conversion", () => {
-  const tools = makeTools();
-  assert.deepEqual(
-    tools.drawManager.getPointFromEvent({ clientX: CONTAINER_LEFT + LEFT_AXIS_WIDTH + 12, clientY: CONTAINER_TOP + 34 }),
-    { x: 12, y: 34 },
-  );
+  tools._handleAnchorDragMove(clientAt({ x: endpoint.x + 2 * BAR_SPACING, y: endpoint.y + 40 }));
+  tools._handleAnchorDragEnd();
+
+  assert.equal(drawing.state, "selected");
+  assert.equal(tools.dragState, null);
+  assert.equal(BAR_TIMES.indexOf(drawing.anchors[0].time), 17, "the dragged endpoint should follow the cursor, snapped only to the nearest bar the fake timeScale reports");
+  assert.equal(drawing.anchors[0].price, 4980, "the dragged endpoint's price should follow the cursor exactly");
 });
 
 test("Delete removes the selected drawing, but not while a field has focus", () => {
@@ -559,29 +596,50 @@ test("a drag inside the pane still moves an h-line", () => {
 });
 
 // DrawingManager.attach() subscribes its OWN click/mousedown/mousemove/mouseup listeners
-// on the same chart and container, entirely independent of activeDrawTool: it never
-// learns a tool is armed. Placing a new drawing near an already-selected old one used to
-// get its very first mousedown hijacked into an anchor-drag of the OLD drawing (its own
+// on the same chart and container, entirely independent of anything chart-tools.js does.
+// That used to mean placing a new drawing near an already-selected old one could get its
+// very first mousedown hijacked into an anchor-drag of the OLD drawing (the plugin's own
 // handleMouseDown only checks "is this within 8px of the *selected* drawing's anchor",
 // which the new placement's first click can easily satisfy) - the new drawing still got
 // created, but the old one silently moved, reading as "adding an annotation doesn't work".
-test("arming a draw tool pauses the plugin's own click/mousedown competition, and cancelling resumes it", () => {
+// Rather than pausing/resuming the plugin's own listeners around every trouble spot found
+// this way, chart-tools.js now unsubscribes them once, permanently, at construction, and
+// drives every interaction itself through the plugin's public data-model methods - so
+// there is exactly one thing listening to the chart/container at any time.
+test("DrawingManager's own click/mousedown/mousemove/mouseup listeners are unsubscribed for good at construction", () => {
+  const tools = makeTools();
+  assert.equal(tools.chart._clickSubs.includes(tools.drawManager.handleClick), false, "the plugin's click handler must never be subscribed");
+  assert.equal((tools.container.listeners.mousedown || []).includes(tools.drawManager.handleMouseDown), false);
+  assert.equal((tools.container.listeners.mousemove || []).includes(tools.drawManager.handleMouseMove), false);
+  assert.equal((tools.container.listeners.mouseup || []).includes(tools.drawManager.handleMouseUp), false);
+});
+
+test("arming a draw tool near an old selected drawing's anchor never risks the 953736b hijack, because the plugin's own mousedown never runs at all", () => {
   const tools = makeTools();
   const id = addTrendLine(tools);
   tools.drawManager.selectDrawing(id);
 
-  assert.equal(tools.chart._clickSubs.includes(tools.drawManager.handleClick), true, "the plugin's click handler starts subscribed");
-
   tools._armDrawTool("trend", { classList: { add() {}, remove() {} }, dataset: { tool: "trend" } });
-
-  assert.equal(tools.chart._clickSubs.includes(tools.drawManager.handleClick), false, "arming a tool must unsubscribe the plugin's own click handler");
-  tools.container.dispatch("mousedown", { clientX: CONTAINER_LEFT + LEFT_AXIS_WIDTH, clientY: CONTAINER_TOP });
-  assert.equal(tools.drawManager.handleMouseDownCalls, undefined, "the plugin's own mousedown handler must not run while placing a new drawing");
+  tools.container.dispatch("mousedown", { button: 0, clientX: CONTAINER_LEFT + LEFT_AXIS_WIDTH, clientY: CONTAINER_TOP, preventDefault: () => {} });
+  assert.equal(tools.drawManager.handleMouseDownCalls, undefined, "the plugin's own mousedown handler is never subscribed, armed or not");
 
   tools._cancelDrawing();
+  tools.container.dispatch("mousedown", { button: 0, clientX: CONTAINER_LEFT + LEFT_AXIS_WIDTH, clientY: CONTAINER_TOP, preventDefault: () => {} });
+  assert.equal(tools.drawManager.handleMouseDownCalls, undefined, "still never called after cancelling - there is nothing left to resume");
+});
 
-  assert.equal(tools.chart._clickSubs.includes(tools.drawManager.handleClick), true, "cancelling must resubscribe the plugin's click handler");
-  tools.container.dispatch("mousedown", { clientX: CONTAINER_LEFT + LEFT_AXIS_WIDTH, clientY: CONTAINER_TOP });
-  assert.equal(tools.drawManager.handleMouseDownCalls, 1, "the plugin's own mousedown handler should resume once nothing is being placed");
+test("clicking a drawing selects it; clicking empty space deselects it", () => {
+  const tools = makeTools();
+  const id = addTrendLine(tools);
+  const drawing = tools.drawManager.drawings.get(id);
+  const pane = midpointPane(drawing);
+  const click = tools.chart._clickSubs[0];
+  assert.equal(tools.chart._clickSubs.length, 1, "only chart-tools.js's own click handler should be subscribed");
+
+  click({ point: pane, time: BAR_TIMES[0] });
+  assert.equal(tools.drawManager.getSelectedDrawing()?.id, id, "clicking on the line should select it");
+
+  click({ point: { x: pane.x, y: pane.y + 150 }, time: BAR_TIMES[0] });
+  assert.equal(tools.drawManager.getSelectedDrawing(), null, "clicking empty space should deselect");
 });
 
