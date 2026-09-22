@@ -323,6 +323,7 @@ export default {
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             session_id: id,
+            user_id: user.id,
             product,
             contract: selection.contract,
             contract_selection: selection,
@@ -333,6 +334,61 @@ export default {
         const payload = await response.json();
         if (!response.ok) return json(request, payload, response.status);
         return json(request, { ...payload, session_id: id, websocket: `/api/replay/sessions/${id}/ws` }, 201);
+      } catch (error) {
+        return json(request, { error: String(error?.message ?? error) }, 400);
+      }
+    }
+
+    if (url.pathname === "/api/replay/saved" && request.method === "GET") {
+      const row = await env.DB.prepare(
+        "SELECT product, contract, cursor_ts, saved_at FROM saved_sessions WHERE user_id = ? LIMIT 1",
+      ).bind(user.id).first();
+      return json(request, row
+        ? { exists: true, product: row.product, contract: row.contract, cursor_ts: Number(row.cursor_ts), saved_at: row.saved_at }
+        : { exists: false });
+    }
+
+    if (url.pathname === "/api/replay/sessions/save" && request.method === "POST") {
+      try {
+        const body = await request.json();
+        const sessionId = String(body.session_id || "");
+        if (!sessionId) return json(request, { error: "session_id is required" }, 400);
+        const stub = env.REPLAY_SESSION.get(env.REPLAY_SESSION.idFromName(sessionId));
+        const response = await stub.fetch("https://session/save", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ user_id: user.id }),
+        });
+        const payload = await response.json();
+        return json(request, payload, response.status);
+      } catch (error) {
+        return json(request, { error: String(error?.message ?? error) }, 400);
+      }
+    }
+
+    if (url.pathname === "/api/replay/sessions/resume" && request.method === "POST") {
+      try {
+        const row = await env.DB.prepare("SELECT * FROM saved_sessions WHERE user_id = ? LIMIT 1").bind(user.id).first();
+        if (!row) return json(request, { error: "No saved session to resume" }, 404);
+        const id = crypto.randomUUID();
+        const stub = env.REPLAY_SESSION.get(env.REPLAY_SESSION.idFromName(id));
+        const response = await stub.fetch("https://session/init", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            session_id: id,
+            user_id: user.id,
+            product: row.product,
+            contract: row.contract,
+            contract_selection: row.contract_selection ? JSON.parse(row.contract_selection) : null,
+            start: new Date(Number(row.cursor_ts) * 1000).toISOString(),
+            warmup: row.warmup,
+            trading: JSON.parse(row.trading),
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) return json(request, payload, response.status);
+        return json(request, { ...payload, session_id: id, websocket: `/api/replay/sessions/${id}/ws`, resumed: true }, 201);
       } catch (error) {
         return json(request, { error: String(error?.message ?? error) }, 400);
       }

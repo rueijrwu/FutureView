@@ -59,6 +59,14 @@ export class ReplaySession extends DurableObject {
         return Response.json({ error: String(error?.message ?? error) }, { status: 400 });
       }
     }
+    if (url.pathname === "/save" && request.method === "POST") {
+      try {
+        const body = await request.json();
+        return Response.json(await this.save(body.user_id));
+      } catch (error) {
+        return Response.json({ error: String(error?.message ?? error) }, { status: 400 });
+      }
+    }
     if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
       if (!this.session) return new Response("Session not initialized", { status: 409 });
       await this._loadShard(this.session.shardIndex);
@@ -98,6 +106,27 @@ export class ReplaySession extends DurableObject {
   _trading() {
     if (!this.session.trading) this.session.trading = this._blankTrading();
     return this.session.trading;
+  }
+
+  // Rebuilds a trading record from a saved snapshot (see save()). lastPrice is
+  // never trusted from the snapshot: it is recomputed from the bar the resumed
+  // session actually lands on, same as a fresh init().
+  _hydrateTrading(saved, lastPrice) {
+    const blank = this._blankTrading(lastPrice);
+    if (!saved || typeof saved !== "object") return blank;
+    const num = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+    return {
+      positionQty: num(saved.positionQty, blank.positionQty),
+      avgPrice: num(saved.avgPrice, blank.avgPrice),
+      realizedPnl: num(saved.realizedPnl, blank.realizedPnl),
+      commission: num(saved.commission, blank.commission),
+      slippage: num(saved.slippage, blank.slippage),
+      pendingOrders: Array.isArray(saved.pendingOrders) ? saved.pendingOrders.map((order) => ({ ...order })) : [],
+      fills: Array.isArray(saved.fills) ? saved.fills.map((fill) => ({ ...fill })) : [],
+      nextSequence: num(saved.nextSequence, blank.nextSequence) || 1,
+      nextOrderSequence: num(saved.nextOrderSequence, blank.nextOrderSequence) || 1,
+      lastPrice,
+    };
   }
 
   async _manifest(product) {
@@ -161,7 +190,8 @@ export class ReplaySession extends DurableObject {
     this.shard = resolvedBars;
     this.shardKey = contract.shards[resolvedShard]?.key ?? null;
     const current = this.shard[this.session.barIndex];
-    this.session.trading.lastPrice = current?.c ?? current?.o ?? null;
+    const cursorPrice = current?.c ?? current?.o ?? null;
+    this.session.trading = body.trading ? this._hydrateTrading(body.trading, cursorPrice) : this._blankTrading(cursorPrice);
     await this._persist(true);
     await this._persistTradingSummary();
     const warmup = await this._warmupBars(this.session.originShardIndex, this.session.originBarIndex, this.session.warmup);
@@ -753,6 +783,59 @@ export class ReplaySession extends DurableObject {
     } catch (error) {
       console.error("D1 trading reset failed", error);
     }
+  }
+
+  // Persists the current replay cursor and full trading record as the single
+  // resumable save for a user, overwriting any prior save (ON CONFLICT). Only
+  // one slot is supported, per the product requirement.
+  async save(userId) {
+    if (!this.session || !this.shard) throw new Error("Session not initialized");
+    if (!this.env.DB) throw new Error("Saving is unavailable");
+    const ownerId = Number(userId) || null;
+    if (this.session.userId && ownerId && Number(this.session.userId) !== ownerId) {
+      throw new Error("Not authorized to save this session");
+    }
+    if (!ownerId && !this.session.userId) throw new Error("A user is required to save a session");
+    const bar = this.shard[this.session.barIndex];
+    const cursorTs = Number(bar?.t ?? this.session.startTs);
+    const t = this._trading();
+    const trading = {
+      positionQty: t.positionQty,
+      avgPrice: t.avgPrice,
+      realizedPnl: t.realizedPnl,
+      commission: t.commission,
+      slippage: t.slippage,
+      pendingOrders: t.pendingOrders.map((order) => ({ ...order })),
+      fills: t.fills.map((fill) => ({ ...fill })),
+      nextSequence: t.nextSequence,
+      nextOrderSequence: t.nextOrderSequence,
+    };
+    const savedAt = new Date().toISOString();
+    await this.env.DB.prepare(`
+      INSERT INTO saved_sessions
+        (user_id, product, contract, contract_selection, start_ts, cursor_ts, warmup, trading, saved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        product=excluded.product,
+        contract=excluded.contract,
+        contract_selection=excluded.contract_selection,
+        start_ts=excluded.start_ts,
+        cursor_ts=excluded.cursor_ts,
+        warmup=excluded.warmup,
+        trading=excluded.trading,
+        saved_at=excluded.saved_at
+    `).bind(
+      ownerId ?? this.session.userId,
+      this.session.product,
+      this.session.contract,
+      this.session.contractSelection ? JSON.stringify(this.session.contractSelection) : null,
+      this.session.startTs,
+      cursorTs,
+      this.session.warmup,
+      JSON.stringify(trading),
+      savedAt,
+    ).run();
+    return { ok: true, saved_at: savedAt, cursor_ts: cursorTs };
   }
 
   async _persist(updateD1) {
