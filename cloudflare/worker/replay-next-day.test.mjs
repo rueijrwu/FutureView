@@ -1,5 +1,5 @@
 // "Next Day" transport button: jumps the replay cursor to 9:30 AM ET (market
-// open) two trading days ahead, found in manifest.contract_selection.sessions
+// open) on the next trading day found in manifest.contract_selection.sessions
 // - skipping weekends/holidays since those never appear in that list - by
 // handing the target timestamp to the existing _releaseUntilBefore primitive
 // (replay-session.js), so auto-flatten and order fills still run bar by bar
@@ -59,17 +59,17 @@ function harness({ current, sessions, displayResolution = "1" }) {
   return { instance, broadcasts };
 }
 
-test("nextDay releases through 9:30 ET two sessions ahead and broadcasts completed + in-progress display bars", async () => {
+test("nextDay releases through 9:30 ET on the next session and broadcasts completed + in-progress display bars", async () => {
   const current = bar("2026-09-16T14:00:00-04:00", 5000);
   const { instance, broadcasts } = harness({
     current,
-    sessions: ["2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18"],
+    sessions: ["2026-09-15", "2026-09-16", "2026-09-17"],
     displayResolution: "5",
   });
 
-  const marketOpen = sec("2026-09-18T09:30:00-04:00");
+  const marketOpen = sec("2026-09-17T09:30:00-04:00");
   const releaseArgs = [];
-  const raw = minuteBars("2026-09-18T09:20:00-04:00", 11, 5010); // 09:20 through 09:30
+  const raw = minuteBars("2026-09-17T09:20:00-04:00", 11, 5010); // 09:20 through 09:30
   instance._releaseUntilBefore = async (targetExclusive, maxCount) => {
     releaseArgs.push({ targetExclusive, maxCount });
     return raw;
@@ -89,7 +89,7 @@ test("nextDay releases through 9:30 ET two sessions ahead and broadcasts complet
   // through :30 make two completed 5m candles (:20-:24, :25-:29) plus one
   // in-progress candle (:30 alone) - four bars total.
   assert.equal(batch.bars.length, 4);
-  assert.equal(batch.bars.at(-1).t, sec("2026-09-18T09:30:00-04:00"));
+  assert.equal(batch.bars.at(-1).t, sec("2026-09-17T09:30:00-04:00"));
   assert.equal(batch.bars.at(-1).display_resolution, "5");
 
   assert.ok(broadcasts.some((b) => b.type === "session_snapshot"));
@@ -99,7 +99,7 @@ test("nextDay skips a weekend by following the sessions list, not calendar days"
   const current = bar("2026-09-18T10:00:00-04:00", 5000); // Friday
   const { instance } = harness({
     current,
-    sessions: ["2026-09-17", "2026-09-18", "2026-09-21", "2026-09-22"], // Thu, Fri, Mon, Tue
+    sessions: ["2026-09-17", "2026-09-18", "2026-09-21"], // Thu, Fri, Mon
   });
 
   let target = null;
@@ -110,25 +110,7 @@ test("nextDay skips a weekend by following the sessions list, not calendar days"
 
   await instance.nextDay();
 
-  assert.equal(target, sec("2026-09-22T09:30:00-04:00") + 60, "two trading days from Friday is Tuesday, skipping the weekend");
-});
-
-test("nextDay falls back to the single remaining trading day when there's no second one", async () => {
-  const current = bar("2026-09-18T10:00:00-04:00", 5000);
-  const { instance } = harness({
-    current,
-    sessions: ["2026-09-17", "2026-09-18", "2026-09-21"],
-  });
-
-  let target = null;
-  instance._releaseUntilBefore = async (targetExclusive) => {
-    target = targetExclusive;
-    return [];
-  };
-
-  await instance.nextDay();
-
-  assert.equal(target, sec("2026-09-21T09:30:00-04:00") + 60, "only one trading day left, so it jumps there instead of no-op");
+  assert.equal(target, sec("2026-09-21T09:30:00-04:00") + 60, "jumps to Monday's open, not Saturday");
 });
 
 test("nextDay is a no-op when the manifest has no further trading day", async () => {
@@ -149,7 +131,7 @@ test("nextDay is a no-op when the manifest has no further trading day", async ()
 
 test("nextDay refuses to run while playing, same guard as stepFrame", async () => {
   const current = bar("2026-09-16T14:00:00-04:00", 5000);
-  const { instance } = harness({ current, sessions: ["2026-09-16", "2026-09-17", "2026-09-18"] });
+  const { instance } = harness({ current, sessions: ["2026-09-16", "2026-09-17"] });
   instance.session.state = "PLAYING";
 
   await assert.rejects(() => instance.nextDay(), /Pause before jumping to the next day/);
