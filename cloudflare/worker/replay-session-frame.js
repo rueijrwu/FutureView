@@ -26,6 +26,7 @@ export class ReplaySession extends BaseReplaySession {
 
     try {
       if (command.type === "step_frame") await this.stepFrame(command.timeframe);
+      else if (command.type === "next_day") await this.nextDay();
       else if (command.type === "set_speed") await this.setSpeed(command.speed);
       else if (command.type === "set_timeframe") await this.setTimeframe(command.timeframe, command.history_range);
       else if (command.type === "set_history_range") await this.setHistoryRange(command.history_range);

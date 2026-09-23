@@ -413,4 +413,52 @@ export class ReplaySession extends FrameReplaySession {
     await this._persist(false);
     this._broadcast(this.snapshot());
   }
+
+  // Jumps the replay cursor to 9:30 AM ET (market open) on the next trading
+  // day found in the manifest's session list - not simply "tomorrow", since
+  // that would land on a weekend or holiday with no data. `tradingDayDate`
+  // buckets on the same 18:00 ET roll that built that session list
+  // (`manifest.contract_selection.sessions`), so a lexical string comparison
+  // finds the correct next entry. Reuses `_releaseUntilBefore`
+  // (replay-session.js) so auto-flatten and order fills still run bar by bar
+  // across the jump, exactly as a normal play/step would.
+  async nextDay() {
+    if (!this.session) throw new Error("Session not initialized");
+    if (this.session.state === "PLAYING") throw new Error("Pause before jumping to the next day");
+
+    const current = await this._ensureReplayCursor();
+    await this._ensureDisplayAggregate();
+
+    const manifest = await this._manifest();
+    const sessions = (manifest.contract_selection?.sessions ?? [])
+      .map((x) => (typeof x === "string" ? x : x?.session))
+      .filter(Boolean)
+      .sort();
+
+    const currentDay = tradingDayDate(current.t);
+    const currentDayKey = `${currentDay.getUTCFullYear()}-${String(currentDay.getUTCMonth() + 1).padStart(2, "0")}-${String(currentDay.getUTCDate()).padStart(2, "0")}`;
+    const nextDayKey = sessions.find((day) => day > currentDayKey);
+    if (!nextDayKey) {
+      await this._persist(false);
+      this._broadcast(this.snapshot());
+      return;
+    }
+
+    const [year, month, day] = nextDayKey.split("-").map(Number);
+    const marketOpen = wallToEpochSeconds({ year, month, day, hour: 9, minute: 30, second: 0 });
+    const targetExclusive = marketOpen + 60; // include the 9:30 bar itself
+
+    const resolution = String(this.displayResolution || "1");
+    const released = await this._releaseUntilBefore(targetExclusive, 3000);
+    if (released.length) {
+      this.session.cursorTs = Number(released.at(-1).t);
+      const displayBars = this._consumeCanonicalBars(released, resolution);
+      if (resolution !== "1" && this.displayAggregate) {
+        displayBars.push({ ...this.displayAggregate, display_resolution: resolution });
+      }
+      this._broadcastDisplayBars(displayBars, resolution);
+    }
+    await this._persist(false);
+    this._broadcast(this.snapshot());
+  }
 }
