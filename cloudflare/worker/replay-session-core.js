@@ -12,14 +12,18 @@ const PRODUCT_SPECS = {
 const ORDER_TYPES = new Set(["market", "limit", "stop", "stop_limit"]);
 const ORDER_SIDES = new Set(["buy", "sell"]);
 
-// Mirrors resolver.py session_date (SESSION_ROLL_HOUR_ET = 18): which trading
-// session a bar belongs to. This is deliberately the 18:00 roll, not the 17:00
-// requested_session_date used in main.js to resolve a start time — see
-// replay-session-boundary.test.mjs for why the two must not be conflated.
+// The auto-flatten boundary: 4:00 PM ET, the RTH equity-index close a real
+// day-trading account closes out at — NOT the same as either of main.js's two
+// session questions (17:00 requested_session_date, 18:00 session_date), which
+// answer "what contract/session does this bar belong to" for data selection,
+// not "when does a day-trading account have to be flat." Conflating this with
+// the CME 18:00 session roll was the original bug: Ruei plays/steps through
+// 4pm ET expecting a flatten and nothing happens until two hours later.
 // Bucketed by UTC hour and cached, same technique (and same reasoning) as
 // historySessionDate in replay-session-display-fast.js: this runs once per
 // released bar, including inside 2000-bar timestamp-bounded releases.
-const SESSION_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+const FLATTEN_HOUR_ET = 16;
+const FLATTEN_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: "America/New_York",
   year: "numeric",
   month: "2-digit",
@@ -27,28 +31,28 @@ const SESSION_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   hour: "2-digit",
   hourCycle: "h23",
 });
-const SESSION_DATE_CACHE = new Map();
-const SESSION_DATE_CACHE_MAX = 1 << 16;
+const FLATTEN_DATE_CACHE = new Map();
+const FLATTEN_DATE_CACHE_MAX = 1 << 16;
 
-function sessionDateAtUncached(seconds) {
+function flattenPeriodAtUncached(seconds) {
   const parts = Object.fromEntries(
-    SESSION_DATE_FORMATTER.formatToParts(new Date(Number(seconds) * 1000))
+    FLATTEN_DATE_FORMATTER.formatToParts(new Date(Number(seconds) * 1000))
       .filter((part) => part.type !== "literal")
       .map((part) => [part.type, Number(part.value)]),
   );
   const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
-  if (parts.hour >= 18) day.setUTCDate(day.getUTCDate() + 1);
+  if (parts.hour >= FLATTEN_HOUR_ET) day.setUTCDate(day.getUTCDate() + 1);
   return day.toISOString().slice(0, 10);
 }
 
-function sessionDateAt(seconds) {
+function flattenPeriodAt(seconds) {
   const hour = Math.floor(Number(seconds) / 3600);
-  if (!Number.isFinite(hour)) return sessionDateAtUncached(seconds);
-  const cached = SESSION_DATE_CACHE.get(hour);
+  if (!Number.isFinite(hour)) return flattenPeriodAtUncached(seconds);
+  const cached = FLATTEN_DATE_CACHE.get(hour);
   if (cached !== undefined) return cached;
-  const value = sessionDateAtUncached(seconds);
-  if (SESSION_DATE_CACHE.size >= SESSION_DATE_CACHE_MAX) SESSION_DATE_CACHE.clear();
-  SESSION_DATE_CACHE.set(hour, value);
+  const value = flattenPeriodAtUncached(seconds);
+  if (FLATTEN_DATE_CACHE.size >= FLATTEN_DATE_CACHE_MAX) FLATTEN_DATE_CACHE.clear();
+  FLATTEN_DATE_CACHE.set(hour, value);
   return value;
 }
 // Stops are evaluated before limits inside one canonical bar. Both can trigger on
@@ -229,7 +233,7 @@ export class ReplaySession extends DurableObject {
       startTs: start,
       trading: this._blankTrading(),
       autoFlattenAtSessionEnd: body.auto_flatten_at_session_end !== false,
-      currentSessionDate: null,
+      currentFlattenPeriod: null,
     };
     this.shard = resolvedBars;
     this.shardKey = contract.shards[resolvedShard]?.key ?? null;
@@ -237,7 +241,7 @@ export class ReplaySession extends DurableObject {
     const cursorPrice = current?.c ?? current?.o ?? null;
     this.session.trading = body.trading ? this._hydrateTrading(body.trading, cursorPrice) : this._blankTrading(cursorPrice);
     this.session.trading.lastBarTs = current?.t ?? null;
-    this.session.currentSessionDate = current ? sessionDateAt(current.t) : null;
+    this.session.currentFlattenPeriod = current ? flattenPeriodAt(current.t) : null;
     await this._persist(true);
     await this._persistTradingSummary();
     const warmup = await this._warmupBars(this.session.originShardIndex, this.session.originBarIndex, this.session.warmup);
@@ -442,20 +446,20 @@ export class ReplaySession extends DurableObject {
   }
 
   // Called once per released canonical bar (see _release / _releaseUntilBefore
-  // in replay-session.js) to detect the CME daily session roll (18:00 ET) and,
-  // when enabled, force-close any open position and cancel resting orders as of
-  // the last bar of the session that just ended — mirroring a real day-trading
-  // account that cannot carry a position through the close. closePrice/closeTs
-  // are the outgoing session's last bar (this.trading.lastPrice/lastBarTs),
-  // never the incoming bar: the fill must not see the next session's price.
+  // in replay-session.js) to detect the 4:00 PM ET day-trading close and, when
+  // enabled, force-close any open position and cancel resting orders as of the
+  // last bar before the close — mirroring a real day-trading account that
+  // cannot carry a position past it. closePrice/closeTs are the last bar
+  // before the close (this.trading.lastPrice/lastBarTs), never the incoming
+  // bar: the fill must not see a price from after the close.
   async _maybeFlattenForSessionEnd(bar) {
-    const key = sessionDateAt(bar.t);
-    const previous = this.session.currentSessionDate;
+    const key = flattenPeriodAt(bar.t);
+    const previous = this.session.currentFlattenPeriod;
     if (previous && key !== previous && this.session.autoFlattenAtSessionEnd === true) {
       const t = this._trading();
       await this._forceCloseSessionEnd(t.lastPrice, t.lastBarTs);
     }
-    this.session.currentSessionDate = key;
+    this.session.currentFlattenPeriod = key;
   }
 
   // Cancels every resting order (including bracket legs) and, if a position is
@@ -552,7 +556,7 @@ export class ReplaySession extends DurableObject {
     const current = this.shard[this.session.barIndex];
     this.session.trading.lastPrice = current?.c ?? current?.o ?? null;
     this.session.trading.lastBarTs = current?.t ?? null;
-    this.session.currentSessionDate = current ? sessionDateAt(current.t) : null;
+    this.session.currentFlattenPeriod = current ? flattenPeriodAt(current.t) : null;
     const warmup = await this._warmupBars(this.session.originShardIndex, this.session.originBarIndex, this.session.warmup);
     await this._clearPersistedTrading();
     await this._persist(true);

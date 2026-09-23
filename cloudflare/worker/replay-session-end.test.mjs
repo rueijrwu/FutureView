@@ -1,8 +1,8 @@
-// Auto-flatten at the daily session end: forces a market close on any open
-// position and cancels resting orders (including bracket legs) at the CME
-// 18:00 ET session roll, mirroring a real day-trading account that cannot
-// carry risk through the close. Selectable per session (default on) via
-// session.autoFlattenAtSessionEnd / the "set_auto_flatten" ws command.
+// Auto-flatten at the daily close: forces a market close on any open
+// position and cancels resting orders (including bracket legs) at the
+// 4:00 PM ET RTH equity-index close, mirroring a real day-trading account
+// that cannot carry risk through the close. Selectable per session (default
+// on) via session.autoFlattenAtSessionEnd / the "set_auto_flatten" ws command.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -20,11 +20,11 @@ releaseSource = releaseSource.replace("./replay-session-core.js", coreModuleUrl)
 const releaseModuleUrl = `data:text/javascript;base64,${Buffer.from(releaseSource).toString("base64")}`;
 const { ReplaySession } = await import(releaseModuleUrl);
 
-// EDT: 18:00 ET session roll is 22:00 UTC. 2026-09-16 has no DST edge nearby.
+// EDT: 16:00 ET (4:00 PM) close is 20:00 UTC. 2026-09-16 has no DST edge nearby.
 const sec = (iso) => Math.floor(Date.parse(iso) / 1000);
-const DAY1_LAST = sec("2026-09-16T17:59:00-04:00"); // last minute of day 1's session
-const DAY2_ROLL = sec("2026-09-16T18:00:00-04:00"); // first bar of day 2's session
-const DAY2_NEXT = sec("2026-09-16T18:01:00-04:00");
+const DAY1_LAST = sec("2026-09-16T15:59:00-04:00"); // last minute before the close
+const DAY2_ROLL = sec("2026-09-16T16:00:00-04:00"); // first bar past the close
+const DAY2_NEXT = sec("2026-09-16T16:01:00-04:00");
 
 function bar(t, o, h, l, c) {
   return { t, o, h, l, c, v: 100 };
@@ -54,7 +54,7 @@ function makeCoreSession({ positionQty = 0, avgPrice = 0, pendingOrders = [], la
     barIndex: 0,
     trading,
     autoFlattenAtSessionEnd: true,
-    currentSessionDate: "2026-09-16",
+    currentFlattenPeriod: "2026-09-16",
   };
   instance.env = {};
   instance.ctx = { storage: { put: async () => {} } };
@@ -115,33 +115,33 @@ test("force-close is a no-op broadcast-wise when flat with nothing resting", asy
 
 // --- _maybeFlattenForSessionEnd (boundary detection) --------------------------
 
-test("crossing the 18:00 ET session roll triggers a flatten when enabled", async () => {
+test("crossing the 4:00 PM ET close triggers a flatten when enabled", async () => {
   const { instance, trading } = makeCoreSession({ positionQty: 3, avgPrice: 5000, lastPrice: 5005 });
   trading.lastBarTs = DAY1_LAST;
   await instance._maybeFlattenForSessionEnd(bar(DAY2_ROLL, 5010, 5015, 5005, 5010));
 
-  assert.equal(trading.positionQty, 0, "position force-closed at the outgoing session's last price");
-  assert.equal(trading.fills[0].fill_price, 5005, "closed at the prior bar's lastPrice, not the new session's bar");
-  assert.equal(instance.session.currentSessionDate, "2026-09-17");
+  assert.equal(trading.positionQty, 0, "position force-closed at the pre-close last price");
+  assert.equal(trading.fills[0].fill_price, 5005, "closed at the prior bar's lastPrice, not the post-close bar");
+  assert.equal(instance.session.currentFlattenPeriod, "2026-09-17");
 });
 
-test("staying inside the same session never force-closes", async () => {
+test("staying before the close never force-closes", async () => {
   const { instance, trading } = makeCoreSession({ positionQty: 3, avgPrice: 5000, lastPrice: 5005 });
   await instance._maybeFlattenForSessionEnd(bar(DAY1_LAST, 5006, 5008, 5004, 5005));
 
   assert.equal(trading.positionQty, 3);
   assert.equal(trading.fills.length, 0);
-  assert.equal(instance.session.currentSessionDate, "2026-09-16");
+  assert.equal(instance.session.currentFlattenPeriod, "2026-09-16");
 });
 
-test("auto-flatten disabled carries the position through the roll", async () => {
+test("auto-flatten disabled carries the position through the close", async () => {
   const { instance, trading } = makeCoreSession({ positionQty: 3, avgPrice: 5000, lastPrice: 5005 });
   instance.session.autoFlattenAtSessionEnd = false;
   await instance._maybeFlattenForSessionEnd(bar(DAY2_ROLL, 5010, 5015, 5005, 5010));
 
   assert.equal(trading.positionQty, 3, "no forced close while the toggle is off");
   assert.equal(trading.fills.length, 0);
-  assert.equal(instance.session.currentSessionDate, "2026-09-17", "the tracker still advances so re-enabling only affects the next boundary");
+  assert.equal(instance.session.currentFlattenPeriod, "2026-09-17", "the tracker still advances so re-enabling only affects the next boundary");
 });
 
 test("setAutoFlatten toggles the flag and broadcasts it", async () => {
@@ -181,7 +181,7 @@ function makeReleaseHarness({ bars, autoFlattenAtSessionEnd = true, positionQty 
     state: "PAUSED",
     trading,
     autoFlattenAtSessionEnd,
-    currentSessionDate: "2026-09-16",
+    currentFlattenPeriod: "2026-09-16",
   };
   instance.shard = bars;
   instance.shardKey = "s0";
@@ -195,7 +195,7 @@ function makeReleaseHarness({ bars, autoFlattenAtSessionEnd = true, positionQty 
   return { instance, trading };
 }
 
-test("_release force-closes exactly on the bar that crosses the session roll", async () => {
+test("_release force-closes exactly on the bar that crosses the close", async () => {
   const bars = [
     bar(DAY1_LAST - 60, 5000, 5005, 4995, 5001),
     bar(DAY1_LAST, 5001, 5006, 4996, 5005),
@@ -212,7 +212,7 @@ test("_release force-closes exactly on the bar that crosses the session roll", a
   assert.equal(trading.fills[0].filled_at_ts, DAY1_LAST);
 });
 
-test("_release leaves the position open across the roll when disabled", async () => {
+test("_release leaves the position open across the close when disabled", async () => {
   const bars = [
     bar(DAY1_LAST, 5001, 5006, 4996, 5005),
     bar(DAY2_ROLL, 5010, 5015, 5005, 5012),
@@ -225,7 +225,7 @@ test("_release leaves the position open across the roll when disabled", async ()
   assert.equal(trading.fills.length, 0);
 });
 
-test("_releaseUntilBefore also force-closes on the session roll", async () => {
+test("_releaseUntilBefore also force-closes on the close", async () => {
   const bars = [
     bar(DAY1_LAST - 60, 5000, 5005, 4995, 5001),
     bar(DAY1_LAST, 5001, 5006, 4996, 5005),

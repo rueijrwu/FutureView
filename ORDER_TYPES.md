@@ -123,18 +123,20 @@ Orders are persisted to D1 in `trade_orders` (migrations `0006_order_types.sql` 
 `0007_bracket_orders.sql`), and each fill records the `order_id` and `order_type` that
 produced it, plus `bracket_role` when the fill came from a bracket leg.
 
-## Auto-flatten at session end
+## Auto-flatten at 4:00 PM ET
 
-Selectable per session ("Auto-flatten at session end" checkbox, on by default; live-toggled
-mid-session with no restart, via the `set_auto_flatten` websocket command). When on, the
-moment the replay crosses the CME daily session roll (18:00 ET — `SESSION_ROLL_HOUR_ET` in
-`resolver.py`, mirrored as `sessionDateAt` in `replay-session-core.js`), any open position is
-closed at a market order against the outgoing session's last traded price, paying the same
-commission and one tick of slippage as any other market fill, and every resting order
-(entries and bracket legs alike) is cancelled — never carried into the next day's session.
+Selectable per session ("Auto-flatten" checkbox, on by default; live-toggled mid-session with
+no restart, via the `set_auto_flatten` websocket command). When on, the moment the replay
+crosses 4:00 PM ET (`FLATTEN_HOUR_ET` / `flattenPeriodAt` in `replay-session-core.js`) — the
+RTH equity-index close, deliberately distinct from both of main.js's session-boundary
+questions (17:00 `requested_session_date`, 18:00 `session_date`), which answer what
+contract/session a bar belongs to, not when a day-trading account must be flat — any open
+position is closed at a market order against the last traded price before the close, paying
+the same commission and one tick of slippage as any other market fill, and every resting
+order (entries and bracket legs alike) is cancelled — never carried into the next day.
 This also closes the known reduce-only gap for the forced case: a resting bracket's legs are
 cancelled along with everything else, not left to trade against a position that no longer
-exists. When off, positions and resting orders carry through the roll exactly as before.
+exists. When off, positions and resting orders carry through the close exactly as before.
 
 ## Not implemented
 
