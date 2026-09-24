@@ -338,7 +338,7 @@
       try{
         const x=await api("/api/replay/sessions/resume",{method:"POST"});
         if(!x)return;
-        sessionId=x.session_id;wsSynced=false;lastTrading=x.trading||null;reset(x.warmup||[]);update(x,true);renderTrading();
+        sessionId=x.session_id;wsSynced=false;lastTrading=x.trading||null;reset(x.warmup||[]);chartTools.loadDrawings(x.drawings||[]);update(x,true);renderTrading();
         savedSessionLoaded=true;
         connect(x.websocket);
       }catch(e){error(e.message)}
@@ -348,7 +348,7 @@
     if(!sessionId){error("Start a replay session before saving");return}
     btn.disabled=true;
     try{
-      await api("/api/replay/sessions/save",{method:"POST",body:JSON.stringify({session_id:sessionId})});
+      await api("/api/replay/sessions/save",{method:"POST",body:JSON.stringify({session_id:sessionId,drawings:chartTools.serializeDrawings()})});
       hasSavedSession=true;savedSessionLoaded=true;
     }catch(e){error(e.message)}
     finally{syncControls()}

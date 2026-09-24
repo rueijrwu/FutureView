@@ -142,6 +142,7 @@
       this.activeDrawTool = null;
       this.interactionHandler = null;
       this.drawingIds = [];
+      this.drawingsById = new Map();
       this.previewId = null;
       this.menuEl = null;
       this.editorEl = null;
@@ -406,6 +407,7 @@
       const drawing = this.registry.createDrawing(registryType, id, anchors, style, options);
       this.drawManager.addDrawing(drawing);
       this.drawingIds.push(id);
+      this.drawingsById.set(id, drawing);
       return id;
     }
 
@@ -570,17 +572,56 @@
 
     _undoDrawing() {
       const id = this.drawingIds.pop();
-      if (id) this.drawManager.removeDrawing(id);
+      if (id) { this.drawManager.removeDrawing(id); this.drawingsById.delete(id); }
     }
 
     _clearDrawings() {
       this.drawManager.clearAll();
       this.drawingIds = [];
+      this.drawingsById.clear();
     }
 
     _removeDrawingById(id) {
       this.drawManager.removeDrawing(id);
       this.drawingIds = this.drawingIds.filter((existing) => existing !== id);
+      this.drawingsById.delete(id);
+    }
+
+    // ---- Save/Resume: annotations are a chart-only concern, so serializing and
+    // restoring them lives entirely here rather than in the replay session state
+    // the worker owns. this.drawingsById holds the live drawing objects (kept in
+    // sync by every mutation above), so a right-click style/option edit made
+    // in-place on a drawing is automatically reflected here without extra
+    // bookkeeping. ----
+    serializeDrawings() {
+      return this.drawingIds
+        .map((id) => this.drawingsById.get(id))
+        .filter(Boolean)
+        .map((drawing) => ({
+          type: drawing.type,
+          anchors: drawing.anchors.map((a) => ({ time: a.time, price: a.price })),
+          style: { ...drawing.style },
+          textOptions: drawing.textOptions ? { ...drawing.textOptions } : undefined,
+          rectangleOptions: drawing.rectangleOptions ? { ...drawing.rectangleOptions } : undefined,
+          fibOptions: drawing.fibOptions ? { ...drawing.fibOptions } : undefined,
+        }));
+    }
+
+    loadDrawings(saved) {
+      this._clearDrawings();
+      for (const item of saved || []) {
+        if (!item || typeof item.type !== "string" || !Array.isArray(item.anchors) || !item.anchors.length) continue;
+        if (!this.registry.get(item.type)) continue;
+        const id = `fv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+        const anchors = item.anchors.map((a) => ({ time: Number(a.time), price: Number(a.price) }));
+        const drawing = this.registry.createDrawing(item.type, id, anchors, { ...item.style }, {});
+        if (item.textOptions && typeof drawing.setTextOptions === "function") drawing.setTextOptions(item.textOptions);
+        if (item.rectangleOptions && typeof drawing.setRectangleOptions === "function") drawing.setRectangleOptions(item.rectangleOptions);
+        if (item.fibOptions && typeof drawing.setFibOptions === "function") drawing.setFibOptions(item.fibOptions);
+        this.drawManager.addDrawing(drawing);
+        this.drawingIds.push(id);
+        this.drawingsById.set(id, drawing);
+      }
     }
 
     // ---- Right-click menu: makes a drawing (or an indicator line) feel like an

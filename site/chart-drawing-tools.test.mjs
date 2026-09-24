@@ -643,3 +643,57 @@ test("clicking a drawing selects it; clicking empty space deselects it", () => {
   assert.equal(tools.drawManager.getSelectedDrawing(), null, "clicking empty space should deselect");
 });
 
+// ---- Save/Resume: annotations round-trip through serializeDrawings()/loadDrawings() ----
+
+test("serializeDrawings captures every live drawing's type, anchors and style", () => {
+  const tools = makeTools();
+  addTrendLine(tools, 5, 12);
+  addHLine(tools, 5010);
+
+  const saved = tools.serializeDrawings();
+
+  assert.equal(saved.length, 2);
+  assert.equal(saved[0].type, "trend-line");
+  assert.deepEqual(saved[0].anchors, [
+    { time: BAR_TIMES[5], price: yToPrice(priceToY(5000)) },
+    { time: BAR_TIMES[12], price: yToPrice(priceToY(5020)) },
+  ]);
+  assert.equal(saved[1].type, "horizontal-line");
+  assert.equal(saved[1].anchors[0].price, 5010);
+});
+
+test("loadDrawings replaces whatever is on the chart with the saved set", () => {
+  const tools = makeTools();
+  addTrendLine(tools);
+  assert.equal(tools.drawManager.drawings.size, 1);
+
+  tools.loadDrawings([
+    { type: "trend-line", anchors: [{ time: BAR_TIMES[1], price: 5001 }, { time: BAR_TIMES[3], price: 5003 }], style: { lineColor: "#123456", lineWidth: 3 } },
+    { type: "horizontal-line", anchors: [{ time: BAR_TIMES[2], price: 5050 }], style: { lineColor: "#abcdef" } },
+  ]);
+
+  assert.equal(tools.drawManager.drawings.size, 2, "the old drawing should be gone, replaced by the two loaded ones");
+  const restored = [...tools.drawManager.drawings.values()];
+  assert.deepEqual(restored.map((d) => d.type).sort(), ["horizontal-line", "trend-line"]);
+  const line = restored.find((d) => d.type === "trend-line");
+  assert.equal(line.style.lineColor, "#123456");
+  assert.equal(line.style.lineWidth, 3);
+  assert.equal(tools.drawingIds.length, 2, "drawingIds bookkeeping must track the restored drawings, not the discarded one");
+});
+
+test("save then load round-trips a drawing's anchors and style unchanged", () => {
+  const tools = makeTools();
+  addHLine(tools, 4995);
+  const original = tools.serializeDrawings();
+
+  tools.loadDrawings(original);
+
+  assert.deepEqual(tools.serializeDrawings().map(({ ...rest }) => rest), original);
+});
+
+test("loadDrawings ignores malformed entries instead of throwing", () => {
+  const tools = makeTools();
+  tools.loadDrawings([null, {}, { type: "trend-line" }, { type: "trend-line", anchors: [] }]);
+  assert.equal(tools.drawManager.drawings.size, 0);
+});
+

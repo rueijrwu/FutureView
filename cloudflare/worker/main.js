@@ -358,7 +358,7 @@ export default {
         const response = await stub.fetch("https://session/save", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ user_id: user.id }),
+          body: JSON.stringify({ user_id: user.id, drawings: Array.isArray(body.drawings) ? body.drawings : [] }),
         });
         const payload = await response.json();
         return json(request, payload, response.status);
@@ -389,7 +389,8 @@ export default {
         });
         const payload = await response.json();
         if (!response.ok) return json(request, payload, response.status);
-        return json(request, { ...payload, session_id: id, websocket: `/api/replay/sessions/${id}/ws`, resumed: true }, 201);
+        const drawings = row.drawings ? JSON.parse(row.drawings) : [];
+        return json(request, { ...payload, session_id: id, websocket: `/api/replay/sessions/${id}/ws`, resumed: true, drawings }, 201);
       } catch (error) {
         return json(request, { error: String(error?.message ?? error) }, 400);
       }

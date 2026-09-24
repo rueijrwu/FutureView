@@ -106,7 +106,7 @@ export class ReplaySession extends DurableObject {
     if (url.pathname === "/save" && request.method === "POST") {
       try {
         const body = await request.json();
-        return Response.json(await this.save(body.user_id));
+        return Response.json(await this.save(body.user_id, body.drawings));
       } catch (error) {
         return Response.json({ error: String(error?.message ?? error) }, { status: 400 });
       }
@@ -915,7 +915,10 @@ export class ReplaySession extends DurableObject {
   // Persists the current replay cursor and full trading record as the single
   // resumable save for a user, overwriting any prior save (ON CONFLICT). Only
   // one slot is supported, per the product requirement.
-  async save(userId) {
+  // drawings is an opaque array of chart-annotation descriptors produced and
+  // consumed entirely by the frontend (site/chart-tools.js serializeDrawings()/
+  // loadDrawings()) - the DO stores and returns it as-is without interpreting it.
+  async save(userId, drawings) {
     if (!this.session || !this.shard) throw new Error("Session not initialized");
     if (!this.env.DB) throw new Error("Saving is unavailable");
     const ownerId = Number(userId) || null;
@@ -940,8 +943,8 @@ export class ReplaySession extends DurableObject {
     const savedAt = new Date().toISOString();
     await this.env.DB.prepare(`
       INSERT INTO saved_sessions
-        (user_id, product, contract, contract_selection, start_ts, cursor_ts, warmup, trading, saved_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (user_id, product, contract, contract_selection, start_ts, cursor_ts, warmup, trading, drawings, saved_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(user_id) DO UPDATE SET
         product=excluded.product,
         contract=excluded.contract,
@@ -950,6 +953,7 @@ export class ReplaySession extends DurableObject {
         cursor_ts=excluded.cursor_ts,
         warmup=excluded.warmup,
         trading=excluded.trading,
+        drawings=excluded.drawings,
         saved_at=excluded.saved_at
     `).bind(
       ownerId ?? this.session.userId,
@@ -960,6 +964,7 @@ export class ReplaySession extends DurableObject {
       cursorTs,
       this.session.warmup,
       JSON.stringify(trading),
+      JSON.stringify(Array.isArray(drawings) ? drawings : []),
       savedAt,
     ).run();
     return { ok: true, saved_at: savedAt, cursor_ts: cursorTs };
